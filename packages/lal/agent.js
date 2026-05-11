@@ -1,4 +1,4 @@
-// @ts-nocheck - E() generics don't work well with JSDoc types for remote objects
+// @ts-check
 /* eslint-disable no-await-in-loop */
 
 import { makeExo } from '@endo/exo';
@@ -1069,17 +1069,23 @@ export const spawnWorkerLoop = async (powers, context, workerEnv) => {
           rawMessages.map(
             (
               /** @type {InboxMessage & {messageId?: string, replyTo?: string}} */ msg,
-            ) => ({
-              number: msg.number,
-              date: msg.date,
-              from: msg.from,
-              to: msg.to,
-              type: msg.type,
-              strings: msg.strings,
-              names: msg.names,
-              messageId: msg.messageId,
-              replyTo: msg.replyTo,
-            }),
+            ) => {
+              // strings/names only exist on the `package` variant of the
+              // daemon's Message union; narrowing keeps the wire shape
+              // (undefined for non-package messages) without a cast.
+              const isPackage = msg.type === 'package';
+              return {
+                number: msg.number,
+                date: msg.date,
+                from: msg.from,
+                to: msg.to,
+                type: msg.type,
+                strings: isPackage ? msg.strings : undefined,
+                names: isPackage ? msg.names : undefined,
+                messageId: msg.messageId,
+                replyTo: msg.replyTo,
+              };
+            },
           ),
         );
       }
@@ -1304,13 +1310,17 @@ export const spawnWorkerLoop = async (powers, context, workerEnv) => {
         }
       }
 
-      console.log(`[tool] ${name}(${passableAsJustin(harden(args), false)})`);
+      console.log(
+        `[tool] ${name}(${passableAsJustin(/** @type {any} */ (harden(args)), false)})`,
+      );
 
       /** @type {unknown} */
       let result;
       try {
         result = await executeTool(name, args);
-        console.log(`[tool] ${name} -> ${passableAsJustin(result, false)}`);
+        console.log(
+          `[tool] ${name} -> ${passableAsJustin(/** @type {any} */ (result), false)}`,
+        );
       } catch (error) {
         const errorMessage =
           error instanceof Error ? error.message : String(error);
@@ -1320,7 +1330,7 @@ export const spawnWorkerLoop = async (powers, context, workerEnv) => {
 
       results.push({
         role: 'tool',
-        content: passableAsJustin(result, false),
+        content: passableAsJustin(/** @type {any} */ (result), false),
         tool_call_id: toolCall.id,
       });
     }

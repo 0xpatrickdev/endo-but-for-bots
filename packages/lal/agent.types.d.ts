@@ -1,3 +1,4 @@
+import type { JSONSchema7 } from 'json-schema';
 import type {
   Name,
   EndoGuest,
@@ -8,16 +9,19 @@ import type {
 
 export type { NameOrPath };
 
-export type ToolParameterProperty = {
-  type?: string;
-  description?: string;
-  items?: { type: string };
-  oneOf?: Array<{ type: string; items?: { type: string } }>;
-};
+/**
+ * A schema node in a tool's `parameters` JSON Schema tree.
+ *
+ * Tool `parameters` are vendor-specified JSON Schema (OpenAI, Anthropic,
+ * Gemini, Ollama all forward this shape to their respective APIs — see
+ * the provider modules). Aliasing the canonical `JSONSchema7` keeps the
+ * typedef honest: the runtime contract is whatever JSON Schema permits.
+ */
+export type ToolParameterProperty = JSONSchema7;
 
-export type ToolParameters = {
+export type ToolParameters = JSONSchema7 & {
   type: 'object';
-  properties: Record<string, ToolParameterProperty>;
+  properties: Record<string, JSONSchema7>;
   required: string[];
 };
 
@@ -73,6 +77,14 @@ export type ToolCallArgs = {
   source?: string;
   codeNames?: string[];
   resultName?: NameOrPath;
+  /** `list` tool — string or path. */
+  name?: NameOrPath;
+  /** `readText`/`writeText` tools — file name within the capability. */
+  fileName?: string;
+  /** `writeText` tool — text content to write. */
+  content?: string;
+  /** `define` tool — named capability slots for the host to fill. */
+  slots?: Record<string, { label: string }>;
 };
 
 export type InboxMessage = StampedMessage;

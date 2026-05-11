@@ -50,6 +50,7 @@
     "@endo/lockdown": "workspace:^",
     "@endo/promise-kit": "workspace:^",
     "@endo/ses-ava": "workspace:^",
+    "@types/json-schema": "^7.0.15",
     "ava": "catalog:dev",
     "c8": "catalog:dev",
     "eslint": "catalog:dev",
