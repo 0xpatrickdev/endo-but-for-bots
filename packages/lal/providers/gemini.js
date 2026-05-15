@@ -10,6 +10,7 @@
  */
 
 import https from 'node:https';
+import { toOpenAICompatibleMessages } from './openai-compatible-messages.js';
 import { normalizeToolCallsFromContent } from './xml-tool-calls.js';
 
 /**
@@ -22,7 +23,7 @@ import { normalizeToolCallsFromContent } from './xml-tool-calls.js';
  * @typedef {object} CommonChatMessage
  * @property {'system'|'user'|'assistant'|'tool'} role
  * @property {string} content
- * @property {Array<{ id?: string, function: { name: string, arguments: string|object }}>} [tool_calls]
+ * @property {Array<{ id?: string, type?: 'function', function: { name: string, arguments: string|object }}>} [tool_calls]
  * @property {string} [tool_call_id]
  */
 
@@ -142,7 +143,7 @@ export const makeGeminiProvider = ({
           model,
           max_tokens: maxTokens,
           tools,
-          messages: sendMessages,
+          messages: toOpenAICompatibleMessages(sendMessages),
         });
       } catch (error) {
         console.error('[LAL] Gemini API error:', error);

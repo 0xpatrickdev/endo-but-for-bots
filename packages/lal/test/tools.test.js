@@ -14,6 +14,7 @@ import {
   extractToolCallsFromContent,
   normalizeToolCallsFromContent,
 } from '../providers/xml-tool-calls.js';
+import { toOpenAICompatibleMessages } from '../providers/openai-compatible-messages.js';
 
 /**
  * @param {string} id
@@ -199,4 +200,51 @@ test('XML tool-call normalization is provider-side', t => {
   );
   t.is(normalized.content, '');
   t.is(normalized.tool_calls?.[0].function.name, 'list');
+});
+
+test('OpenAI-compatible history preserves tool call type', t => {
+  const messages = toOpenAICompatibleMessages([
+    { role: 'user', content: 'What tools do you have?' },
+    {
+      role: 'assistant',
+      content: '',
+      tool_calls: [
+        {
+          id: 'call_123',
+          function: {
+            name: 'reply',
+            arguments: { messageNumber: 1, strings: ['hello'] },
+          },
+        },
+      ],
+    },
+    {
+      role: 'tool',
+      content: '"Replied"',
+      tool_call_id: 'call_123',
+    },
+  ]);
+
+  t.deepEqual(messages, [
+    { role: 'user', content: 'What tools do you have?' },
+    {
+      role: 'assistant',
+      content: null,
+      tool_calls: [
+        {
+          id: 'call_123',
+          type: 'function',
+          function: {
+            name: 'reply',
+            arguments: '{"messageNumber":1,"strings":["hello"]}',
+          },
+        },
+      ],
+    },
+    {
+      role: 'tool',
+      content: '"Replied"',
+      tool_call_id: 'call_123',
+    },
+  ]);
 });
