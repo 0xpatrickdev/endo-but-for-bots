@@ -1,3 +1,6 @@
 # .git-blame-ignore-revs
 # reformatted upgrading Prettier 1.19 to 2.8
 bb4283633eff8a8b430564d2c1b4d8b2e29132a7
+
+# mechanically extracted Lal agent prompt and tool registry
+fe4fb120b209996198845f213fd09fd6224e2e1e
