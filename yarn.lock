@@ -633,6 +633,23 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@ax-llm/ax@npm:^21.0.0":
+  version: 21.0.0
+  resolution: "@ax-llm/ax@npm:21.0.0"
+  dependencies:
+    "@opentelemetry/api": "npm:^1.9.0"
+    dayjs: "npm:^1.11.13"
+  peerDependencies:
+    zod: ^3.24.0 || ^4.0.0
+  peerDependenciesMeta:
+    zod:
+      optional: true
+  bin:
+    ax: cli/index.mjs
+  checksum: 10c0/a97b8bffd58b9d3f86d7d5a871d286befdc3896fb9772e499caf93bbedde33703413746482c0733437e13ec67c3671ee869128fd001596f1779da8edfcf17589
+  languageName: node
+  linkType: hard
+
 "@babel/code-frame@npm:^7.0.0, @babel/code-frame@npm:^7.27.1":
   version: 7.27.1
   resolution: "@babel/code-frame@npm:7.27.1"
@@ -1924,6 +1941,7 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "@endo/fae@workspace:packages/fae"
   dependencies:
+    "@ax-llm/ax": "npm:^21.0.0"
     "@endo/cli": "workspace:^"
     "@endo/conversation-tree": "workspace:^"
     "@endo/daemon": "workspace:^"
@@ -1938,6 +1956,7 @@ __metadata:
     "@endo/promise-kit": "workspace:^"
     ava: "catalog:dev"
     eslint: "catalog:dev"
+    typescript: "catalog:dev"
   languageName: unknown
   linkType: soft
 
@@ -5049,6 +5068,13 @@ __metadata:
   dependencies:
     "@octokit/openapi-types": "npm:^12.11.0"
   checksum: 10c0/81cfa58e5524bf2e233d75a346e625fd6e02a7b919762c6ddb523ad6fb108943ef9d34c0298ff3c5a44122e449d9038263bc22959247fd6ff8894a48888ac705
+  languageName: node
+  linkType: hard
+
+"@opentelemetry/api@npm:^1.9.0":
+  version: 1.9.1
+  resolution: "@opentelemetry/api@npm:1.9.1"
+  checksum: 10c0/c608485fc8b5a91e1f7e05e843b45b509307456b31cd2ad365933d90813e40ebfedf179f1451c762037e82d7c76aa8500e95d2da3609f640a1206cde5322cd14
   languageName: node
   linkType: hard
 
@@ -8881,6 +8907,13 @@ __metadata:
   version: 3.0.3
   resolution: "dateformat@npm:3.0.3"
   checksum: 10c0/2effb8bef52ff912f87a05e4adbeacff46353e91313ad1ea9ed31412db26849f5a0fcc7e3ce36dbfb84fc6c881a986d5694f84838ad0da7000d5150693e78678
+  languageName: node
+  linkType: hard
+
+"dayjs@npm:^1.11.13":
+  version: 1.11.20
+  resolution: "dayjs@npm:1.11.20"
+  checksum: 10c0/8af525e2aa100c8db9923d706c42b2b2d30579faf89456619413a5c10916efc92c2b166e193c27c02eb3174b30aa440ee1e7b72b0a2876b3da651d204db848a0
   languageName: node
   linkType: hard
 
