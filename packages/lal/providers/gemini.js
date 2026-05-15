@@ -149,6 +149,9 @@ export const makeGeminiProvider = ({
         console.error('[LAL] Gemini API error:', error);
         throw error;
       }
+      console.log(
+        `[LAL] raw response: ${JSON.stringify(response, null, 2)}`,
+      );
       const choice = response.choices?.[0];
       if (!choice) {
         return { message: { role: 'assistant', content: '' } };

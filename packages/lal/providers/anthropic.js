@@ -118,7 +118,9 @@ export const makeAnthropicProvider = ({ apiKey, model }) => {
           tools: toAnthropicTools(tools),
           messages: anthropicMessages,
         });
-        console.log('[LAL] Anthropic response received');
+        console.log(
+          `[LAL] raw response: ${JSON.stringify(response, null, 2)}`,
+        );
       } catch (error) {
         console.error('[LAL] Anthropic API error:', error);
         const err =

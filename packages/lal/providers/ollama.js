@@ -111,6 +111,9 @@ export const makeOllamaProvider = ({ host, model, apiKey }) => {
         console.error('[LAL] Ollama API error:', error);
         throw error;
       }
+      console.log(
+        `[LAL] raw response: ${JSON.stringify(response, null, 2)}`,
+      );
 
       const content = response.message?.content || '';
 

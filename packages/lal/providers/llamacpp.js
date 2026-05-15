@@ -72,6 +72,9 @@ export const makeLlamaCppProvider = ({
         console.error('[LAL] llama.cpp API error:', error);
         throw error;
       }
+      console.log(
+        `[LAL] raw response: ${JSON.stringify(response, null, 2)}`,
+      );
       const choice = response.choices?.[0];
       if (!choice) {
         return { message: { role: 'assistant', content: '' } };
