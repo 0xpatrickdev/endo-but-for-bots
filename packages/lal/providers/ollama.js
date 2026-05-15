@@ -6,6 +6,7 @@
  */
 
 import { Ollama } from 'ollama';
+import { normalizeToolCallsFromContent } from './xml-tool-calls.js';
 
 /**
  * @typedef {object} CommonTool
@@ -137,7 +138,7 @@ export const makeOllamaProvider = ({ host, model, apiKey }) => {
         );
       }
 
-      return { message };
+      return { message: normalizeToolCallsFromContent(message) };
     },
   };
 };

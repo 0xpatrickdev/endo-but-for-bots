@@ -10,6 +10,7 @@
  */
 
 import https from 'node:https';
+import { normalizeToolCallsFromContent } from './xml-tool-calls.js';
 
 /**
  * @typedef {object} CommonTool
@@ -160,15 +161,16 @@ export const makeGeminiProvider = ({
         choice.message?.tool_calls &&
         /** @type {unknown[]} */ (choice.message.tool_calls).length > 0
       ) {
-        message.tool_calls = choice.message.tool_calls.map(tc => ({
-          id: tc.id,
+        message.tool_calls = choice.message.tool_calls.map((tc, index) => ({
+          id: tc.id || `tool_${Date.now()}_${index}`,
+          type: 'function',
           function: {
             name: tc.function?.name ?? '',
             arguments: tc.function?.arguments ?? '{}',
           },
         }));
       }
-      return { message };
+      return { message: normalizeToolCallsFromContent(message) };
     },
   };
 };

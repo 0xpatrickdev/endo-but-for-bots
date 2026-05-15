@@ -38,6 +38,7 @@ export type Tool = {
 
 export type ToolCall = {
   id?: string;
+  type?: 'function';
   function: {
     name: string;
     arguments: Record<string, unknown> | string;
@@ -57,13 +58,15 @@ export type ToolResult = {
   tool_call_id?: string;
 };
 
+export type ToolExecutionMode = 'parallel' | 'sequential';
+
 export type ToolCallArgs = {
   methodName?: string;
   petNamePath?: NamePath;
   petNameOrPath?: NameOrPath;
   fromPath?: NamePath;
   toPath?: NamePath;
-  messageNumber?: number;
+  messageNumber?: bigint | number;
   reason?: string;
   edgeName?: NameOrPath;
   petName?: NameOrPath;
@@ -89,6 +92,24 @@ export type ToolCallArgs = {
 
 export type InboxMessage = StampedMessage;
 export type GuestPowers = EndoGuest;
+
+export type ToolContext = {
+  powers: any;
+  leafNode?: TranscriptNode;
+  assembleTranscript?: (leafMessageId: string) => Promise<ChatMessage[]>;
+  computeDepth?: (messages: ChatMessage[]) => number;
+};
+
+export type ToolExecute = (
+  args: ToolCallArgs,
+  context: ToolContext,
+) => Promise<unknown>;
+
+export type ToolEntry = {
+  schema: Tool;
+  executionMode: ToolExecutionMode;
+  execute: ToolExecute;
+};
 
 export type PendingProposal = {
   proposalId: number;
