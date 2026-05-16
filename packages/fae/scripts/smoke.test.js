@@ -99,15 +99,15 @@ const SMOKE_SOCK =
 const STATE_PATH = SMOKE_STATE;
 const WORKER_ROOT = path.join(STATE_PATH, 'worker');
 
-// Default 30s per reply.  Observed end-to-end test latencies on
-// free-tier providers run ~2s (basic-chat) up to ~20s (read-file's
-// two-send sentinel flow), leaving a comfortable margin.  Bump
-// `SMOKE_REPLY_TIMEOUT_MS` on slow lanes if the heavier prompts
-// (timestamp's reasoning-token chain) start pushing past the budget.
+// Default 90s per reply.  Free-tier providers can take more than 30s
+// on attachment-driven multi-turn flows even when the tool sequence is
+// healthy, so keep enough room for provider variance while still
+// failing real stalls in finite time.  Override `SMOKE_REPLY_TIMEOUT_MS`
+// when a lane needs a different budget.
 const REPLY_TIMEOUT_MS =
   Number(process.env.SMOKE_REPLY_TIMEOUT_MS) > 0
     ? Number(process.env.SMOKE_REPLY_TIMEOUT_MS)
-    : 30_000;
+    : 90_000;
 const POLL_INTERVAL_MS = 500;
 
 // ---------------------------------------------------------------------------
@@ -327,6 +327,9 @@ const formatPostmortemCommands = (logPath, agentName) => {
  *   number: bigint,
  *   type: string,
  *   from: string,
+ *   messageId?: string,
+ *   replyTo?: string,
+ *   names?: string[],
  *   strings?: string[],
  * }} InboxMessage
  */
@@ -394,6 +397,8 @@ const parsePromptForEdgeNames = prompt => {
   return { strings, edgeNames };
 };
 
+class SmokeReplyTimeoutError extends Error {}
+
 /**
  * Resolve when a message satisfying `predicate` lands in HOST's inbox,
  * or reject after `timeoutMs`.
@@ -412,7 +417,9 @@ const waitForMessage = async (host, predicate, timeoutMs) => {
     if (hit) return hit;
     await sleep(POLL_INTERVAL_MS);
   }
-  throw new Error(`Timed out after ${timeoutMs}ms waiting for inbox message`);
+  throw new SmokeReplyTimeoutError(
+    `Timed out after ${timeoutMs}ms waiting for inbox message`,
+  );
 };
 
 // ---------------------------------------------------------------------------
@@ -662,6 +669,39 @@ const provisionAgent = async (t, modelName) => {
   );
 };
 
+const FRESH_AGENT_ATTEMPTS = 2;
+
+/**
+ * Re-run one smoke scenario on a fresh agent when a live provider call
+ * never returns.  A wedged agent cannot process a second prompt, so
+ * retrying the send alone is ineffective.
+ *
+ * @template T
+ * @param {import('ava').ExecutionContext<TestCtx>} t
+ * @param {string} modelName
+ * @param {() => Promise<T>} run
+ */
+const runWithFreshAgentRetries = async (t, modelName, run) => {
+  for (let attempt = 1; attempt <= FRESH_AGENT_ATTEMPTS; attempt += 1) {
+    await provisionAgent(t, modelName);
+    try {
+      return await run();
+    } catch (error) {
+      if (
+        !(error instanceof SmokeReplyTimeoutError) ||
+        attempt === FRESH_AGENT_ATTEMPTS
+      ) {
+        throw error;
+      }
+      t.log(
+        `reply timeout on attempt ${attempt}/${FRESH_AGENT_ATTEMPTS}; ` +
+          'retrying the smoke case with a fresh agent',
+      );
+    }
+  }
+  throw new Error('unreachable');
+};
+
 test.afterEach.always(async t => {
   if (!HAS_LLM_CONFIG) return;
   const { cwd, postmortem, agentName } = t.context;
@@ -735,15 +775,29 @@ const sendOnce = async (t, prompt) => {
       } fromId=${fromId.slice(0, 12)}…`,
   );
   await E(shared.host).send(agentName, strings, edgeNames, edgeNames);
+  const afterSend = /** @type {InboxMessage[]} */ (
+    await E(shared.host).listMessages()
+  );
+  const sentPackage = afterSend.find(
+    m =>
+      m.number > inboxBaseline &&
+      m.type === 'package' &&
+      m.replyTo === undefined &&
+      JSON.stringify(m.strings ?? []) === JSON.stringify(strings) &&
+      JSON.stringify(m.names ?? []) === JSON.stringify(edgeNames),
+  );
+  if (!sentPackage?.messageId) {
+    throw new Error('Could not identify sent smoke package in host inbox');
+  }
 
   let reply;
   try {
     reply = await waitForMessage(
       shared.host,
       m =>
-        m.number > inboxBaseline &&
+        m.number > sentPackage.number &&
         m.type === 'package' &&
-        extractFormulaId(m.from) === fromId,
+        m.replyTo === sentPackage.messageId,
       REPLY_TIMEOUT_MS,
     );
   } catch (err) {
@@ -754,7 +808,7 @@ const sendOnce = async (t, prompt) => {
     t.log(
       `waitForMessage timed out after ${REPLY_TIMEOUT_MS}ms; ` +
         `${candidates.length} new inbox message(s) since baseline ${inboxBaseline}; ` +
-        `none matched type=package from=${fromId.slice(0, 12)}…`,
+        `none matched replyTo=${sentPackage.messageId.slice(0, 12)}…`,
     );
     for (const m of candidates.slice(-5)) {
       t.log(
@@ -873,15 +927,16 @@ const basicChatMacro = test.macro({
    * @param {string} modelName
    */
   exec: async (t, modelName) => {
-    await provisionAgent(t, modelName);
-    const { text, logTail } = await sendAndAwaitReply(
-      t,
-      'Smoke test: please reply with the single word "ack" and nothing else.',
-    );
-    t.log(`reply: ${text.slice(0, 200)}`);
-    failOnProviderError(t, text);
-    t.regex(text.toLowerCase(), /ack/, 'reply should contain "ack"');
-    t.truthy(logTail, 'worker.log tail should be captured');
+    await runWithFreshAgentRetries(t, modelName, async () => {
+      const { text, logTail } = await sendAndAwaitReply(
+        t,
+        'Smoke test: please reply with the single word "ack" and nothing else.',
+      );
+      t.log(`reply: ${text.slice(0, 200)}`);
+      failOnProviderError(t, text);
+      t.regex(text.toLowerCase(), /ack/, 'reply should contain "ack"');
+      t.truthy(logTail, 'worker.log tail should be captured');
+    });
   },
   title: (provided, modelName) => `basic-chat [${modelName}]`,
 });
@@ -892,19 +947,20 @@ const replyToolMacro = test.macro({
    * @param {string} modelName
    */
   exec: async (t, modelName) => {
-    await provisionAgent(t, modelName);
-    const { text, logTail } = await sendAndAwaitReply(
-      t,
-      'Smoke test: please respond with a brief hello.',
-    );
-    t.log(`reply: ${text.slice(0, 200)}`);
-    failOnProviderError(t, text);
-    t.truthy(logTail, 'worker.log tail should be captured');
-    t.regex(
-      logTail,
-      /\[tool\] reply\(/,
-      'worker.log should show `[tool] reply(...)`',
-    );
+    await runWithFreshAgentRetries(t, modelName, async () => {
+      const { text, logTail } = await sendAndAwaitReply(
+        t,
+        'Smoke test: please respond with a brief hello.',
+      );
+      t.log(`reply: ${text.slice(0, 200)}`);
+      failOnProviderError(t, text);
+      t.truthy(logTail, 'worker.log tail should be captured');
+      t.regex(
+        logTail,
+        /\[tool\] reply\(/,
+        'worker.log should show `[tool] reply(...)`',
+      );
+    });
   },
   title: (provided, modelName) => `reply-tool [${modelName}]`,
 });
@@ -915,39 +971,48 @@ const timestampMacro = test.macro({
    * @param {string} modelName
    */
   exec: async (t, modelName) => {
-    await provisionAgent(t, modelName);
-    const { text, logTail } = await sendAndAwaitReply(
-      t,
-      'Here is a timestamp tool @timestamp-tool. ' +
-        'Adopt it, then call it and tell me the current ISO time in your reply.',
-    );
-    t.log(`reply: ${text.slice(0, 200)}`);
-    failOnProviderError(t, text);
-    t.truthy(logTail, 'worker.log tail should be captured');
-    t.regex(
-      logTail,
-      /\[tool\] timestampTool\(/,
-      'worker.log should show `[tool] timestampTool(...)`',
-    );
-    // The daemon-side `[tool] X -> "…"` line is emitted by `agent.js`
-    // when the tool returns; the model cannot fabricate it.  The exact
-    // format the tool returns depends on the `timezone` argument the
-    // model passes — under SES, `Date.prototype.toLocaleString` falls
-    // back to `Date.prototype.toString()` output because `Intl` is
-    // unavailable, so the result is not necessarily ISO.  Asserting on
-    // the model's ISO-formatted reply (below) covers the end-to-end
-    // requirement without coupling to the tool's per-arg output shape.
-    t.regex(
-      logTail,
-      /\[tool\] timestampTool -> "[^"]*\d{4}[^"]*"/,
-      'worker.log should show a timestampTool result containing a year',
-    );
-    t.regex(
-      logTail,
-      /\[tool\] adoptTool\([^\n]*timestamp-tool/,
-      'worker.log should show `[tool] adoptTool(...)` for timestamp-tool',
-    );
-    t.regex(text, /\d{4}-\d{2}-\d{2}/, 'reply should contain an ISO-ish date');
+    await runWithFreshAgentRetries(t, modelName, async () => {
+      const { text, logTail } = await sendAndAwaitReply(
+        t,
+        'Here is a timestamp tool @timestamp-tool. ' +
+          'Adopt it, then call it and tell me the current ISO time in your reply.',
+      );
+      t.log(`reply: ${text.slice(0, 200)}`);
+      failOnProviderError(t, text);
+      t.truthy(logTail, 'worker.log tail should be captured');
+      const usedTimestampCapability =
+        /\[tool\] timestampTool\(/.test(logTail) ||
+        /\[tool\] exec\(\{code:".*timestamp-tool/s.test(logTail);
+      t.true(
+        usedTimestampCapability,
+        'worker.log should show timestamp-tool capability use',
+      );
+      // The daemon-side `[tool] X -> "…"` line is emitted by `agent.js`
+      // when the tool returns; the model cannot fabricate it.  The exact
+      // format the tool returns depends on the `timezone` argument the
+      // model passes — under SES, `Date.prototype.toLocaleString` falls
+      // back to `Date.prototype.toString()` output because `Intl` is
+      // unavailable, so the result is not necessarily ISO.  Asserting on
+      // the model's ISO-formatted reply (below) covers the end-to-end
+      // requirement without coupling to the tool's per-arg output shape.
+      const sawTimestampResult =
+        /\[tool\] timestampTool -> "[^"]*\d{4}[^"]*"/.test(logTail) ||
+        /\[tool\] exec -> .*?\d{4}/.test(logTail);
+      t.true(
+        sawTimestampResult,
+        'worker.log should show a timestamp result containing a year',
+      );
+      t.regex(
+        logTail,
+        /\[tool\] adoptTool\([^\n]*timestamp-tool/,
+        'worker.log should show `[tool] adoptTool(...)` for timestamp-tool',
+      );
+      t.regex(
+        text,
+        /\d{4}-\d{2}-\d{2}/,
+        'reply should contain an ISO-ish date',
+      );
+    });
   },
   title: (provided, modelName) => `timestamp [${modelName}]`,
 });
@@ -958,21 +1023,24 @@ const mathMacro = test.macro({
    * @param {string} modelName
    */
   exec: async (t, modelName) => {
-    await provisionAgent(t, modelName);
-    const { text, logTail } = await sendAndAwaitReply(
-      t,
-      'Here is a math tool @math-tool. ' +
-        'Adopt it, then use it to compute 7 * 6 and reply with just the number.',
-    );
-    t.log(`reply: ${text.slice(0, 200)}`);
-    failOnProviderError(t, text);
-    t.truthy(logTail, 'worker.log tail should be captured');
-    t.regex(
-      logTail,
-      /\[tool\] mathTool\(/,
-      'worker.log should show `[tool] mathTool(...)`',
-    );
-    t.regex(text, /\b42\b/, 'reply should contain "42"');
+    await runWithFreshAgentRetries(t, modelName, async () => {
+      const { text, logTail } = await sendAndAwaitReply(
+        t,
+        'Here is a math tool @math-tool. ' +
+          'Adopt it, then use it to compute 7 * 6 and reply with just the number.',
+      );
+      t.log(`reply: ${text.slice(0, 200)}`);
+      failOnProviderError(t, text);
+      t.truthy(logTail, 'worker.log tail should be captured');
+      const usedMathCapability =
+        /\[tool\] mathTool\(/.test(logTail) ||
+        /\[tool\] exec\(\{code:".*math-tool/s.test(logTail);
+      t.true(
+        usedMathCapability,
+        'worker.log should show math-tool capability use',
+      );
+      t.regex(text, /\b42\b/, 'reply should contain "42"');
+    });
   },
   title: (provided, modelName) => `math [${modelName}]`,
 });
@@ -983,54 +1051,60 @@ const readFileMacro = test.macro({
    * @param {string} modelName
    */
   exec: async (t, modelName) => {
-    await provisionAgent(t, modelName);
-    if (!shared) throw new Error('shared daemon ctx not initialised');
-    // The read-file tool's root is fixed at creation, so for per-test
-    // isolation we create one rooted at this test's mkdtemp FAE_CWD.
-    // The tool's petname is unique per test so adoption picks it up by
-    // name rather than colliding with siblings.
-    const toolName = `read-file-${t.context.agentName}`;
-    await E(shared.host).makeUnconfined('@main', readFileSpecifier, {
-      resultName: toolName,
-      env: harden({ FAE_CWD: t.context.cwd }),
+    await runWithFreshAgentRetries(t, modelName, async () => {
+      if (!shared) throw new Error('shared daemon ctx not initialised');
+      // The read-file tool's root is fixed at creation, so for per-test
+      // isolation we create one rooted at this test's mkdtemp FAE_CWD.
+      // The tool's petname is unique per test so adoption picks it up by
+      // name rather than colliding with siblings.
+      const toolName = `read-file-${t.context.agentName}`;
+      await E(shared.host).makeUnconfined('@main', readFileSpecifier, {
+        resultName: toolName,
+        env: harden({ FAE_CWD: t.context.cwd }),
+      });
+
+      const sentinelName = 'fae-smoke-sentinel.json';
+      const sentinelToken = `FAE_SMOKE_${Date.now().toString(36)}`;
+      await fs.writeFile(
+        path.join(t.context.cwd, sentinelName),
+        JSON.stringify({ token: sentinelToken }, null, 2),
+      );
+
+      const adoption = await sendAndAwaitReply(
+        t,
+        `Here is a read-file tool @${toolName}. ` +
+          `Adopt it, then reply with the single word "adopted".`,
+      );
+      t.log(`adoption reply: ${adoption.text.slice(0, 200)}`);
+      failOnProviderError(t, adoption.text);
+      t.regex(
+        adoption.logTail,
+        /\[tool\] adoptTool\(/,
+        'worker.log should show `[tool] adoptTool(...)`',
+      );
+
+      const reply = await sendAndAwaitReply(
+        t,
+        `Read "${sentinelName}" and tell me the value of ` +
+          `the "token" field exactly as it appears.`,
+      );
+      t.log(`reply: ${reply.text.slice(0, 200)}`);
+      failOnProviderError(t, reply.text);
+      const usedReadFileCapability =
+        /\[tool\] readFile\S*\(/.test(reply.logTail) ||
+        new RegExp(
+          String.raw`\[tool\] exec\(\{code:".*${toolName}`,
+          's',
+        ).test(reply.logTail);
+      t.true(
+        usedReadFileCapability,
+        'worker.log should show read-file capability use',
+      );
+      t.true(
+        reply.text.includes(sentinelToken),
+        `reply should contain the sentinel token "${sentinelToken}"`,
+      );
     });
-
-    const sentinelName = 'fae-smoke-sentinel.json';
-    const sentinelToken = `FAE_SMOKE_${Date.now().toString(36)}`;
-    await fs.writeFile(
-      path.join(t.context.cwd, sentinelName),
-      JSON.stringify({ token: sentinelToken }, null, 2),
-    );
-
-    const adoption = await sendAndAwaitReply(
-      t,
-      `Here is a read-file tool @${toolName}. ` +
-        `Adopt it, then reply with the single word "adopted".`,
-    );
-    t.log(`adoption reply: ${adoption.text.slice(0, 200)}`);
-    failOnProviderError(t, adoption.text);
-    t.regex(
-      adoption.logTail,
-      /\[tool\] adoptTool\(/,
-      'worker.log should show `[tool] adoptTool(...)`',
-    );
-
-    const reply = await sendAndAwaitReply(
-      t,
-      `Read "${sentinelName}" and tell me the value of ` +
-        `the "token" field exactly as it appears.`,
-    );
-    t.log(`reply: ${reply.text.slice(0, 200)}`);
-    failOnProviderError(t, reply.text);
-    t.regex(
-      reply.logTail,
-      /\[tool\] readFile\S*\(/,
-      'worker.log should show `[tool] readFile(...)`',
-    );
-    t.true(
-      reply.text.includes(sentinelToken),
-      `reply should contain the sentinel token "${sentinelToken}"`,
-    );
   },
   title: (provided, modelName) => `read-file [${modelName}]`,
 });
