@@ -1,8 +1,17 @@
 # Endo Design Documents
 
-*Last updated: 2026-05-11*
+*Last updated: 2026-05-18*
 
-*See also: [daemon-make-archive](daemon-make-archive.md) (added 2026-04-23),
+*See also: [daemon-mount-capabilities](daemon-mount-capabilities.md)
+(added 2026-05-18; concrete completion plan for `EndoMount`, mount-scoped
+entry descriptors, snapshotting, and trusted physical-backing provenance),
+[daemon-git-capability](daemon-git-capability.md) (added 2026-05-18;
+revised git design over `EndoMount`, `EndoMountFile`, and immutable
+git-tree providers),
+[daemon-git-remotes](daemon-git-remotes.md) (added 2026-05-18;
+MVP remote-git companion for fetch, pull, push, bounded HTTPS transport,
+endpoint policy, and non-extractable credentials),
+[daemon-make-archive](daemon-make-archive.md) (added 2026-04-23),
 [filesystem-watchers](filesystem-watchers.md) (added 2026-05-07),
 [endo-posix-sandbox](endo-posix-sandbox.md) (added 2026-05-07; mirrors
 `PLAN/endo_posix_sandbox.md` for roadmap calibration),
@@ -56,14 +65,17 @@ PR #151 row-format unblocker; sibling of
 | [chat-test-coverage](chat-test-coverage.md) | 2026-03-02 | 2026-03-02 | **Complete** |
 | [daemon-256-bit-identifiers](daemon-256-bit-identifiers.md) | 2026-02-24 | 2026-03-02 | **Complete** |
 | [daemon-agent-network-identity](daemon-agent-network-identity.md) | 2026-03-02 | 2026-03-02 | Not Started |
-| [daemon-agent-tools](daemon-agent-tools.md) | 2026-03-02 | 2026-03-02 | Not Started |
+| [daemon-agent-tools](daemon-agent-tools.md) | 2026-03-02 | 2026-05-18 | Not Started |
 | [daemon-commands-as-messages](daemon-commands-as-messages.md) | 2026-03-11 | 2026-03-11 | Not Started |
 | [daemon-capability-bank](daemon-capability-bank.md) | 2026-02-15 | 2026-02-24 | Not Started |
 | [daemon-checkin-checkout](daemon-checkin-checkout.md) | 2026-03-17 | 2026-03-17 | Not Started |
 | [daemon-capability-filesystem](daemon-capability-filesystem.md) | 2026-02-15 | 2026-02-24 | Not Started |
 | [daemon-content-store-gc](daemon-content-store-gc.md) | 2026-03-20 | 2026-05-08 | **Complete** |
+| [daemon-git-capability](daemon-git-capability.md) | 2026-05-18 | 2026-05-18 | Proposed |
+| [daemon-git-remotes](daemon-git-remotes.md) | 2026-05-18 | 2026-05-18 | Proposed |
 | [daemon-message-streaming](daemon-message-streaming.md) | 2026-03-26 | 2026-03-26 | Draft |
 | [daemon-mount](daemon-mount.md) | 2026-03-20 | 2026-03-20 | In Progress |
+| [daemon-mount-capabilities](daemon-mount-capabilities.md) | 2026-05-18 | 2026-05-18 | Proposed |
 | [filesystem-watchers](filesystem-watchers.md) | 2026-05-07 | 2026-05-07 | Not Started |
 | [platform-fs](platform-fs.md) | 2026-03-18 | 2026-03-18 | In Progress |
 | [daemon-capability-persona](daemon-capability-persona.md) | 2026-02-16 | 2026-02-24 | Not Started |
@@ -141,7 +153,7 @@ PR #151 row-format unblocker; sibling of
 | [weblet-next](weblet-next.md) | 2026-03-24 | 2026-03-24 | Reference |
 | [workers-panel](workers-panel.md) | 2026-02-14 | 2026-02-24 | Not Started |
 
-**Totals:** 27 Complete/Implemented, 15 In Progress, 43 Not Started, 9 Proposed, 3 Active, 3 Reference, 2 Deprecated, 1 Draft, 1 Superseded (104 designs)
+**Totals:** 27 Complete/Implemented, 15 In Progress, 43 Not Started, 12 Proposed, 3 Active, 3 Reference, 2 Deprecated, 1 Draft, 1 Superseded (107 designs)
 
 ## Roadmap
 
@@ -257,6 +269,9 @@ flowchart TD
         pfs[platform-fs]
         dfs[daemon-capability-filesystem]
         dmount[daemon-mount<br/><i>IN PROGRESS</i>]
+        dmcap[daemon-mount-capabilities]
+        dgit[daemon-git-capability]
+        dgitremote[daemon-git-remotes]
         dfsw[filesystem-watchers]
         dcsgc[daemon-content-store-gc]
         dpers[daemon-capability-persona]
@@ -264,10 +279,14 @@ flowchart TD
         icancel[inventory-cancel-and-liveness]
         pfs --> dfs
         pfs --> dmount
+        dmount --> dmcap
+        dmcap --> dgit
+        dgit --> dgitremote
         pfs --> dci
         pfs --> dfsw
         dmount --> dfsw
-        dmount --> dtools
+        dgitremote --> dtools
+        enetfetch --> dgitremote
         dmount --> dcsgc
         dsand --> dbank
         dfs --> dbank
@@ -319,6 +338,9 @@ capabilities available to agents.
 | daemon-capability-filesystem | Not Started | `Dir`/`File` capabilities for structural filesystem confinement |
 | ~~daemon-content-store-gc~~ | **Complete** | Content-store pruning and scratch-mount directory cleanup at GC time; landed in PR #99 |
 | daemon-mount | In Progress | Phases 1-3, 5 implemented; symlink confinement, 20 integration tests; Phase 4 (sub-mounts, snapshot) and Phase 6 (CLI) remaining |
+| daemon-mount-capabilities | Proposed | Complete `EndoMount`: snapshot bridge, mount-scoped descriptors, handle-first navigation, trusted backing provenance |
+| daemon-git-capability | Proposed | Revised git design over `EndoMount` / `EndoMountEntry`, plus immutable git-tree providers |
+| daemon-git-remotes | Proposed | MVP remote-git companion: fetch / pull / push composed from local `Git`, bounded HTTPS transport, endpoint policy, and credential caps |
 | filesystem-watchers | Not Started | `EndoMount.followNameChanges` parity with `EndoDirectory`; Node `fs.watch` adapter on `FilePowers` |
 | daemon-locator-terminology | Not Started | Clean locator API; unblocked |
 | daemon-rename-to-manager | Not Started | Rename `daemon.js`/`Daemon`/`MignonicPowers` to `manager.js`/`Manager`/`WorkerPowers` to align JS with Rust `endor` nomenclature |
