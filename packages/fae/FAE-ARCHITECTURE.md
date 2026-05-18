@@ -56,6 +56,7 @@ packages/fae/
 ├── setup.js                    # Provision fae guest (no tools)
 ├── setup-tools.js              # Create example tools in host inventory
 ├── setup-fs-tools.js           # Create filesystem tools (FAE_CWD)
+├── setup-git-tool.js           # Create local-only git tool (FAE_GIT_ROOT)
 ├── setup-with-tools.js         # Provision fae with pre-installed tools
 ├── src/
 │   ├── extract-tool-calls.js   # XML <tool_call> parser for models
@@ -71,7 +72,8 @@ packages/fae/
     ├── write-file.js           # FaeTool: write files under root
     ├── edit-file.js            # FaeTool: edit files under root
     ├── list-dir.js             # FaeTool: list directory under root
-    └── run-command.js          # FaeTool: run shell commands in root
+    ├── run-command.js          # FaeTool: run shell commands in root
+    └── git.js                  # FaeTool: local git operations for one repo
 ```
 
 ---
@@ -257,9 +259,17 @@ Unsandboxed modules that produce `FaeTool` exo objects. Created via
 | `editFile` | String replacement editing |
 | `listDir` | List directory contents |
 | `runCommand` | Execute shell commands with timeout |
+| `git` | Repository-scoped local git workflows without raw command access |
 
 Filesystem tools have their root directory fixed at creation time via
 `FAE_CWD`. Path traversal above the root is rejected.
+
+The git tool is provisioned separately with `FAE_GIT_ROOT` and requires
+that configured root to be the repository top-level. It exposes named
+local operations only; network, config, hook, and raw-command authority
+are intentionally absent. Operations that could invoke repo-local
+executable filters or merge drivers are refused when those settings are
+present.
 
 ---
 

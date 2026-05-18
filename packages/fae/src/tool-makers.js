@@ -2,6 +2,9 @@
 
 import fs from 'fs';
 import path from 'path';
+import { execFile } from 'child_process';
+import process from 'node:process';
+import { promisify as nodePromisify } from 'util';
 
 import { E } from '@endo/eventual-send';
 
@@ -26,6 +29,16 @@ import { E } from '@endo/eventual-send';
  */
 
 /**
+ * @param {string} root
+ * @param {string} target
+ * @returns {boolean}
+ */
+const isOutsideRoot = (root, target) => {
+  const relative = path.relative(root, target);
+  return relative.startsWith('..') || path.isAbsolute(relative);
+};
+
+/**
  * Resolve a relative path against the working directory and ensure it
  * does not escape above cwd.
  *
@@ -35,10 +48,89 @@ import { E } from '@endo/eventual-send';
  */
 const resolveSafe = (relativePath, cwd) => {
   const resolved = path.resolve(cwd, relativePath);
-  if (!resolved.startsWith(cwd)) {
+  if (isOutsideRoot(cwd, resolved)) {
     throw new Error(`Path traversal not allowed: ${relativePath}`);
   }
   return resolved;
+};
+
+const execFileAsync = nodePromisify(execFile);
+
+const gitNullDevice = process.platform === 'win32' ? 'NUL' : '/dev/null';
+
+const GIT_BASE_ARGS = harden([
+  '--no-pager',
+  '--literal-pathspecs',
+  '-c',
+  'core.hooksPath=/dev/null',
+  '-c',
+  'core.fsmonitor=false',
+  '-c',
+  'core.attributesFile=/dev/null',
+  '-c',
+  'diff.external=',
+  '-c',
+  'commit.gpgSign=false',
+  '-c',
+  'tag.gpgSign=false',
+]);
+
+const GIT_TIMEOUT_MS = 60_000;
+const GIT_MAX_BUFFER = 1024 * 1024;
+const TOOL_OUTPUT_LIMIT = 50_000;
+
+/**
+ * @param {string} repoRoot
+ */
+const makeGitEnv = repoRoot => ({
+  PATH: process.env.PATH || '',
+  HOME: path.join(repoRoot, '.git-fae-home'),
+  XDG_CONFIG_HOME: path.join(repoRoot, '.git-fae-home'),
+  GIT_CONFIG_NOSYSTEM: '1',
+  GIT_CONFIG_GLOBAL: gitNullDevice,
+  GIT_TERMINAL_PROMPT: '0',
+  GIT_PAGER: 'cat',
+  LANG: 'C',
+  LC_ALL: 'C',
+});
+
+/**
+ * @param {string} output
+ * @returns {string}
+ */
+const truncateOutput = output => {
+  if (output.length > TOOL_OUTPUT_LIMIT) {
+    return `${output.slice(0, TOOL_OUTPUT_LIMIT)}\n\n... (truncated, ${output.length} chars total)`;
+  }
+  return output;
+};
+
+/**
+ * @param {unknown} value
+ * @param {string} name
+ * @returns {string}
+ */
+const requireNonEmptyString = (value, name) => {
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new Error(`${name} is required`);
+  }
+  if (value.includes('\0')) {
+    throw new Error(`${name} must not contain NUL bytes`);
+  }
+  return value;
+};
+
+/**
+ * @param {unknown} value
+ * @param {string} name
+ * @returns {string}
+ */
+const requireRevision = (value, name) => {
+  const revision = requireNonEmptyString(value, name);
+  if (revision.startsWith('-')) {
+    throw new Error(`${name} must not start with "-"`);
+  }
+  return revision;
 };
 
 /**
@@ -425,6 +517,550 @@ export const makeRunCommandTool = cwd => {
   });
 };
 harden(makeRunCommandTool);
+
+/**
+ * Repository-scoped git operations for local work only. This intentionally
+ * omits raw command execution, networking, git config, and hook management.
+ *
+ * @param {string} configuredRoot
+ * @returns {FaeTool}
+ */
+export const makeGitTool = configuredRoot => {
+  /** @type {Promise<string> | undefined} */
+  let repoRootPromise;
+
+  const getRepoRoot = () => {
+    if (!repoRootPromise) {
+      repoRootPromise = (async () => {
+        const resolvedRoot = await fs.promises.realpath(configuredRoot);
+        const { stdout } = await execFileAsync(
+          'git',
+          ['rev-parse', '--show-toplevel'],
+          {
+            cwd: resolvedRoot,
+            env: makeGitEnv(resolvedRoot),
+            timeout: GIT_TIMEOUT_MS,
+            maxBuffer: GIT_MAX_BUFFER,
+          },
+        );
+        const actualRoot = await fs.promises.realpath(stdout.trim());
+        if (actualRoot !== resolvedRoot) {
+          throw new Error(
+            `Git root must be the configured root: expected ${resolvedRoot}, got ${actualRoot}`,
+          );
+        }
+        return actualRoot;
+      })();
+    }
+    return repoRootPromise;
+  };
+
+  /**
+   * @param {string[]} args
+   * @returns {Promise<string>}
+   */
+  const runGit = async args => {
+    const repoRoot = await getRepoRoot();
+    try {
+      const { stdout, stderr } = await execFileAsync(
+        'git',
+        [...GIT_BASE_ARGS, ...args],
+        {
+          cwd: repoRoot,
+          env: makeGitEnv(repoRoot),
+          timeout: GIT_TIMEOUT_MS,
+          maxBuffer: GIT_MAX_BUFFER,
+        },
+      );
+      const output = `${stdout}${stderr ? `\n[stderr]:\n${stderr}` : ''}`;
+      return truncateOutput(output.trim() || '(no output)');
+    } catch (err) {
+      const error =
+        /** @type {Error & { stdout?: string, stderr?: string, code?: number }} */ (
+          err
+        );
+      const detail =
+        error.stderr || error.stdout || error.message || 'unknown git error';
+      throw new Error(
+        `git ${args[0]} failed (exit ${error.code ?? 'unknown'}):\n${truncateOutput(detail.trim())}`,
+      );
+    }
+  };
+
+  /**
+   * @param {unknown} branchName
+   * @param {string} fieldName
+   * @returns {Promise<string>}
+   */
+  const requireBranchName = async (branchName, fieldName) => {
+    const name = requireRevision(branchName, fieldName);
+    await runGit(['check-ref-format', '--branch', name]);
+    return name;
+  };
+
+  /**
+   * @param {unknown} candidate
+   * @param {string} fieldName
+   * @returns {Promise<string>}
+   */
+  const normalizeRepoPath = async (candidate, fieldName) => {
+    const relativePath = requireNonEmptyString(candidate, fieldName);
+    if (path.isAbsolute(relativePath)) {
+      throw new Error(`${fieldName} must contain repository-relative paths`);
+    }
+    const repoRoot = await getRepoRoot();
+    const resolved = path.resolve(repoRoot, relativePath);
+    if (isOutsideRoot(repoRoot, resolved)) {
+      throw new Error(`Path traversal not allowed: ${relativePath}`);
+    }
+    const normalized = path.relative(repoRoot, resolved);
+    return normalized || '.';
+  };
+
+  /**
+   * @param {unknown} candidates
+   * @param {string} fieldName
+   * @returns {Promise<string[]>}
+   */
+  const normalizeRepoPaths = async (candidates, fieldName) => {
+    if (!Array.isArray(candidates) || candidates.length === 0) {
+      throw new Error(`${fieldName} must be a non-empty array`);
+    }
+    return Promise.all(
+      candidates.map(candidate => normalizeRepoPath(candidate, fieldName)),
+    );
+  };
+
+  const EXECUTABLE_REPO_CONFIG = /^(filter\..*\.(clean|smudge|process)|merge\..*\.driver)$/u;
+
+  const assertNoExecutableRepoConfig = async () => {
+    const repoRoot = await getRepoRoot();
+    const { stdout } = await execFileAsync(
+      'git',
+      [...GIT_BASE_ARGS, 'config', '--local', '--name-only', '--list'],
+      {
+        cwd: repoRoot,
+        env: makeGitEnv(repoRoot),
+        timeout: GIT_TIMEOUT_MS,
+        maxBuffer: GIT_MAX_BUFFER,
+      },
+    );
+    const executableConfig = stdout
+      .split('\n')
+      .filter(name => EXECUTABLE_REPO_CONFIG.test(name));
+    if (executableConfig.length > 0) {
+      throw new Error(
+        `Refusing git operation because repository config can execute commands: ${executableConfig.join(', ')}`,
+      );
+    }
+  };
+
+  /** @type {ToolSchema} */
+  const toolSchema = harden({
+    type: 'function',
+    function: {
+      name: 'git',
+      description:
+        'Run repository-scoped local git operations without exposing raw git, network access, or git configuration. ' +
+        'Supports status, diff, log, show, revParse, add, restore, commit, branch management, switch, merge, rebase, and stash workflows.',
+      parameters: {
+        type: 'object',
+        properties: {
+          operation: {
+            type: 'string',
+            description:
+              'One of: status, diff, log, show, revParse, add, restore, commit, currentBranch, branchList, branchCreate, branchDelete, branchRename, switch, merge, rebase, stashPush, stashList, stashShow, stashApply, stashPop, stashDrop.',
+          },
+          paths: {
+            type: 'array',
+            description:
+              'Repository-relative file paths for add, restore, diff, or stashPush.',
+            items: { type: 'string' },
+          },
+          staged: {
+            type: 'boolean',
+            description: 'Use the index for diff or restore.',
+          },
+          all: {
+            type: 'boolean',
+            description: 'Include remote branches for branchList.',
+          },
+          from: {
+            type: 'string',
+            description: 'Base revision for diff.',
+          },
+          to: {
+            type: 'string',
+            description: 'Target revision for diff.',
+          },
+          ref: {
+            type: 'string',
+            description: 'Revision or stash reference for read operations.',
+          },
+          maxCount: {
+            type: 'number',
+            description: 'Maximum commits to return for log.',
+          },
+          message: {
+            type: 'string',
+            description: 'Commit or stash message.',
+          },
+          branch: {
+            type: 'string',
+            description: 'Branch name for branch operations or rebase.',
+          },
+          newName: {
+            type: 'string',
+            description: 'Replacement branch name for branchRename.',
+          },
+          startPoint: {
+            type: 'string',
+            description: 'Starting revision for branchCreate or switch(create).',
+          },
+          switchAfterCreate: {
+            type: 'boolean',
+            description: 'Switch to a branch immediately after branchCreate.',
+          },
+          target: {
+            type: 'string',
+            description: 'Target branch or revision for switch.',
+          },
+          create: {
+            type: 'boolean',
+            description: 'Create the branch while switching.',
+          },
+          detach: {
+            type: 'boolean',
+            description: 'Detach HEAD while switching to a revision.',
+          },
+          force: {
+            type: 'boolean',
+            description: 'Force branch deletion.',
+          },
+          noFastForward: {
+            type: 'boolean',
+            description: 'Create a merge commit instead of fast-forwarding.',
+          },
+          mode: {
+            type: 'string',
+            description:
+              'Rebase mode: start, continue, abort, or skip.',
+          },
+          upstream: {
+            type: 'string',
+            description: 'Upstream revision for rebase(start).',
+          },
+          includeUntracked: {
+            type: 'boolean',
+            description: 'Include untracked files for stashPush.',
+          },
+          stash: {
+            type: 'string',
+            description: 'Stash reference such as stash@{0}.',
+          },
+        },
+        required: ['operation'],
+      },
+    },
+  });
+
+  return harden({
+    schema() {
+      return toolSchema;
+    },
+    async execute(args) {
+      const { operation } = /** @type {{ operation?: unknown }} */ (args);
+      switch (operation) {
+        case 'status':
+          return runGit(['status', '--short', '--branch']);
+        case 'diff': {
+          const {
+            staged = false,
+            from,
+            to,
+            paths,
+          } = /** @type {{ staged?: boolean, from?: unknown, to?: unknown, paths?: unknown }} */ (
+            args
+          );
+          const command = ['diff', '--no-ext-diff', '--no-textconv'];
+          if (staged) {
+            command.push('--cached');
+          }
+          if (from !== undefined) {
+            command.push(requireRevision(from, 'from'));
+          }
+          if (to !== undefined) {
+            command.push(requireRevision(to, 'to'));
+          }
+          if (paths !== undefined) {
+            command.push('--', ...(await normalizeRepoPaths(paths, 'paths')));
+          }
+          return runGit(command);
+        }
+        case 'log': {
+          const { maxCount = 20, ref } =
+            /** @type {{ maxCount?: number, ref?: unknown }} */ (args);
+          if (!Number.isSafeInteger(maxCount) || maxCount <= 0) {
+            throw new Error('maxCount must be a positive safe integer');
+          }
+          const command = [
+            'log',
+            '--oneline',
+            '--decorate',
+            `--max-count=${maxCount}`,
+          ];
+          if (ref !== undefined) {
+            command.push(requireRevision(ref, 'ref'));
+          }
+          return runGit(command);
+        }
+        case 'show': {
+          const { ref = 'HEAD' } =
+            /** @type {{ ref?: unknown }} */ (args);
+          return runGit([
+            'show',
+            '--no-ext-diff',
+            '--no-textconv',
+            '--stat',
+            '--oneline',
+            '--decorate',
+            requireRevision(ref, 'ref'),
+          ]);
+        }
+        case 'revParse': {
+          const { ref } = /** @type {{ ref?: unknown }} */ (args);
+          return runGit(['rev-parse', '--verify', requireRevision(ref, 'ref')]);
+        }
+        case 'add': {
+          const { paths } = /** @type {{ paths?: unknown }} */ (args);
+          await assertNoExecutableRepoConfig();
+          return runGit([
+            'add',
+            '--',
+            ...(await normalizeRepoPaths(paths, 'paths')),
+          ]);
+        }
+        case 'restore': {
+          const { paths, staged = false, ref } =
+            /** @type {{ paths?: unknown, staged?: boolean, ref?: unknown }} */ (
+              args
+            );
+          await assertNoExecutableRepoConfig();
+          const command = ['restore'];
+          if (staged) {
+            command.push('--staged');
+          }
+          if (ref !== undefined) {
+            command.push(`--source=${requireRevision(ref, 'ref')}`);
+          }
+          command.push('--', ...(await normalizeRepoPaths(paths, 'paths')));
+          return runGit(command);
+        }
+        case 'commit': {
+          const { message } = /** @type {{ message?: unknown }} */ (args);
+          return runGit([
+            'commit',
+            '--no-verify',
+            '--no-gpg-sign',
+            '-m',
+            requireNonEmptyString(message, 'message'),
+          ]);
+        }
+        case 'currentBranch':
+          return runGit(['branch', '--show-current']);
+        case 'branchList': {
+          const { all = false } =
+            /** @type {{ all?: boolean }} */ (args);
+          return runGit(['branch', '--list', ...(all ? ['--all'] : [])]);
+        }
+        case 'branchCreate': {
+          const { branch, startPoint, switchAfterCreate = false } =
+            /** @type {{ branch?: unknown, startPoint?: unknown, switchAfterCreate?: boolean }} */ (
+              args
+            );
+          const name = await requireBranchName(branch, 'branch');
+          if (switchAfterCreate) {
+            await assertNoExecutableRepoConfig();
+          }
+          const command = switchAfterCreate
+            ? ['switch', '-c', name]
+            : ['branch', name];
+          if (startPoint !== undefined) {
+            command.push(requireRevision(startPoint, 'startPoint'));
+          }
+          return runGit(command);
+        }
+        case 'branchDelete': {
+          const { branch, force = false } =
+            /** @type {{ branch?: unknown, force?: boolean }} */ (args);
+          return runGit([
+            'branch',
+            force ? '-D' : '-d',
+            await requireBranchName(branch, 'branch'),
+          ]);
+        }
+        case 'branchRename': {
+          const { branch, newName } =
+            /** @type {{ branch?: unknown, newName?: unknown }} */ (args);
+          return runGit([
+            'branch',
+            '-m',
+            await requireBranchName(branch, 'branch'),
+            await requireBranchName(newName, 'newName'),
+          ]);
+        }
+        case 'switch': {
+          const {
+            target,
+            create = false,
+            detach = false,
+            startPoint,
+          } = /** @type {{ target?: unknown, create?: boolean, detach?: boolean, startPoint?: unknown }} */ (
+            args
+          );
+          if (create && detach) {
+            throw new Error('switch cannot combine create and detach');
+          }
+          await assertNoExecutableRepoConfig();
+          const command = ['switch'];
+          if (create) {
+            command.push('-c', await requireBranchName(target, 'target'));
+          } else if (detach) {
+            command.push('--detach', requireRevision(target, 'target'));
+          } else {
+            command.push(requireRevision(target, 'target'));
+          }
+          if (startPoint !== undefined) {
+            if (!create) {
+              throw new Error('startPoint is only valid when create is true');
+            }
+            command.push(requireRevision(startPoint, 'startPoint'));
+          }
+          return runGit(command);
+        }
+        case 'merge': {
+          const { ref, noFastForward = false } =
+            /** @type {{ ref?: unknown, noFastForward?: boolean }} */ (args);
+          await assertNoExecutableRepoConfig();
+          return runGit([
+            'merge',
+            '--no-edit',
+            '--no-verify',
+            ...(noFastForward ? ['--no-ff'] : []),
+            requireRevision(ref, 'ref'),
+          ]);
+        }
+        case 'rebase': {
+          const { mode, upstream, branch } =
+            /** @type {{ mode?: unknown, upstream?: unknown, branch?: unknown }} */ (
+              args
+            );
+          switch (mode) {
+            case 'start': {
+              await assertNoExecutableRepoConfig();
+              const command = [
+                'rebase',
+                '--no-verify',
+                requireRevision(upstream, 'upstream'),
+              ];
+              if (branch !== undefined) {
+                command.push(requireRevision(branch, 'branch'));
+              }
+              return runGit(command);
+            }
+            case 'continue':
+              await assertNoExecutableRepoConfig();
+              return runGit(['rebase', '--continue']);
+            case 'abort':
+              await assertNoExecutableRepoConfig();
+              return runGit(['rebase', '--abort']);
+            case 'skip':
+              await assertNoExecutableRepoConfig();
+              return runGit(['rebase', '--skip']);
+            default:
+              throw new Error(
+                'mode must be one of: start, continue, abort, skip',
+              );
+          }
+        }
+        case 'stashPush': {
+          const { message, includeUntracked = false, paths } =
+            /** @type {{ message?: unknown, includeUntracked?: boolean, paths?: unknown }} */ (
+              args
+            );
+          const command = ['stash', 'push'];
+          await assertNoExecutableRepoConfig();
+          if (includeUntracked) {
+            command.push('--include-untracked');
+          }
+          if (message !== undefined) {
+            command.push('-m', requireNonEmptyString(message, 'message'));
+          }
+          if (paths !== undefined) {
+            command.push('--', ...(await normalizeRepoPaths(paths, 'paths')));
+          }
+          return runGit(command);
+        }
+        case 'stashList':
+          return runGit(['stash', 'list']);
+        case 'stashShow': {
+          const { stash } = /** @type {{ stash?: unknown }} */ (args);
+          const command = [
+            'stash',
+            'show',
+            '--patch',
+            '--no-ext-diff',
+            '--no-textconv',
+          ];
+          if (stash !== undefined) {
+            command.push(requireRevision(stash, 'stash'));
+          }
+          return runGit(command);
+        }
+        case 'stashApply': {
+          const { stash } = /** @type {{ stash?: unknown }} */ (args);
+          await assertNoExecutableRepoConfig();
+          const command = ['stash', 'apply'];
+          if (stash !== undefined) {
+            command.push(requireRevision(stash, 'stash'));
+          }
+          return runGit(command);
+        }
+        case 'stashPop': {
+          const { stash } = /** @type {{ stash?: unknown }} */ (args);
+          await assertNoExecutableRepoConfig();
+          const command = ['stash', 'pop'];
+          if (stash !== undefined) {
+            command.push(requireRevision(stash, 'stash'));
+          }
+          return runGit(command);
+        }
+        case 'stashDrop': {
+          const { stash } = /** @type {{ stash?: unknown }} */ (args);
+          const command = ['stash', 'drop'];
+          if (stash !== undefined) {
+            command.push(requireRevision(stash, 'stash'));
+          }
+          return runGit(command);
+        }
+        default:
+          throw new Error(
+            'Unsupported git operation. Allowed: status, diff, log, show, revParse, add, restore, commit, currentBranch, branchList, branchCreate, branchDelete, branchRename, switch, merge, rebase, stashPush, stashList, stashShow, stashApply, stashPop, stashDrop.',
+          );
+      }
+    },
+    help() {
+      return (
+        'Use local repository-scoped git operations only. ' +
+        'Read: status, diff, log, show, revParse, currentBranch, branchList, stashList, stashShow. ' +
+        'Write: add, restore, commit, branchCreate, branchDelete, branchRename, switch, merge, rebase, stashPush, stashApply, stashPop, stashDrop. ' +
+        'The tool does not expose raw git commands, push, pull, fetch, config, hooks, remotes, or any network operation. ' +
+        'Operations that could trigger repository-configured clean/smudge/process filters or merge drivers are refused when those executable settings are present.'
+      );
+    },
+  });
+};
+harden(makeGitTool);
 
 /**
  * @param {import('@endo/eventual-send').ERef<object>} host
