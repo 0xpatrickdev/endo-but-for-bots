@@ -157,6 +157,21 @@ yarn setup-fs-tools
 FAE_CWD=/path/to/project yarn setup-fs-tools
 ```
 
+Create a repository-scoped git tool separately when an agent needs local
+version-control authority without receiving shell authority:
+
+```bash
+yarn setup-git-tool
+# Or with a specific repository root:
+FAE_GIT_ROOT=/path/to/repo yarn setup-git-tool
+```
+
+The git tool covers local workflows such as status, diff, commits,
+branch management, merges, rebases, and stashes. It intentionally does
+not expose raw git commands, network operations, config changes, or hook
+management. Operations that could invoke repo-local executable filters
+or merge drivers are refused when those settings are present.
+
 Send a tool to an agent via the chat UI:
 
 ```
@@ -212,6 +227,7 @@ packages/fae/
 ├── fae-factory-setup.js      # Step 3: create fae-factory + default agent
 ├── setup-tools.js            # Create example tools in host inventory
 ├── setup-fs-tools.js         # Create filesystem tools (FAE_CWD)
+├── setup-git-tool.js         # Create local-only git tool (FAE_GIT_ROOT)
 ├── setup-with-tools.js       # All-in-one: provider + factory + tools
 ├── src/
 │   ├── extract-tool-calls.js # XML tool call parser
@@ -226,5 +242,6 @@ packages/fae/
     ├── write-file.js         # FaeTool: write files under root
     ├── edit-file.js          # FaeTool: edit files under root
     ├── list-dir.js           # FaeTool: list directory under root
-    └── run-command.js        # FaeTool: run shell commands in root
+    ├── run-command.js        # FaeTool: run shell commands in root
+    └── git.js                # FaeTool: local git operations for one repo
 ```
