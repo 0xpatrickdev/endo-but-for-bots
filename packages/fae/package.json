@@ -37,6 +37,7 @@
     "smoke": "ava --serial --timeout=10m scripts/smoke.test.js",
     "test": "ava",
     "test:c8": "c8 ${C8_OPTIONS:-} ava",
+    "setup-git-tool": "endo run --UNCONFINED setup-git-tool.js --powers @agent",
     "lint": "yarn lint:eslint",
     "lint-fix": "yarn lint:eslint --fix",
     "lint:eslint": "eslint '**/*.js'"
