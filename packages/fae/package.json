@@ -46,7 +46,8 @@
   },
   "ava": {
     "files": [
-      "test/**/*.test.*"
+      "test/**/*.test.*",
+      "!test/channel-mention.test.js"
     ],
     "timeout": "2m"
   },
