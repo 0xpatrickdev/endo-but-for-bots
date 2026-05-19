@@ -105,7 +105,7 @@ export function makeMockPowers(options = {}) {
     },
 
     list(...petNamePath) {
-      const prefix = petNamePath.length ? `${petNamePath.join('/')}.` : '';
+      const prefix = petNamePath.length ? `${petNamePath.join('/')}/` : '';
       const names = new Set();
       for (const k of directory.keys()) {
         if (prefix ? k.startsWith(prefix) && k !== prefix : true) {
