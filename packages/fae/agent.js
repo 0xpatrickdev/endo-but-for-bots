@@ -58,7 +58,7 @@ const FaeFactoryInterface = M.interface('FaeFactory', {
  *
  * @param {any} powers - Guest powers (manager's own or a sub-guest's)
  * @param {Promise<object> | object | undefined} context - Context for cancellation
- * @param {{ host: string, model: string, authToken: string }} providerConfig - LLM provider config
+ * @param {{ host?: string, model?: string, authToken?: string, provider?: { chat: (messages: object[], tools: object[]) => Promise<{ message: object }> } }} providerConfig - LLM provider config. Pass `provider` to inject a pre-built provider (e.g. for tests); otherwise host/model/authToken are used to construct one.
  * @param {string} [systemPrompt] - Override system prompt (defaults to guestSystemPrompt)
  * @returns {Promise<void>}
  */
@@ -81,11 +81,13 @@ export const spawnWorkerLoop = async (
     return null;
   };
 
-  const provider = createProvider({
-    LAL_HOST: providerConfig.host,
-    LAL_MODEL: providerConfig.model,
-    LAL_AUTH_TOKEN: providerConfig.authToken,
-  });
+  const provider =
+    providerConfig.provider ||
+    createProvider({
+      LAL_HOST: providerConfig.host,
+      LAL_MODEL: providerConfig.model,
+      LAL_AUTH_TOKEN: providerConfig.authToken,
+    });
 
   /**
    * @param {object[]} messages
