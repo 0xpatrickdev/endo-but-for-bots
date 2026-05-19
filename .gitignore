@@ -120,5 +120,3 @@ api-docs
 !packages/where/types.d.ts
 !packages/ocapn/src/codec-interface.d.ts
 !packages/ocapn-noise/src/types.d.ts
-
-packages/fae/tmp
