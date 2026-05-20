@@ -12,8 +12,21 @@
 > here) completes the mount surface; (2)
 > [daemon-git-capability](daemon-git-capability.md) builds a local git
 > capability on top of it; (3)
-> [daemon-git-remotes](daemon-git-remotes.md) adds the remote MVP on top
-> of (2).  Read in that order.
+> [daemon-git-remotes](daemon-git-remotes.md) adds remote git on top of
+> (2).  Read in that order.
+
+## Summary
+
+Finish the `EndoMount` capability so it can serve as the live,
+handle-first filesystem basis for agent tools and the revised git
+capability.  Three pieces land together: `EndoMount.snapshot()` becomes
+real instead of throwing; an `EndoMountEntry` value type carries
+mount-scoped descriptors for paths that may not currently exist (its
+authority is the issuing mount, not the entry itself); and a hidden
+`EndoMountBacking` Exo facet on the mount formula gives trusted daemon
+code physical-worktree access without leaking host paths to guests.
+The mount surface stays read-compatible with `ReadableTree` /
+`ReadableBlob`.
 
 ## What You Should Know First
 

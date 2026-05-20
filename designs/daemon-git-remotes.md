@@ -12,6 +12,21 @@
 > [daemon-git-capability](daemon-git-capability.md) (doc 2) as
 > prerequisites.
 
+## Summary
+
+Add the remote half of the git story as an explicit composition: local
+`Git` plus separately authorized HTTPS transport plus non-extractable
+bearer or basic credentials, bundled into a `GitRemote` capability that
+agents call directly.  Credential injection runs through a daemon-shipped
+`GIT_ASKPASS` helper fed by an anonymous pipe (fd-only, never argv or
+env).  CapTP carries control-plane authority (which repo, which endpoint,
+which credential, which directions and refs) while git packfile bytes
+travel on the bounded HTTPS data plane outside CapTP messages.  Endpoint
+policy is controller-owned; the guest receives `GitRemote` only.
+Controllers (`GitRemoteController`, `GitCredentialController`) and
+collection capabilities (`GitRemoteSet`) land in a later phase so the
+first phase stays minimum.
+
 ## What is the Problem Being Solved?
 
 The local-worktree design in

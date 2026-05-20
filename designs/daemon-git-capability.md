@@ -12,6 +12,24 @@
 > prerequisite and is required by
 > [daemon-git-remotes](daemon-git-remotes.md) (doc 3).
 
+## Summary
+
+Define a local-git capability `Git` whose authority is derived from an
+already-authorized `EndoMount` (not from a path string).  Worktree
+operations (status / diff / log / add / commit / branch / merge /
+rebase / stash) and historical tree reads (`tree(ref)`) live on `Git`;
+`Git.readOnly()` attenuates the cap for read-only auditor agents,
+matching the `EndoMount.readOnly()` idiom.  Path-bearing inputs are
+`EndoMountEntry` values, not free-form strings.  The first backend is
+native git (`NativeGitBackend`) on a pinned `git >= 2.30`, with the
+hardening envelope (sanitized env, askpass-only authentication,
+allowlist, repo-local-filter rejection) called out separately from the
+essential `GitBackend` contract so a future JS backend can implement
+the essential parts without inheriting native-only methods.  Structured
+result shapes for diff / show / merge / rebase / stash arrive in a
+later phase; the first phase returns those as text so consumers can
+start integrating against the path-bearing inputs immediately.
+
 ## What is the Problem Being Solved?
 
 Agents need useful local git workflows without receiving ambient shell
