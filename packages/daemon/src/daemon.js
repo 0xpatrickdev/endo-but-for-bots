@@ -642,6 +642,36 @@ const makeDaemonCore = async (
   } = powers;
   const { randomHex256, generateEd25519Keypair } = cryptoPowers;
   const contentStore = persistencePowers.makeContentStore();
+  /**
+   * @returns {{ cancelled: Promise<unknown>, revoke: () => void }}
+   */
+  const makeRuntimeRevocation = () => {
+    /** @type {(value: unknown) => void} */
+    let resolveCancelled = () => {};
+    const cancelled = new Promise(resolve => {
+      resolveCancelled = resolve;
+    });
+    return harden({
+      cancelled,
+      revoke: () => resolveCancelled(undefined),
+    });
+  };
+  /**
+   * @param {Map<string, { cancelled: Promise<unknown>, revoke: () => void }>} table
+   * @param {string} formulaNumber
+   */
+  const runtimeRevocationFor = (table, formulaNumber) => {
+    let revocation = table.get(formulaNumber);
+    if (revocation === undefined) {
+      revocation = makeRuntimeRevocation();
+      table.set(formulaNumber, revocation);
+    }
+    return revocation;
+  };
+  /** @type {Map<string, { cancelled: Promise<unknown>, revoke: () => void }>} */
+  const gitRemoteRuntimeRevocations = new Map();
+  /** @type {Map<string, { cancelled: Promise<unknown>, revoke: () => void }>} */
+  const gitCredentialRuntimeRevocations = new Map();
   /** @type {WeakMap<object, () => Promise<unknown>>} */
   const archiveTarByGitTree = new WeakMap();
   /**
@@ -847,6 +877,10 @@ const makeDaemonCore = async (
     return harden({
       ...metadata,
       secretPath: gitCredentialStatePath(formulaNumber),
+      cancelled: runtimeRevocationFor(
+        gitCredentialRuntimeRevocations,
+        formulaNumber,
+      ).cancelled,
       ...(metadata.kind === 'basic' &&
         state.username !== metadata.username && {
           username: `${state.username}`,
@@ -874,6 +908,7 @@ const makeDaemonCore = async (
       },
       async revoke() {
         const state = await readGitRemoteStateFile(formulaNumber);
+        runtimeRevocationFor(gitRemoteRuntimeRevocations, formulaNumber).revoke();
         await writeGitRemoteState(formulaNumber, {
           revoked: true,
           policy: state.policy,
@@ -892,6 +927,9 @@ const makeDaemonCore = async (
         getGitCredentialUse(/** @type {FormulaIdentifier} */ (id)),
       getCredentialMetadata: id =>
         getGitCredentialMetadata(/** @type {FormulaIdentifier} */ (id)),
+      getCancelled: () =>
+        runtimeRevocationFor(gitRemoteRuntimeRevocations, formulaNumber)
+          .cancelled,
     });
   /** @type {WeakMap<object, ERef<WorkerDaemonFacet>>} */
   const workerDaemonFacets = new WeakMap();
@@ -3357,6 +3395,10 @@ const makeDaemonCore = async (
           const currentState = await readGitCredentialState(
             credentialFormulaNumber,
           );
+          runtimeRevocationFor(
+            gitCredentialRuntimeRevocations,
+            credentialFormulaNumber,
+          ).revoke();
           await writeGitCredentialState(credentialFormulaNumber, {
             ...currentState,
             revoked: true,

@@ -1146,6 +1146,7 @@ harden(mergeRemotePolicy);
  *   appendAudit: (record: GitRemoteAuditRecord) => Promise<void>,
  *   getCredentialUse: (id: string) => Promise<GitCredentialUse>,
  *   getCredentialMetadata: (id: string) => Promise<GitCredentialMetadata>,
+ *   getCancelled: () => Promise<unknown>,
  * }} GitRemoteState
  */
 
@@ -1211,10 +1212,22 @@ export const makeGitRemote = ({ repoRoot, gitPowers, policy, state }) => {
    */
   const runGitRaw = async (args, credentialUse = undefined) => {
     const root = await getRepoRoot();
+    /** @type {Promise<unknown>[]} */
+    const cancellations = [];
+    if (state !== undefined) {
+      cancellations.push(state.getCancelled());
+    }
+    if (credentialUse?.cancelled !== undefined) {
+      cancellations.push(credentialUse.cancelled);
+    }
+    const cancelled =
+      cancellations.length === 0 ? undefined : Promise.race(cancellations);
     try {
       return credentialUse === undefined
-        ? await gitPowers.runGit(root, args)
-        : await gitPowers.runGitCredentialed(root, args, credentialUse);
+        ? await gitPowers.runGit(root, args, { cancelled })
+        : await gitPowers.runGitCredentialed(root, args, credentialUse, {
+            cancelled,
+          });
     } catch (error) {
       const err =
         /** @type {Error & { stdout?: string, stderr?: string, code?: number }} */ (

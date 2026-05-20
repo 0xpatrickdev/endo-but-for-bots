@@ -482,16 +482,19 @@ export const makeGitPowers = ({ popen, filePowers }) => {
   /**
    * @param {string} file
    * @param {string[]} args
-   * @param {object} options
+   * @param {{ cancelled?: Promise<unknown>, [option: string]: unknown }} options
    * @returns {Promise<{ stdout: string, stderr: string }>}
    */
   const execFileText = (file, args, options) =>
     new Promise((resolve, reject) => {
-      popen.execFile(
+      const { cancelled, ...execOptions } = options;
+      let settled = false;
+      const child = popen.execFile(
         file,
         args,
-        /** @type {any} */ (options),
+        /** @type {any} */ (execOptions),
         (error, stdout, stderr) => {
+          settled = true;
           const stdoutText = /** @type {string} */ (
             /** @type {unknown} */ (stdout)
           );
@@ -506,6 +509,20 @@ export const makeGitPowers = ({ popen, filePowers }) => {
           }
         },
       );
+      if (cancelled !== undefined) {
+        void cancelled.then(
+          () => {
+            if (!settled) {
+              child.kill();
+            }
+          },
+          () => {
+            if (!settled) {
+              child.kill();
+            }
+          },
+        );
+      }
     });
 
   /**
@@ -571,14 +588,16 @@ export const makeGitPowers = ({ popen, filePowers }) => {
   /**
    * @param {string} repoRoot
    * @param {string[]} args
+   * @param {import('./types.js').GitRunOptions} [options]
    */
-  const runGit = async (repoRoot, args) => {
+  const runGit = async (repoRoot, args, options = {}) => {
     await verifyGitVersion();
     return execFileText('git', [...GIT_BASE_ARGS, ...args], {
       cwd: repoRoot,
       env: makeGitEnv(repoRoot),
       timeout: GIT_TIMEOUT_MS,
       maxBuffer: GIT_MAX_BUFFER,
+      cancelled: options.cancelled,
     });
   };
 
@@ -597,8 +616,14 @@ export const makeGitPowers = ({ popen, filePowers }) => {
    * @param {string} repoRoot
    * @param {string[]} args
    * @param {import('./types.js').GitCredentialUse} credential
+   * @param {import('./types.js').GitRunOptions} [options]
    */
-  const runGitCredentialed = async (repoRoot, args, credential) => {
+  const runGitCredentialed = async (
+    repoRoot,
+    args,
+    credential,
+    options = {},
+  ) => {
     await verifyGitVersion();
     const helperPath = await ensureCredentialHelper(repoRoot);
     const helperCommand = `!${shellQuote(process.execPath)} ${shellQuote(
@@ -617,6 +642,7 @@ export const makeGitPowers = ({ popen, filePowers }) => {
         env: makeGitEnv(repoRoot),
         timeout: GIT_TIMEOUT_MS,
         maxBuffer: GIT_MAX_BUFFER,
+        cancelled: options.cancelled,
       },
     );
   };

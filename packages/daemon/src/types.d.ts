@@ -1074,6 +1074,11 @@ export type GitCredentialMetadata = {
 
 export type GitCredentialUse = GitCredentialMetadata & {
   secretPath: string;
+  cancelled?: Promise<unknown>;
+};
+
+export type GitRunOptions = {
+  cancelled?: Promise<unknown>;
 };
 
 export type GitRemotePolicy = {
@@ -1604,6 +1609,7 @@ export type GitPowers = {
   runGit: (
     repoRoot: string,
     args: string[],
+    options?: GitRunOptions,
   ) => Promise<{ stdout: string; stderr: string }>;
   runGitBytes: (
     repoRoot: string,
@@ -1617,6 +1623,7 @@ export type GitPowers = {
     repoRoot: string,
     args: string[],
     credential: GitCredentialUse,
+    options?: GitRunOptions,
   ) => Promise<{ stdout: string; stderr: string }>;
   getRepositoryRoot: (configuredRoot: string) => Promise<string>;
   getRepositoryIdentity: (

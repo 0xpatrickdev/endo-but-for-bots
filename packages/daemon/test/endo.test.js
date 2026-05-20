@@ -30,8 +30,12 @@ import {
   makeReaderRef,
   makeRefIterator,
 } from '../index.js';
-import { makeCryptoPowers } from '../src/daemon-node-powers.js';
+import {
+  makeCryptoPowers,
+  makeGitPowers,
+} from '../src/daemon-node-powers.js';
 import { makeDaemonDatabase } from '../src/daemon-database-node.js';
+import { makeGitRemote } from '../src/git.js';
 import { formatId, parseId } from '../src/formula-identifier.js';
 import {
   formatLocator,
@@ -3968,6 +3972,127 @@ const createGitFixture = async repoPath => {
   await git(repoPath, ['add', 'README.md']);
   await git(repoPath, ['commit', '-m', 'initial']);
 };
+
+test('Git powers kill an in-flight native git process when cancelled', async t => {
+  const { promise: cancelled, resolve: cancel } = makePromiseKit();
+  let killed = false;
+  let sawFetch = false;
+  const popen = harden({
+    execFile(_file, args, _options, callback) {
+      if (args[0] === '--version') {
+        callback(null, 'git version 2.45.0\n', '');
+        return harden({ kill: () => t.fail('version check should not die') });
+      }
+      sawFetch = args.includes('fetch');
+      return harden({
+        kill() {
+          killed = true;
+          callback(
+            Object.assign(new Error('cancelled'), {
+              code: 'SIGTERM',
+              stderr: 'cancelled',
+            }),
+            '',
+            'cancelled',
+          );
+        },
+      });
+    },
+  });
+  const filePowers = harden({
+    joinPath: (...segments) => path.join(...segments),
+    makePath: async () => undefined,
+    writeFileText: async () => undefined,
+  });
+  const gitPowers = makeGitPowers({ popen, filePowers });
+
+  const running = gitPowers.runGit('/tmp/repo', ['fetch', 'origin'], {
+    cancelled,
+  });
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+  t.true(sawFetch);
+  t.false(killed);
+  cancel(undefined);
+  await t.throwsAsync(running, { message: /cancelled/u });
+  t.true(killed);
+});
+
+test('GitRemote forwards credential cancellation to native git', async t => {
+  const { promise: remoteCancelled } = makePromiseKit();
+  const { promise: credentialCancelled, resolve: cancelCredential } =
+    makePromiseKit();
+  let receivedCancellation;
+  const gitPowers = harden({
+    getRepositoryRoot: async root => root,
+    runGit: async () => {
+      throw new Error('expected credentialed git invocation');
+    },
+    runGitCredentialed: async (_root, _args, _credential, options) => {
+      receivedCancellation = options.cancelled;
+      cancelCredential(undefined);
+      await options.cancelled;
+      throw Object.assign(new Error('cancelled'), {
+        code: 'SIGTERM',
+        stderr: 'cancelled',
+      });
+    },
+    runGitBytes: async () => {
+      throw new Error('unexpected git bytes invocation');
+    },
+    runGitReader: async () => {
+      throw new Error('unexpected git reader invocation');
+    },
+    getRepositoryIdentity: async () =>
+      harden({
+        gitDir: '/tmp/repo/.git',
+        commonDir: '/tmp/repo/.git',
+        gitDirIdentity: '1:1',
+        commonDirIdentity: '1:1',
+      }),
+    assertNoExecutableRepoConfig: async () => undefined,
+    checkRefFormat: async () => undefined,
+  });
+  const remote = makeGitRemote({
+    repoRoot: '/tmp/repo',
+    gitPowers,
+    policy: harden({
+      remote: 'origin',
+      url: 'https://example.com/repo.git',
+      directions: ['fetch'],
+      credentialId: 'credential-id',
+    }),
+    state: harden({
+      read: async () => harden({ revoked: false, policy: {}, audit: [] }),
+      updatePolicy: async () => undefined,
+      revoke: async () => undefined,
+      appendAudit: async () => undefined,
+      getCredentialUse: async () =>
+        harden({
+          kind: 'bearer',
+          audience: 'https://example.com',
+          label: 'example',
+          revoked: false,
+          secretPath: '/sealed/credential.json',
+          cancelled: credentialCancelled,
+        }),
+      getCredentialMetadata: async () =>
+        harden({
+          kind: 'bearer',
+          audience: 'https://example.com',
+          label: 'example',
+          revoked: false,
+        }),
+      getCancelled: () => remoteCancelled,
+    }),
+  });
+
+  await t.throwsAsync(() => remote.fetch({ refspecs: ['main'] }), {
+    message: /git fetch failed.*cancelled/su,
+  });
+  t.truthy(receivedCancellation);
+});
 
 // --- Retention sync tests ---
 
