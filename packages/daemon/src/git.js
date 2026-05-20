@@ -762,6 +762,22 @@ const requireRemoteToken = (value, name) => {
 harden(requireRemoteToken);
 
 /**
+ * @param {string} ref
+ * @param {string} allowed
+ */
+const refMatchesPolicy = (ref, allowed) => {
+  const target = ref.startsWith('+') ? ref.slice(1) : ref;
+  if (allowed.endsWith('*')) {
+    return target.startsWith(allowed.slice(0, -1));
+  }
+  if (allowed.endsWith('/')) {
+    return target.startsWith(allowed);
+  }
+  return target === allowed;
+};
+harden(refMatchesPolicy);
+
+/**
  * @param {object} args
  * @param {string} args.repoRoot
  * @param {GitPowers} args.gitPowers
@@ -831,12 +847,7 @@ export const makeGitRemote = ({ repoRoot, gitPowers, policy }) => {
     requireRevision(ref, 'ref');
     if (
       allowedRefs !== undefined &&
-      !allowedRefs.some(
-        allowed =>
-          ref === allowed ||
-          ref.startsWith(`${allowed}:`) ||
-          ref.endsWith(`:${allowed}`),
-      )
+      !allowedRefs.some(allowed => refMatchesPolicy(ref, allowed))
     ) {
       throw new Error(`Git remote policy does not allow ref ${q(ref)}`);
     }
