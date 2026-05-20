@@ -3927,6 +3927,7 @@ test('readable tree lookup unknown name throws', async t => {
  * @param {Record<string, string>} files - Map of relative path to content.
  */
 const createMountFixture = async (basePath, files) => {
+  await fs.promises.rm(basePath, { recursive: true, force: true });
   await fs.promises.mkdir(basePath, { recursive: true });
   for (const [relPath, content] of Object.entries(files)) {
     const fullPath = path.join(basePath, relPath);
@@ -3954,6 +3955,7 @@ const git = async (cwd, args) =>
 
 /** @param {string} repoPath */
 const createGitFixture = async repoPath => {
+  await fs.promises.rm(repoPath, { recursive: true, force: true });
   await fs.promises.mkdir(repoPath, { recursive: true });
   await git(repoPath, ['init', '-b', 'main']);
   await git(repoPath, ['config', 'user.name', 'Endo Test']);
@@ -4664,6 +4666,8 @@ test('provideGitRemote supports bounded local fetch, pull, and push', async t =>
   const repoPath = path.join(config.statePath, '..', 'git-remote-repo');
   const barePath = path.join(config.statePath, '..', 'git-remote-bare.git');
   const peerPath = path.join(config.statePath, '..', 'git-remote-peer');
+  await fs.promises.rm(barePath, { recursive: true, force: true });
+  await fs.promises.rm(peerPath, { recursive: true, force: true });
   await createGitFixture(repoPath);
   await git(repoPath, ['init', '--bare', barePath]);
   await git(repoPath, ['remote', 'add', 'origin', barePath]);
@@ -4708,6 +4712,10 @@ test('provideGitRemote supports bounded local fetch, pull, and push', async t =>
   await E(gitCap).commit('local work');
   const pushResult = await E(remote).push({ source: 'main', target: 'main' });
   t.regex(pushResult.output, /main/u);
+  await t.throwsAsync(
+    () => E(remote).push({ source: 'main', forceWithLease: true }),
+    { message: /does not allow force push/ },
+  );
 
   const fetchOnly = await E(host).provideGitRemote(
     {

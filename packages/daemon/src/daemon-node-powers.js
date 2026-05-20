@@ -346,8 +346,11 @@ export const makeFilePowers = ({ fs, path: fspath }) => {
   /** @param {string} path */
   const statPath = async path => {
     const stat = await fs.promises.stat(path);
+    const type = /** @type {'directory' | 'file'} */ (
+      stat.isDirectory() ? 'directory' : 'file'
+    );
     return harden({
-      type: stat.isDirectory() ? 'directory' : 'file',
+      type,
       size: stat.size,
       mtimeMs: stat.mtimeMs,
     });
@@ -444,11 +447,17 @@ export const makeGitPowers = ({ popen, filePowers }) => {
         args,
         /** @type {any} */ (options),
         (error, stdout, stderr) => {
+          const stdoutText = /** @type {string} */ (
+            /** @type {unknown} */ (stdout)
+          );
+          const stderrText = /** @type {string} */ (
+            /** @type {unknown} */ (stderr)
+          );
           if (error) {
-            Object.assign(error, { stdout, stderr });
+            Object.assign(error, { stdout: stdoutText, stderr: stderrText });
             reject(error);
           } else {
-            resolve({ stdout, stderr });
+            resolve({ stdout: stdoutText, stderr: stderrText });
           }
         },
       );

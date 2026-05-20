@@ -236,6 +236,7 @@ type GitRemoteFormula = {
   url?: string;
   directions: Array<'fetch' | 'pull' | 'push'>;
   allowedRefs?: string[];
+  allowForcePush?: boolean;
 };
 
 export type MountDeferredTaskParams = {
@@ -879,7 +880,7 @@ export interface EndoMountEntry {
 
 export interface EndoMountFile {
   text(): Promise<string>;
-  streamBase64(): FarRef<Reader<Uint8Array>>;
+  streamBase64(): FarRef<Reader<string>>;
   json(): Promise<unknown>;
   writeText(content: string): Promise<void>;
   appendText(content: string): Promise<void>;
@@ -995,6 +996,7 @@ export type GitRemotePolicy = {
   url?: string;
   directions: Array<'fetch' | 'pull' | 'push'>;
   allowedRefs?: string[];
+  allowForcePush?: boolean;
 };
 
 export interface EndoGitRemote {
@@ -1149,6 +1151,7 @@ export interface EndoHost extends EndoAgent {
       url?: string;
       directions?: Array<'fetch' | 'pull' | 'push'>;
       allowedRefs?: string[];
+      allowForcePush?: boolean;
     },
     petName: string | string[],
   ): Promise<EndoGitRemote>;
@@ -1678,6 +1681,9 @@ type FormulateNumberedHostParams = {
 
 export type FormulaValueTypes = {
   directory: EndoDirectory;
+  mount: EndoMount;
+  git: EndoGit;
+  'git-remote': EndoGitRemote;
   network: EndoNetwork;
   peer: EndoGateway;
   'pet-store': PetStore;
@@ -1875,7 +1881,7 @@ export interface DaemonCore {
     mountPath: string,
     readOnly: boolean,
     deferredTasks: DeferredTasks<MountDeferredTaskParams>,
-  ) => FormulateResult<unknown>;
+  ) => FormulateResult<EndoMount>;
 
   formulateGit: (
     mountId: FormulaIdentifier,
@@ -1892,7 +1898,7 @@ export interface DaemonCore {
   formulateScratchMount: (
     readOnly: boolean,
     deferredTasks: DeferredTasks<ScratchMountDeferredTaskParams>,
-  ) => FormulateResult<unknown>;
+  ) => FormulateResult<EndoMount>;
 
   formulateInvitation: (
     hostAgentId: FormulaIdentifier,

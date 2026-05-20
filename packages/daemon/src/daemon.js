@@ -2658,7 +2658,7 @@ const makeDaemonCore = async (
       return makeGit({ worktree, repoRoot, gitPowers });
     },
     'git-remote': async (
-      { git, remote, url, directions, allowedRefs },
+      { git, remote, url, directions, allowedRefs, allowForcePush },
       context,
     ) => {
       if (gitPowers === undefined) {
@@ -2675,7 +2675,13 @@ const makeDaemonCore = async (
       return makeGitRemote({
         repoRoot,
         gitPowers,
-        policy: harden({ remote, url, directions, allowedRefs }),
+        policy: harden({
+          remote,
+          url,
+          directions,
+          allowedRefs,
+          allowForcePush,
+        }),
       });
     },
     lookup: ({ hub, path }, context) =>
@@ -3440,7 +3446,7 @@ const makeDaemonCore = async (
 
   /** @type {DaemonCore['formulateMount']} */
   const formulateMount = async (mountPath, readOnly, deferredTasks) => {
-    return /** @type {FormulateResult<unknown>} */ (
+    return /** @type {FormulateResult<import('./types.js').EndoMount>} */ (
       withFormulaGraphLock(async () => {
         await null;
         const formulaNumber = /** @type {FormulaNumber} */ (
@@ -3524,7 +3530,7 @@ const makeDaemonCore = async (
 
   /** @type {DaemonCore['formulateScratchMount']} */
   const formulateScratchMount = async (readOnly, deferredTasks) => {
-    return /** @type {FormulateResult<unknown>} */ (
+    return /** @type {FormulateResult<import('./types.js').EndoMount>} */ (
       withFormulaGraphLock(async () => {
         await null;
         const formulaNumber = /** @type {FormulaNumber} */ (
