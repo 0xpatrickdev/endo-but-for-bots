@@ -658,10 +658,10 @@ the root are invisible. Use readOnly() for an attenuated view.
 
 Get documentation for this interface or a specific method.
 
-## has(...pathSegments) -> Promise<boolean>
+## has(...pathSegments | entry) -> Promise<boolean>
 
 Check if a path exists within the mount.
-Each argument is one path segment: has("dir", "file.txt").
+Either pass path segments (has("dir", "file.txt")) or a single EndoMountEntry.
 
 ## list(...pathSegments) -> Promise<string[]>
 
@@ -705,10 +705,22 @@ Rename an entry within the mount.
 from: string | string[] — Source name or path segments.
 to: string | string[] — Destination name or path segments.
 
-## createDirectory(path) -> Promise<EndoMount>
+## makeDirectory(path) -> Promise<void>
 
-Create a directory (and missing parents), returning the directory mount.
+Create a directory (and missing parents) at the given path.
 path: string | string[] | EndoMountEntry — Name, path segments, or mount entry.
+
+## makeFile(path, content?) -> Promise<void>
+
+Create a file at the given path, with optional initial content.
+path: string | string[] | EndoMountEntry — Name, path segments, or mount entry.
+content: string | Uint8Array (optional) — Initial bytes. An existing file is truncated when content is provided.
+
+## stat(path) -> Promise<EndoMountStat | undefined>
+
+Query metadata for a path within the mount.
+path: string | string[] | EndoMountEntry — Name, path segments, or mount entry.
+Returns undefined when the path is missing or escapes the mount.
 
 ## readOnly() -> EndoMount
 

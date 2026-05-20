@@ -434,7 +434,7 @@ export const makeGit = ({
     return Promise.all(
       parseStatusPorcelainV2(stdout).map(async rawEntry => {
         const entry = await entryFromGitPath(rawEntry.path);
-        const liveNode = (await E(entry).exists())
+        const liveNode = (await E(worktree).has(entry))
           ? await E(worktree).lookup(entry).catch(() => undefined)
           : undefined;
         return harden({

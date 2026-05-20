@@ -170,7 +170,7 @@ either layer alone is insufficient:
 - **Shape gate** — `assertIsMountCap` in
   [`src/sandbox/slice.js`](./src/sandbox/slice.js) probes
   `E(cap).__getMethodNames__()` and checks for the
-  `['readText', 'writeText', 'createDirectory', 'has', 'list']` subset.
+  `['readText', 'writeText', 'makeDirectory', 'has', 'list']` subset.
   This produces a friendly, agent-named error when the operator
   pet-names something that isn't a Mount (a guest, a value blob, a
   typo).  It is **not** an identity check: any `makeExo` / `Far` exo

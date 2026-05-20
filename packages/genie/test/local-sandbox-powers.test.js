@@ -107,7 +107,7 @@ test('provideHostPath round-trips a cap minted by makeMountCapForPath', async t 
     'readText',
     'maybeReadText',
     'writeText',
-    'createDirectory',
+    'makeDirectory',
     'has',
     'list',
     'lookup',
@@ -156,7 +156,7 @@ test('assertIsMountCap is a shape gate; provideHostPath is the identity gate', a
     list: M.call().rest(M.arrayOf(M.string())).returns(M.promise()),
     readText: M.call(M.any()).returns(M.promise()),
     writeText: M.call(M.any(), M.string()).returns(M.promise()),
-    createDirectory: M.call(M.any()).returns(M.promise()),
+    makeDirectory: M.call(M.any()).returns(M.promise()),
   });
   const spoof = makeExo('SpoofMount', SpoofInterface, {
     async has() {
@@ -171,7 +171,7 @@ test('assertIsMountCap is a shape gate; provideHostPath is the identity gate', a
     async writeText() {
       await null;
     },
-    async createDirectory() {
+    async makeDirectory() {
       await null;
     },
   });
@@ -363,7 +363,7 @@ test('Mount path-segment veto rejects absolute path segments', async t => {
   await t.throwsAsync(() => E(mount).readText('\\Windows\\System32'), {
     message: /must not be absolute/,
   });
-  // The same veto applies to writeText, createDirectory, lookup, etc.
+  // The same veto applies to writeText, makeDirectory, lookup, etc.
   // Pinning one more arm (lookup) here guards against the next
   // refactor reintroducing the gap on the path that was originally
   // attacked.

@@ -4447,7 +4447,7 @@ test('mount external directory - move', async t => {
   t.is(actualRenamed, 'move me');
 });
 
-test('mount external directory - createDirectory', async t => {
+test('mount external directory - makeDirectory', async t => {
   const { host, config } = await prepareHost(t);
 
   const mountPath = path.join(config.statePath, '..', 'mount-test-mkdir');
@@ -4456,7 +4456,7 @@ test('mount external directory - createDirectory', async t => {
   await E(host).provideMount(mountPath, 'test-mount-mkdir');
   const mount = await E(host).lookup(['test-mount-mkdir']);
 
-  await E(mount).createDirectory(['sub', 'deep']);
+  await E(mount).makeDirectory(['sub', 'deep']);
   t.true(await E(mount).has('sub'));
   t.true(await E(mount).has('sub', 'deep'));
 
@@ -4489,7 +4489,7 @@ test('mount read-only rejects writes', async t => {
   await t.throwsAsync(E(mount).remove(['existing.txt']), {
     message: /read-only/,
   });
-  await t.throwsAsync(E(mount).createDirectory(['nope']), {
+  await t.throwsAsync(E(mount).makeDirectory(['nope']), {
     message: /read-only/,
   });
 
@@ -4636,7 +4636,7 @@ test('provideHostPath rejects a spoof that passes the genie shape gate', async t
   //   - `assertIsMountCap` (in `spawnAgent`'s workspace / rootfs
   //     pet-name branches) is a **shape** gate.  It probes
   //     `__getMethodNames__()` against the subset
-  //     ['readText', 'writeText', 'createDirectory', 'has', 'list']
+  //     ['readText', 'writeText', 'makeDirectory', 'has', 'list']
   //     and produces friendly, agent-named errors when an operator
   //     pet-names something that isn't a Mount.
   //   - `EndoHost.provideHostPath` is the **identity** gate.  It
@@ -4671,7 +4671,7 @@ test('provideHostPath rejects a spoof that passes the genie shape gate', async t
     list: M.call().rest(M.arrayOf(M.string())).returns(M.promise()),
     readText: M.call(M.any()).returns(M.promise()),
     writeText: M.call(M.any(), M.string()).returns(M.promise()),
-    createDirectory: M.call(M.any()).returns(M.promise()),
+    makeDirectory: M.call(M.any()).returns(M.promise()),
   });
   const spoof = makeExo('SpoofMount', SpoofInterface, {
     async has() {
@@ -4686,7 +4686,7 @@ test('provideHostPath rejects a spoof that passes the genie shape gate', async t
     async writeText() {
       await null;
     },
-    async createDirectory() {
+    async makeDirectory() {
       await null;
     },
   });
@@ -4702,7 +4702,7 @@ test('provideHostPath rejects a spoof that passes the genie shape gate', async t
   // is rejected by the identity gate.
   // eslint-disable-next-line no-underscore-dangle
   const methods = await E(spoof).__getMethodNames__();
-  for (const m of ['readText', 'writeText', 'createDirectory', 'has', 'list']) {
+  for (const m of ['readText', 'writeText', 'makeDirectory', 'has', 'list']) {
     t.true(
       methods.includes(m),
       `spoof must advertise ${m} to land in the saboteur-3 attack shape (got: ${methods.join(', ')})`,
@@ -4747,7 +4747,7 @@ test('mount file writeText and json', async t => {
   t.is(actualContent, '{"version": 2}');
 });
 
-test('mount entry descriptors support create, open, stat, and provenance', async t => {
+test('mount entry descriptors support has, lookup, stat, makeFile, and provenance', async t => {
   const { host, config } = await prepareHost(t);
 
   const mountPath = path.join(config.statePath, '..', 'mount-test-entry');
@@ -4765,24 +4765,24 @@ test('mount entry descriptors support create, open, stat, and provenance', async
   const createdEntry = await E(mount).entry(['src', 'created.txt']);
   t.is(await E(createdEntry).displayPath(), 'src/created.txt');
   t.deepEqual(await E(createdEntry).segments(), ['src', 'created.txt']);
-  t.false(await E(createdEntry).exists());
-  t.is(await E(createdEntry).stat(), undefined);
+  t.false(await E(mount).has(createdEntry));
+  t.is(await E(mount).stat(createdEntry), undefined);
 
-  const createdFile = await E(mount).createFile(createdEntry);
-  await E(createdFile).writeText('created');
+  await E(mount).makeFile(createdEntry, 'created');
+  const createdFile = await E(mount).lookup(createdEntry);
   await E(createdFile).append(' and appended');
   t.is(await E(createdFile).text(), 'created and appended');
-  t.true(await E(createdEntry).exists());
+  t.true(await E(mount).has(createdEntry));
 
   const stat = await E(mount).stat(createdEntry);
   t.like(stat, { kind: 'file', sizeBytes: 'created and appended'.length });
 
   const srcEntry = await E(mount).entry('src');
-  const srcDir = await E(mount).openDirectory(srcEntry);
+  const srcDir = await E(mount).lookup(srcEntry);
   t.deepEqual(await E(srcDir).list(), ['created.txt', 'existing.txt']);
 
   const childEntry = await E(srcEntry).child('created.txt');
-  const openedFile = await E(mount).openFile(childEntry);
+  const openedFile = await E(mount).lookup(childEntry);
   t.is(await E(openedFile).text(), 'created and appended');
 
   await t.throwsAsync(() => E(otherMount).readText(createdEntry), {
@@ -4804,7 +4804,7 @@ test('mount snapshots capture immutable tree and file views', async t => {
 
   const snapshotTree = await E(mount).snapshot();
   const snapshotFile = await E(snapshotTree).lookup('live.txt');
-  const liveFile = await E(mount).openFile('live.txt');
+  const liveFile = await E(mount).lookup('live.txt');
 
   const snapshotBlob = await E(liveFile).snapshot();
 

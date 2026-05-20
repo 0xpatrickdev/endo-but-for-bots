@@ -255,6 +255,28 @@ const makeMountExo = ctx => {
   };
 
   /**
+   * Distinguish a single `has(entry)` call from variadic `has(...segments)`.
+   *
+   * @param {Array<string | object>} args
+   * @returns {string[]}
+   */
+  const segmentsFromHasArgs = args => {
+    if (
+      args.length === 1 &&
+      typeof args[0] === 'object' &&
+      args[0] !== null
+    ) {
+      return segmentsFromPathArg(args[0]);
+    }
+    for (const arg of args) {
+      if (typeof arg !== 'string') {
+        throw new Error('has() path segments must be strings');
+      }
+    }
+    return /** @type {string[]} */ (args);
+  };
+
+  /**
    * @param {string | string[] | object} pathArg
    */
   const resolvePathArg = pathArg =>
@@ -301,12 +323,13 @@ const makeMountExo = ctx => {
   return makeExo('EndoMount', MountInterface, {
     help,
 
-    async has(...pathSegments) {
+    async has(...args) {
       await null;
+      const pathSegments = segmentsFromHasArgs(args);
       if (pathSegments.length === 0) {
         return true;
       }
-      const target = resolve(pathSegments);
+      const target = resolveFromRoot(pathSegments);
       const pathExists = await filePowers.exists(target);
       if (!pathExists) {
         return false;
@@ -341,56 +364,16 @@ const makeMountExo = ctx => {
       return makeEntry(normalizeSegments(currentSegments, pathSegments));
     },
 
-    async openDirectory(pathArg) {
-      await null;
-      const segments = segmentsFromPathArg(pathArg);
-      const target = resolveFromRoot(segments);
-      await assertConfined(target, confinementRoot, filePowers);
-      const isDir = await filePowers.isDirectory(target);
-      if (!isDir) {
-        throw new Error(`Path is not a directory: ${q(segments.join('/'))}`);
-      }
-      return makeMountExo({
-        ...ctx,
-        currentDir: target,
-        currentSegments: segments,
-        description: `Subdirectory of ${description}`,
-      });
-    },
-
-    async openFile(pathArg) {
-      await null;
-      const target = resolvePathArg(pathArg);
-      await assertConfined(target, confinementRoot, filePowers);
-      const isDir = await filePowers.isDirectory(target);
-      if (isDir) {
-        throw new Error('Path is a directory');
-      }
-      return makeMountFileExo(
-        target,
-        readOnly,
-        filePowers,
-        confinementRoot,
-        snapshotFile,
-      );
-    },
-
-    async createDirectory(pathArg) {
+    async makeDirectory(pathArg) {
       await null;
       assertWritable();
       const segments = segmentsFromPathArg(pathArg);
       const target = resolveFromRoot(segments);
       await assertConfinedOrAncestor(target, confinementRoot, filePowers);
       await filePowers.makePath(target);
-      return makeMountExo({
-        ...ctx,
-        currentDir: target,
-        currentSegments: segments,
-        description: `Subdirectory of ${description}`,
-      });
     },
 
-    async createFile(pathArg) {
+    async makeFile(pathArg, content) {
       await null;
       assertWritable();
       const target = resolvePathArg(pathArg);
@@ -400,16 +383,23 @@ const makeMountExo = ctx => {
       if (await filePowers.isDirectory(target)) {
         throw new Error('Path is a directory');
       }
-      if (!(await filePowers.exists(target))) {
-        await filePowers.writeFileText(target, '');
+      if (content === undefined) {
+        if (!(await filePowers.exists(target))) {
+          await filePowers.writeFileText(target, '');
+        }
+        return;
       }
-      return makeMountFileExo(
-        target,
-        readOnly,
-        filePowers,
-        confinementRoot,
-        snapshotFile,
-      );
+      if (typeof content === 'string') {
+        await filePowers.writeFileText(target, content);
+        return;
+      }
+      if (content instanceof Uint8Array) {
+        const writer = filePowers.makeFileWriter(target);
+        await writer.next(content);
+        await writer.return(undefined);
+        return;
+      }
+      throw new Error('makeFile content must be a string or Uint8Array');
     },
 
     async stat(pathArg) {
@@ -491,16 +481,16 @@ const makeMountExo = ctx => {
 harden(makeMountExo);
 
 /**
- * Create a mount-scoped logical entry descriptor.
+ * Create a mount-scoped logical entry descriptor.  Entries are values
+ * with no observational authority and no handle-minting authority of
+ * their own — those operations live on `EndoMount` and accept the
+ * entry as the path-bearing argument.
  *
  * @param {MountContext & { entrySegments: string[] }} ctx
  * @returns {object}
  */
 const makeMountEntryExo = ctx => {
-  const { entrySegments, confinementRoot, rootId, filePowers } = ctx;
-
-  const resolveEntry = () =>
-    resolveSegments(confinementRoot, confinementRoot, entrySegments, filePowers);
+  const { entrySegments, rootId } = ctx;
 
   const help = makeHelp({});
 
@@ -511,26 +501,6 @@ const makeMountEntryExo = ctx => {
     },
     displayPath() {
       return entrySegments.length === 0 ? '.' : entrySegments.join('/');
-    },
-    async exists() {
-      await null;
-      const target = resolveEntry();
-      try {
-        await assertConfined(target, confinementRoot, filePowers);
-        return true;
-      } catch {
-        return false;
-      }
-    },
-    async stat() {
-      await null;
-      const target = resolveEntry();
-      try {
-        await assertConfined(target, confinementRoot, filePowers);
-        return filePowers.statPath(target);
-      } catch {
-        return undefined;
-      }
     },
     child(name) {
       assertValidSegment(name);

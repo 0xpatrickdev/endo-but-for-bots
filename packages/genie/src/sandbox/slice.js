@@ -41,7 +41,7 @@ import { makeSandboxSpawner } from '../tools/sandbox-spawner.js';
 export const MOUNT_REQUIRED_METHODS = harden([
   'readText',
   'writeText',
-  'createDirectory',
+  'makeDirectory',
   'has',
   'list',
 ]);

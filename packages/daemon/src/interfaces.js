@@ -524,21 +524,24 @@ const MountEntryShape = M.remotable('EndoMountEntry');
 const PathArgShape = M.or(M.string(), PathSegmentsShape, MountEntryShape);
 
 export const MountInterface = M.interface('EndoMount', {
-  // ReadableTree-compatible surface
-  has: M.call().rest(PathSegmentsShape).returns(M.promise()),
+  // ReadableTree-compatible surface.  `has` accepts either variadic
+  // path segments or a single entry value; the impl validates the
+  // shape because rest-with-M.or pattern guards do not narrow
+  // remotables consistently across CapTP.
+  has: M.call().rest(M.any()).returns(M.promise()),
   list: M.call().rest(PathSegmentsShape).returns(M.promise()),
   lookup: M.call(PathArgShape).returns(M.promise()),
-  // Mount-scoped descriptors
+  // Mount-scoped descriptor minting (no I/O).
   entry: M.call(M.or(M.string(), PathSegmentsShape)).returns(MountEntryShape),
-  openDirectory: M.call(PathArgShape).returns(M.promise()),
-  openFile: M.call(PathArgShape).returns(M.promise()),
-  createDirectory: M.call(PathArgShape).returns(M.promise()),
-  createFile: M.call(PathArgShape).returns(M.promise()),
+  // Metadata.
   stat: M.call(PathArgShape).returns(M.promise()),
   // Raw data I/O
   readText: M.call(PathArgShape).returns(M.promise()),
   maybeReadText: M.call(PathArgShape).returns(M.promise()),
   writeText: M.call(PathArgShape, M.string()).returns(M.promise()),
+  // Path-form constructors.  Return void; obtain handles via lookup().
+  makeDirectory: M.call(PathArgShape).returns(M.promise()),
+  makeFile: M.call(PathArgShape).optional(M.any()).returns(M.promise()),
   // Mutation
   remove: M.call(PathArgShape).returns(M.promise()),
   move: M.call(PathArgShape, PathArgShape).returns(M.promise()),
@@ -566,8 +569,6 @@ export const MountFileInterface = M.interface('EndoMountFile', {
 export const MountEntryInterface = M.interface('EndoMountEntry', {
   segments: M.call().returns(PathSegmentsShape),
   displayPath: M.call().returns(M.string()),
-  exists: M.call().returns(M.promise()),
-  stat: M.call().returns(M.promise()),
   child: M.call(M.string()).returns(MountEntryShape),
   help: M.call().returns(M.string()),
 });

@@ -1054,7 +1054,7 @@ export const makeHostMaker = ({
         } else if (looksLikeTree) {
           // Subdirectory — create it then recurse.
           // eslint-disable-next-line no-await-in-loop
-          await E(dst).createDirectory(subPath);
+          await E(dst).makeDirectory(subPath);
           // eslint-disable-next-line no-await-in-loop
           await materializeTree(src, dst, subPath);
         } else {

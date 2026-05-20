@@ -86,7 +86,7 @@ import harden from '@endo/harden';
  * @property {(pathArg: string | string[], content: string) => Promise<void>} writeText
  * @property {(pathArg: string | string[]) => Promise<void>} remove
  * @property {(from: string | string[], to: string | string[]) => Promise<void>} move
- * @property {(pathArg: string | string[]) => Promise<void>} createDirectory
+ * @property {(pathArg: string | string[]) => Promise<void>} makeDirectory
  */
 
 /**
@@ -374,12 +374,12 @@ const makeMountVFS = ({ mount, rootDir = '/' }) => {
       return false;
     }
     const existed = await E(mount).has(...segments);
-    // `Mount.createDirectory` is idempotent (it bottoms out on
+    // `Mount.makeDirectory` is idempotent (it bottoms out on
     // `filePowers.makePath`, which uses `fs.mkdir({ recursive: true })`).
     // The genie's `mkdir(opts.recursive)` distinction collapses here:
     // both modes funnel to the same daemon call.  We diverge only on
     // the boolean return shape — `false` if the path already existed.
-    await E(mount).createDirectory(harden(segments));
+    await E(mount).makeDirectory(harden(segments));
     return !existed;
   };
 

@@ -36,14 +36,14 @@
  *
  *   1. `spawnAgent`'s Mount-cap validation (`packages/genie/main.js`),
  *      which only checks `__getMethodNames__()` against the subset
- *      `['readText', 'writeText', 'createDirectory', 'has', 'list']`.
+ *      `['readText', 'writeText', 'makeDirectory', 'has', 'list']`.
  *   2. `initWorkspaceMount` (`packages/genie/src/workspace/init.js`),
- *      which drives `has` / `readText` / `writeText` / `createDirectory`
+ *      which drives `has` / `readText` / `writeText` / `makeDirectory`
  *      for the template-seed flow.
  *   3. The `files` tool group's Mount-backed VFS adapter
  *      (`packages/genie/src/tools/vfs-mount.js`), which drives `has`,
  *      `list`, `lookup`, `readText`, `writeText`, `remove`, and
- *      `createDirectory`.  `lookup` returns either a sub-Mount-shaped exo
+ *      `makeDirectory`.  `lookup` returns either a sub-Mount-shaped exo
  *      (for directories) or a `MountFile`-shaped exo with a `text()`
  *      method (for files); the adapter uses both shapes to discriminate
  *      file vs. directory before listing / removing.
@@ -98,7 +98,7 @@ const LocalMountInterface = M.interface('LocalMount', {
   readText: M.call(PathArgShape).returns(M.promise()),
   maybeReadText: M.call(PathArgShape).returns(M.promise()),
   writeText: M.call(PathArgShape, M.string()).returns(M.promise()),
-  createDirectory: M.call(PathArgShape).returns(M.promise()),
+  makeDirectory: M.call(PathArgShape).returns(M.promise()),
   remove: M.call(PathArgShape).returns(M.promise()),
   move: M.call(PathArgShape, PathArgShape).returns(M.promise()),
 });
@@ -365,7 +365,7 @@ const makeLocalMountCap = (hostPath, capToHostPath, topLevelCaps, options) => {
     },
 
     /** @param {string | string[]} pathArg */
-    async createDirectory(pathArg) {
+    async makeDirectory(pathArg) {
       const target = resolve(segmentsOf(pathArg));
       await fs.mkdir(target, { recursive: true });
     },

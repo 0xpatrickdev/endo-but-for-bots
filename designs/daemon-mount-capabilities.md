@@ -5,7 +5,7 @@
 | **Created** | 2026-05-18 |
 | **Updated** | 2026-05-20 |
 | **Author** | 0xPatrick (prompted) |
-| **Status** | Proposed |
+| **Status** | In Progress |
 
 > **Read in order.** This is doc 1 of 3.  The trio works as one design:
 > (1) [daemon-mount-capabilities](daemon-mount-capabilities.md) (you are
@@ -586,10 +586,10 @@ later adapter or migration is mostly mechanical.
 - [x] Add `EndoMountEntryInterface`.
 - [x] Add `entry(path)` to `EndoMount`.
 - [x] Store normalized relative segments plus mount lineage provenance.
-- [ ] Add `segments()`, `displayPath()`, and `child()` on entries
+- [x] Add `segments()`, `displayPath()`, and `child()` on entries
   (value-shaped, no observational authority and no handle-minting per
   Design Decision 3).
-- [ ] Observational queries (`has(entry)`, `stat(entry)`) and
+- [x] Observational queries (`has(entry)`, `stat(entry)`) and
   handle-minting (`lookup(entry)`) all live on `EndoMount` and accept
   an entry as the path-bearing argument; see next phase.
 - [x] Add descriptor provenance tests:
@@ -600,15 +600,18 @@ later adapter or migration is mostly mechanical.
 
 ### Phase 3: Add Entry Overloads, Metadata, and the `makeFile` Sibling
 
-- [ ] Add the `lookup(entry)`, `has(entry)`, and `stat(entry)`
+- [x] Add the `lookup(entry)`, `has(entry)`, and `stat(entry)`
   overloads on `EndoMount`.  Each accepts an entry as the
   path-bearing argument (the no-observational-authority queries an
   earlier draft had on the entry itself).
 - [x] Add `stat(path)` for the path-form metadata query.
-- [ ] Add `makeFile(path, content?)` as the path-form sibling of
+- [x] Add `makeFile(path, content?)` as the path-form sibling of
   `makeDirectory` (parallel construction; binary content via
   `Uint8Array`).  Existing path-form mutators (`writeText`, `remove`,
   `move`, `makeDirectory`) keep their current signatures unchanged.
+  The legacy `createDirectory`/`createFile`/`openDirectory`/`openFile`
+  surface from earlier drafts is removed; `lookup(path|entry)` is the
+  single handle-minting method.
 - [x] Add `stat`, `append`, and `snapshot` on `EndoMountFile`.
 - [x] Keep existing path convenience methods for compatibility.
 - [x] Update help text and TypeScript declarations together with interface

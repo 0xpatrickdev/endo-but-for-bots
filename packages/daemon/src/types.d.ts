@@ -913,8 +913,6 @@ export type EndoMountStat = {
 export interface EndoMountEntry {
   segments(): string[];
   displayPath(): string;
-  exists(): Promise<boolean>;
-  stat(): Promise<EndoMountStat | undefined>;
   child(name: string): EndoMountEntry;
 }
 
@@ -932,17 +930,12 @@ export interface EndoMountFile {
 
 export interface EndoMount {
   has(...pathSegments: string[]): Promise<boolean>;
+  has(entry: EndoMountEntry): Promise<boolean>;
   list(...pathSegments: string[]): Promise<string[]>;
   lookup(
     path: string | string[] | EndoMountEntry,
   ): Promise<EndoMount | EndoMountFile>;
   entry(path: string | string[]): EndoMountEntry;
-  openDirectory(path: string | string[] | EndoMountEntry): Promise<EndoMount>;
-  openFile(path: string | string[] | EndoMountEntry): Promise<EndoMountFile>;
-  createDirectory(
-    path: string | string[] | EndoMountEntry,
-  ): Promise<EndoMount>;
-  createFile(path: string | string[] | EndoMountEntry): Promise<EndoMountFile>;
   stat(
     path: string | string[] | EndoMountEntry,
   ): Promise<EndoMountStat | undefined>;
@@ -953,6 +946,11 @@ export interface EndoMount {
   writeText(
     path: string | string[] | EndoMountEntry,
     content: string,
+  ): Promise<void>;
+  makeDirectory(path: string | string[] | EndoMountEntry): Promise<void>;
+  makeFile(
+    path: string | string[] | EndoMountEntry,
+    content?: string | Uint8Array,
   ): Promise<void>;
   remove(path: string | string[] | EndoMountEntry): Promise<void>;
   move(
