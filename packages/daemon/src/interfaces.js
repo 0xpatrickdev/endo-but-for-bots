@@ -564,6 +564,58 @@ export const MountEntryInterface = M.interface('EndoMountEntry', {
   child: M.call(M.string()).returns(M.remotable()),
 });
 
+// A GitRef is accepted either as a structured `{ name, kind, oid? }`
+// record or as a bare string the consumer can later resolve.  The
+// interface keeps it loose because git itself does not commit to one
+// shape (commit hash, branch name, tag name, HEAD~1, etc. are all
+// valid).
+const RefArgShape = M.or(M.string(), M.recordOf(M.string(), M.any()));
+
+export const GitInterface = M.interface('Git', {
+  // Public worktree authority — the mount cap that this Git was derived
+  // from.  Always synchronous; the Git capability is bound to one mount.
+  worktree: M.call().returns(M.remotable()),
+  // Repository inspection
+  status: M.call().returns(M.promise()),
+  diff: M.call().optional(M.recordOf(M.string(), M.any())).returns(M.promise()),
+  log: M.call().optional(M.recordOf(M.string(), M.any())).returns(M.promise()),
+  show: M.call(RefArgShape).returns(M.promise()),
+  revParse: M.call(RefArgShape).returns(M.promise()),
+  // Worktree and index mutation
+  add: M.call(M.arrayOf(M.remotable())).returns(M.promise()),
+  restore: M.call(M.arrayOf(M.remotable()))
+    .optional(M.recordOf(M.string(), M.any()))
+    .returns(M.promise()),
+  commit: M.call(M.string()).returns(M.promise()),
+  // Branching
+  currentBranch: M.call().returns(M.promise()),
+  branches: M.call().returns(M.promise()),
+  createBranch: M.call(M.string())
+    .optional(M.recordOf(M.string(), M.any()))
+    .returns(M.promise()),
+  deleteBranch: M.call(M.string())
+    .optional(M.recordOf(M.string(), M.any()))
+    .returns(M.promise()),
+  renameBranch: M.call(M.string(), M.string()).returns(M.promise()),
+  switch: M.call(RefArgShape).returns(M.promise()),
+  // History editing and integration
+  merge: M.call(RefArgShape)
+    .optional(M.recordOf(M.string(), M.any()))
+    .returns(M.promise()),
+  rebase: M.call(M.recordOf(M.string(), M.any())).returns(M.promise()),
+  // Local stash state
+  stashPush: M.call()
+    .optional(M.recordOf(M.string(), M.any()))
+    .returns(M.promise()),
+  stashList: M.call().returns(M.promise()),
+  stashShow: M.call().optional(M.number()).returns(M.promise()),
+  stashApply: M.call().optional(M.number()).returns(M.promise()),
+  stashPop: M.call().optional(M.number()).returns(M.promise()),
+  stashDrop: M.call().optional(M.number()).returns(M.promise()),
+  // Immutable tree access
+  tree: M.call(RefArgShape).returns(M.promise()),
+});
+
 export const ReadableTreeInterface = M.interface('EndoReadableTree', {
   help: M.call().optional(M.string()).returns(M.string()),
   sha256: M.call().returns(M.string()),
