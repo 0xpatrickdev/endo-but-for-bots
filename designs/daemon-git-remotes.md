@@ -354,6 +354,12 @@ operator's only post-setup lever is `revoke()` on the credential cap.
 The required properties are:
 
 - the remote is bound to one local `Git`;
+- the `git` argument must be a writable (non-readOnly) `Git`;
+  `provideGitRemote` rejects a read-only `Git` with a structured error.
+  Even `fetch` mutates `.git` object and ref state, so a remote backed
+  by a read-only `Git` could not implement its own contract;
+  see [daemon-git-capability](daemon-git-capability.md) § Design
+  Decision 8 for the same-authority-shape invariant this enforces;
 - the endpoint is host-specified and inspectable;
 - the transport is separately authorized and bounded before the remote is
   constructed;

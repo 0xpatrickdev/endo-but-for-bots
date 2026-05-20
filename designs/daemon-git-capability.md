@@ -199,6 +199,43 @@ already-authorized mount.  There must be no parallel host API that mints
 local `Git` from a raw path string once the mount model exists; that would
 reintroduce an independent filesystem authority path beside `EndoMount`.
 
+### Read-only construction paths
+
+`provideGit` accepts either a writable mount or a read-only mount.  Both
+construction paths are valid; the invariant the formula enforces is that
+both produce the **same authority shape internally**:
+
+```js
+const git = await E(host).provideGit(writableMount, 'repo-git');
+// mutable Git
+
+const roGit1 = await E(git).readOnly();
+// read-only Git
+
+const roGit2 = await E(host).provideGit(readOnlyMount, 'repo-git-ro');
+// also read-only Git
+```
+
+Those two read-only `Git` caps expose the same read surface and reject
+the same mutation methods.  Read-only state is part of the `Git`
+capability / formula itself, not just a wrapper convention:
+`provideGit(readOnlyMount)` constructs a `Git` whose mutability flag is
+already false; it does **not** briefly mint a writable `Git` and wrap
+it.
+
+The same backing invariants — same repository-root verification, same
+backing-storage check — apply on both construction paths.  Git
+authority is bounded by the mount it was derived from, and
+`Git.readOnly()` can only attenuate further; it can never widen.
+
+Behavioral boundaries that follow from this same-authority-shape
+invariant are catalogued in § Design Decision 8 (allowed and rejected
+operations on a read-only `Git`) and § Design Decision 9
+(`Git.readOnly()` idempotence and attenuation semantics).
+`GitRemote` construction from a read-only `Git` is rejected for now,
+even for `fetch`, because fetching mutates `.git` object and ref state
+(see `daemon-git-remotes.md` § Capability Construction).
+
 Remote repository use composes later without changing that root:
 
 ```mermaid
@@ -828,7 +865,22 @@ Complete the required phases from
 - mount root must equal the actual worktree root;
 - entries from another mount are rejected;
 - read-only mounts reject mutation;
-- no guest-visible method leaks the physical path.
+- no guest-visible method leaks the physical path;
+- **same-authority-shape invariant**: a read-only `Git` obtained via
+  `await E(writableGit).readOnly()` exposes the same read surface and
+  the same throw-on-mutation behavior as a read-only `Git` obtained via
+  `provideGit(readOnlyMount)` — `__getMethodNames__()` returns the same
+  set, and the same mutation methods reject;
+- **`Git.readOnly()` is idempotent**: invoking `readOnly()` on an
+  already-read-only `Git` returns the same cap (or an equivalent
+  read-only cap with the same surface); composing it does not produce
+  nested or differently-attenuated wrappers;
+- **`GitRemote` construction from a read-only `Git` is rejected**:
+  `provideGitRemote({ git: readOnlyGit, ... })` throws with a
+  structured error citing the read-only posture;
+- **`Git.tree(ref)` is allowed on a read-only `Git`** and reads
+  historical repository contents reachable from `ref` (matching the
+  read-only mount's historical-contents grant).
 
 ### Workflow Tests
 
@@ -947,17 +999,44 @@ real implementation surfaces new ones.
    inspection methods log a structured warning and fail-closed if the
    pin no longer matches.
 8. **Read-only worktree mounts permit inspection + immutable trees +
-   `worktree.snapshot()`; reject everything else.**  Allowed: `status`,
-   `diff`, `log`, `show`, `revParse`, `branches`, `currentBranch`,
-   `tree(ref)`, `readOnly()` (idempotent), and `worktree.snapshot()`.
+   `worktree.snapshot()`; reject everything else.**  A read-only `Git`
+   can be obtained two ways and the two paths produce the same authority
+   shape (see § Read-only construction paths):
+   - **Writable→readOnly path:** `await E(git).readOnly()` returns a
+     read-only attenuation of a `Git` constructed from a writable mount.
+   - **Read-only-mount-derived path:** `provideGit(readOnlyMount)`
+     constructs a `Git` whose mutability flag is already false; the
+     formula does not briefly mint a writable `Git` and wrap it.
+
+   Allowed on a read-only `Git`: `status`, `diff`, `log`, `show`,
+   `revParse`, `branches`, `currentBranch`, `tree(ref)`, `readOnly()`
+   (idempotent — see Design Decision 9), and `worktree.snapshot()`.
    Rejected: `add`, `restore`, `commit`, `createBranch`, `deleteBranch`,
    `renameBranch`, `switch`, `merge`, `rebase`, `stashPush`,
    `stashApply`, `stashPop`, `stashDrop`.
+
+   Two additional boundaries on a read-only `Git`:
+   - `GitRemote` construction from a read-only `Git` is rejected for
+     now.  Even `fetch` mutates `.git` object and ref state, so the
+     read-only posture cannot host a remote.
+   - `tree(ref)` is allowed and grants access to historical repository
+     contents reachable from `ref`.  That is consistent with the
+     read-only mount granting authority over repository history, but
+     it must be made explicit on the grant: callers handing out a
+     read-only `Git` derived from a read-only mount are
+     simultaneously granting historical-contents read access, not just
+     present-worktree read access.
 9. **Read-only audit grants come via `Git.readOnly()`, not a separate
-   cap shape.**  The operator hands the auditor `await E(git).readOnly()`
-   and the auditor holds an attenuated `Git` whose mutation methods
-   throw.  No `provideGitReadOnly()` or `provideGitTreeProvider()` host
-   shortcut is part of the design; the readOnly() attenuation is the documented
+   cap shape; the method is idempotent.**  The operator hands the
+   auditor `await E(git).readOnly()` and the auditor holds an
+   attenuated `Git` whose mutation methods throw.  `Git.readOnly()` is
+   idempotent: invoked on an already-read-only `Git`, it returns the
+   same cap (or an equivalent read-only cap with the same surface);
+   composing `readOnly()` calls does not produce nested or
+   differently-attenuated wrappers.  `readOnly()` can only attenuate
+   further, never widen; it is a one-way attenuation operator.  No
+   `provideGitReadOnly()` or `provideGitTreeProvider()` host shortcut
+   is part of the design; the readOnly() attenuation is the documented
    path.  If a future use case wants a tree-only-grant cap that hides
    the worktree methods entirely, the separately-grantable
    `GitTreeProvider` shape from § Alternatives Considered can be added
