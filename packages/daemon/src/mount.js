@@ -172,8 +172,7 @@ harden(isConfinedPath);
 /**
  * Provenance maps for mount-scoped entry descriptors.  An entry minted by
  * one mount lineage carries a private sentinel that consumers can probe to
- * verify it was minted by an authorized mount.  Phase 2 records the keys;
- * Phase 3 adds the consumers that check them.
+ * verify it was minted by an authorized mount.
  *
  * @type {WeakMap<object, object>}
  */
@@ -182,9 +181,9 @@ const entryLineageKey = new WeakMap();
 const mountLineageKey = new WeakMap();
 
 /**
- * Test helper exposed for downstream consumers (Phase 3 mount nav, the
- * future git capability) — returns the lineage sentinel for a mount or
- * entry exo, or undefined if the value is not one we minted.
+ * Returns the lineage sentinel for a mount or entry exo, or undefined if
+ * the value is not one we minted.  Exported for downstream consumers
+ * (the future git capability, sandbox grants).
  *
  * @param {object} value
  * @returns {object | undefined}
@@ -193,6 +192,70 @@ export const lineageOf = value => {
   return entryLineageKey.get(value) || mountLineageKey.get(value);
 };
 harden(lineageOf);
+
+/**
+ * @typedef {object} EndoMountBacking
+ * @property {'physical'} kind
+ *   For now only physical mounts exist; future memory- or CAS-backed
+ *   mounts would surface different kinds and would not satisfy a
+ *   physical-only consumer (such as the native-git backend).
+ * @property {string} physicalRoot
+ *   The lineage's confinement root.  Trusted daemon code can use this
+ *   to anchor adjacent capabilities (e.g. `git rev-parse --show-toplevel`
+ *   verification) without exposing the path through any public method.
+ * @property {string} currentDir
+ *   The mount exo's effective root.  For sub-mounts returned by
+ *   `lookup()` this is a subdirectory of `physicalRoot`; for a root
+ *   mount the two are equal.
+ */
+
+/**
+ * Host-private map from mount exo to its backing record.  Trusted code
+ * (the daemon's own formula instantiators, the future git capability)
+ * imports `getMountBacking` to query; guests never see this map and have
+ * no public surface to recover the physical path through.
+ *
+ * @type {WeakMap<object, EndoMountBacking>}
+ */
+const mountBackings = new WeakMap();
+
+/**
+ * Host-private accessor: returns the backing record for a daemon-minted
+ * mount exo, or undefined for fake / unauthorized values.  Trusted code
+ * inside the daemon uses this to derive adjacent capabilities; guests
+ * cannot reach it because mount.js exports it from a private module
+ * surface.
+ *
+ * @param {unknown} mount
+ * @returns {EndoMountBacking | undefined}
+ */
+export const getMountBacking = mount =>
+  mountBackings.get(/** @type {object} */ (mount));
+harden(getMountBacking);
+
+/**
+ * Host-private accessor: resolves an entry exo's physical path against
+ * its lineage's mount backing.  Returns undefined if the entry was not
+ * minted by this daemon or if the lineage has no registered backing.
+ *
+ * @param {unknown} entry
+ * @returns {string | undefined}
+ */
+export const getEntryPhysicalPath = entry => {
+  const ent = /** @type {object} */ (entry);
+  const lineage = entryLineageKey.get(ent);
+  if (lineage === undefined) {
+    return undefined;
+  }
+  // Walk every backing-bearing mount exo for one whose lineage matches.
+  // (Backings are keyed by mount, not by lineage, so we cache the
+  // per-entry resolved path via the lookup map below.)
+  return resolvedEntryPaths.get(ent);
+};
+harden(getEntryPhysicalPath);
+
+/** @type {WeakMap<object, string>} */
+const resolvedEntryPaths = new WeakMap();
 
 /**
  * Validate a segment for descriptor minting.  Stricter than
@@ -543,6 +606,17 @@ const makeMountExo = ctx => {
 
   selfExo = exo;
   mountLineageKey.set(exo, lineage);
+  // Register the host-private backing.  Trusted daemon code can recover
+  // the lineage's confinement root via getMountBacking; no public method
+  // on the mount exo reveals it.
+  mountBackings.set(
+    exo,
+    harden({
+      kind: /** @type {'physical'} */ ('physical'),
+      physicalRoot: confinementRoot,
+      currentDir,
+    }),
+  );
   return exo;
 };
 harden(makeMountExo);
@@ -694,6 +768,9 @@ const makeMountEntryExo = ({
   });
 
   entryLineageKey.set(entryExo, lineage);
+  // Cache the resolved physical path for host-private trusted readers.
+  // Guests have no public method that surfaces this.
+  resolvedEntryPaths.set(entryExo, resolved);
   return entryExo;
 };
 harden(makeMountEntryExo);

@@ -4747,6 +4747,9 @@ test('mount createFile / createDirectory are write-side handle-minters', async t
   const { host, config } = await prepareHost(t);
 
   const mountPath = path.join(config.statePath, '..', 'mount-test-create');
+  // Clear the fixture so the idempotency assertion below is meaningful
+  // even on a serial re-run with a leftover directory.
+  await fs.promises.rm(mountPath, { recursive: true, force: true });
   await createMountFixture(mountPath, {});
 
   await E(host).provideMount(mountPath, 'test-mount-create');
