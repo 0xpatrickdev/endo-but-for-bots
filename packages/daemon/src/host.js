@@ -38,6 +38,45 @@ const assertPowersName = name => {
   ['@none', '@agent', '@endo'].includes(name) || assertPetName(name);
 };
 
+const GIT_CREDENTIAL_SECRET_FIELDS = harden([
+  'token',
+  'password',
+  'secret',
+  'privateKey',
+  'passphrase',
+]);
+
+/**
+ * @param {unknown} value
+ */
+const sanitizeGitCredentialPolicy = value => {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error('provideGitRemote credential must be a record');
+  }
+  const credential = /** @type {Record<string, unknown>} */ (value);
+  for (const field of GIT_CREDENTIAL_SECRET_FIELDS) {
+    if (field in credential) {
+      throw new Error(
+        `provideGitRemote credential must not contain secret field ${field}`,
+      );
+    }
+  }
+  if (typeof credential.type !== 'string' || credential.type.length === 0) {
+    throw new Error('provideGitRemote credential.type is required');
+  }
+  return harden({
+    type: credential.type,
+    ...(credential.label !== undefined && { label: `${credential.label}` }),
+    ...(credential.audience !== undefined && {
+      audience: `${credential.audience}`,
+    }),
+  });
+};
+harden(sanitizeGitCredentialPolicy);
+
 /**
  * Normalizes host or guest options, providing default values.
  * @param {MakeHostOrGuestOptions | undefined} opts
@@ -371,7 +410,11 @@ export const makeHostMaker = ({
       const allowedRefs = Array.isArray(options.allowedRefs)
         ? options.allowedRefs.map(ref => `${ref}`)
         : undefined;
+      const allowedProtocols = Array.isArray(options.allowedProtocols)
+        ? options.allowedProtocols.map(protocol => `${protocol}`)
+        : undefined;
       const allowForcePush = options.allowForcePush === true;
+      const credential = sanitizeGitCredentialPolicy(options.credential);
 
       /** @type {DeferredTasks<GitRemoteDeferredTaskParams>} */
       const tasks = makeDeferredTasks();
@@ -382,7 +425,14 @@ export const makeHostMaker = ({
       const { value } = await formulateGitRemote(
         gitId,
         remote,
-        harden({ url, directions, allowedRefs, allowForcePush }),
+        harden({
+          url,
+          directions,
+          allowedRefs,
+          allowedProtocols,
+          allowForcePush,
+          credential,
+        }),
         tasks,
       );
       return value;

@@ -11,13 +11,21 @@ import {
   BlobInterface,
   GitInterface,
   GitRemoteInterface,
-  ReadableTreeInterface,
+  GitTreeInterface,
 } from './interfaces.js';
 import { makeReaderRef } from './reader-ref.js';
 
 /** @import { EndoMount, EndoMountEntry, GitPowers, GitRemotePolicy } from './types.js' */
 
 const GIT_OUTPUT_LIMIT = 50_000;
+const DEFAULT_REMOTE_PROTOCOLS = harden(['https']);
+const CREDENTIAL_SECRET_FIELDS = harden([
+  'token',
+  'password',
+  'secret',
+  'privateKey',
+  'passphrase',
+]);
 
 /**
  * @param {string} output
@@ -390,9 +398,17 @@ export const makeGit = ({ worktree, repoRoot, gitPowers }) => {
     const sha256 = await sha256Bytes(bytes);
     const displayPath = gitTreeDisplayPath(displaySegments);
     const help = () => `Immutable git tree ${treeOid} at ${displayPath}`;
-    return makeExo('EndoGitTree', ReadableTreeInterface, {
+    return makeExo('EndoGitTree', GitTreeInterface, {
       help,
       sha256: () => sha256,
+      async archiveTar() {
+        const { stdout: tarBytes } = await runGitBytesRaw([
+          'archive',
+          '--format=tar',
+          treeOid,
+        ]);
+        return makeReaderRef([tarBytes]);
+      },
 
       async has(...pathSegments) {
         for (const segment of pathSegments) {
@@ -778,6 +794,91 @@ const refMatchesPolicy = (ref, allowed) => {
 harden(refMatchesPolicy);
 
 /**
+ * @param {unknown} value
+ * @returns {string[]}
+ */
+const remoteProtocolsFromPolicy = value => {
+  if (value === undefined) {
+    return DEFAULT_REMOTE_PROTOCOLS;
+  }
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new Error('allowedProtocols must be a non-empty array');
+  }
+  return harden(
+    value.map(protocol => {
+      const name = requireRemoteToken(protocol, 'allowedProtocols entry');
+      if (!/^[a-z][a-z0-9+.-]*$/u.test(name)) {
+        throw new Error(`Invalid remote protocol ${q(name)}`);
+      }
+      return name;
+    }),
+  );
+};
+harden(remoteProtocolsFromPolicy);
+
+/**
+ * @param {string} remoteUrl
+ * @returns {string}
+ */
+const remoteProtocolForUrl = remoteUrl => {
+  if (/^[^@/\s]+@[^:\s]+:.+/u.test(remoteUrl)) {
+    return 'ssh';
+  }
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/u.test(remoteUrl)) {
+    return new URL(remoteUrl).protocol.slice(0, -1);
+  }
+  return 'file';
+};
+harden(remoteProtocolForUrl);
+
+/**
+ * @param {string} remoteUrl
+ * @param {string[]} allowedProtocols
+ */
+const assertAllowedRemoteUrl = (remoteUrl, allowedProtocols) => {
+  const protocol = remoteProtocolForUrl(remoteUrl);
+  if (!allowedProtocols.includes(protocol)) {
+    throw new Error(
+      `Git remote protocol ${q(protocol)} is not allowed; allowed protocols: ${allowedProtocols.join(', ')}`,
+    );
+  }
+  return protocol;
+};
+harden(assertAllowedRemoteUrl);
+
+/**
+ * @param {unknown} value
+ */
+const validateCredentialPolicy = value => {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error('credential must be a record');
+  }
+  const credential = /** @type {Record<string, unknown>} */ (value);
+  for (const field of CREDENTIAL_SECRET_FIELDS) {
+    if (field in credential) {
+      throw new Error(
+        `Git remote credential policy must not contain secret field ${q(field)}`,
+      );
+    }
+  }
+  const type = requireRemoteToken(credential.type, 'credential.type');
+  const sanitized = {
+    type,
+    ...(credential.label !== undefined && {
+      label: requireRemoteToken(credential.label, 'credential.label'),
+    }),
+    ...(credential.audience !== undefined && {
+      audience: requireRemoteToken(credential.audience, 'credential.audience'),
+    }),
+  };
+  return harden(sanitized);
+};
+harden(validateCredentialPolicy);
+
+/**
  * @param {object} args
  * @param {string} args.repoRoot
  * @param {GitPowers} args.gitPowers
@@ -791,6 +892,8 @@ export const makeGitRemote = ({ repoRoot, gitPowers, policy }) => {
   const directions = new Set(policy.directions);
   const allowedRefs = policy.allowedRefs || undefined;
   const allowForcePush = policy.allowForcePush === true;
+  const allowedProtocols = remoteProtocolsFromPolicy(policy.allowedProtocols);
+  const credential = validateCredentialPolicy(policy.credential);
   const revoked = false;
 
   const getRepoRoot = () => {
@@ -854,26 +957,26 @@ export const makeGitRemote = ({ repoRoot, gitPowers, policy }) => {
   };
 
   const ensureConfiguredEndpoint = async () => {
-    if (policy.url === undefined) {
-      return;
+    const expectedUrl =
+      policy.url === undefined ? undefined : requireRemoteToken(policy.url, 'url');
+    if (expectedUrl !== undefined) {
+      assertAllowedRemoteUrl(expectedUrl, allowedProtocols);
     }
-    const url = requireRemoteToken(policy.url, 'url');
     try {
       const { stdout } = await runGitRaw(['remote', 'get-url', remoteName]);
       const configured = stdout.trim();
-      if (configured !== url) {
+      assertAllowedRemoteUrl(configured, allowedProtocols);
+      if (expectedUrl !== undefined && configured !== expectedUrl) {
         throw new Error(
-          `Git remote ${q(remoteName)} is configured for ${q(configured)}, not ${q(url)}`,
+          `Git remote ${q(remoteName)} is configured for ${q(configured)}, not ${q(expectedUrl)}`,
         );
       }
     } catch (error) {
-      const message = String(
-        (error && /** @type {any} */ (error).message) || error,
-      );
-      if (!message.includes('No such remote')) {
+      const message = String(error instanceof Error ? error.message : error);
+      if (!message.includes('No such remote') || expectedUrl === undefined) {
         throw error;
       }
-      await runGit(['remote', 'add', remoteName, url]);
+      await runGit(['remote', 'add', remoteName, expectedUrl]);
     }
   };
 
@@ -890,6 +993,8 @@ export const makeGitRemote = ({ repoRoot, gitPowers, policy }) => {
       return harden({
         ...policy,
         directions: harden([...directions]),
+        allowedProtocols,
+        ...(credential !== undefined && { credential }),
         revoked,
       });
     },

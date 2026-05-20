@@ -4639,6 +4639,9 @@ test('provideGit tree exposes immutable commit contents', async t => {
   await E(host).provideMount(repoPath, 'git-tree-worktree');
   const gitCap = await E(host).provideGit('git-tree-worktree', 'git-tree-cap');
   const tree = await E(gitCap).tree('HEAD');
+  // eslint-disable-next-line no-underscore-dangle
+  const treeMethods = await E(tree).__getMethodNames__();
+  t.true(treeMethods.includes('archiveTar'));
 
   const names = await E(tree).list();
   t.deepEqual(names, ['README.md', 'src']);
@@ -4683,6 +4686,7 @@ test('provideGitRemote supports bounded local fetch, pull, and push', async t =>
       gitName: 'git-remote-cap',
       remote: 'origin',
       directions: ['fetch', 'pull', 'push'],
+      allowedProtocols: ['file'],
     },
     'origin-remote',
   );
@@ -4723,6 +4727,7 @@ test('provideGitRemote supports bounded local fetch, pull, and push', async t =>
       remote: 'origin',
       directions: ['push'],
       allowedRefs: ['main', 'refs/heads/agent/'],
+      allowedProtocols: ['file'],
     },
     'origin-push-limited',
   );
@@ -4745,11 +4750,98 @@ test('provideGitRemote supports bounded local fetch, pull, and push', async t =>
       gitName: 'git-remote-cap',
       remote: 'origin',
       directions: ['fetch'],
+      allowedProtocols: ['file'],
     },
     'origin-fetch-only',
   );
   await t.throwsAsync(() => E(fetchOnly).push({ source: 'main' }), {
     message: /does not allow push/,
+  });
+});
+
+test('provideGitRemote defaults to HTTPS-only remote URLs', async t => {
+  const { host, config } = await prepareHost(t);
+
+  const repoPath = path.join(config.statePath, '..', 'git-remote-policy-repo');
+  const barePath = path.join(config.statePath, '..', 'git-remote-policy-bare.git');
+  await fs.promises.rm(barePath, { recursive: true, force: true });
+  await createGitFixture(repoPath);
+  await git(repoPath, ['init', '--bare', barePath]);
+  await git(repoPath, ['remote', 'add', 'origin', barePath]);
+
+  await E(host).provideMount(repoPath, 'git-policy-worktree');
+  await E(host).provideGit('git-policy-worktree', 'git-policy-cap');
+  const remote = await E(host).provideGitRemote(
+    {
+      gitName: 'git-policy-cap',
+      remote: 'origin',
+      directions: ['fetch'],
+    },
+    'origin-default-https',
+  );
+
+  await t.throwsAsync(() => E(remote).fetch({ refspecs: ['main'] }), {
+    message: /protocol.*file.*not allowed/u,
+  });
+
+  const sshRemote = await E(host).provideGitRemote(
+    {
+      gitName: 'git-policy-cap',
+      remote: 'new-origin',
+      directions: ['fetch'],
+      url: 'git@github.com:endojs/endo.git',
+    },
+    'origin-default-no-ssh',
+  );
+  await t.throwsAsync(() => E(sshRemote).fetch({ refspecs: ['main'] }), {
+    message: /protocol.*ssh.*not allowed/u,
+  });
+});
+
+test('provideGitRemote rejects secret credential fields and exposes metadata', async t => {
+  const { host, config } = await prepareHost(t);
+
+  const repoPath = path.join(config.statePath, '..', 'git-remote-credential-repo');
+  await createGitFixture(repoPath);
+
+  await E(host).provideMount(repoPath, 'git-credential-worktree');
+  await E(host).provideGit('git-credential-worktree', 'git-credential-cap');
+
+  await t.throwsAsync(
+    () =>
+      E(host).provideGitRemote(
+        {
+          gitName: 'git-credential-cap',
+          remote: 'origin',
+          directions: ['fetch'],
+          credential: { type: 'bearer', token: 'secret' },
+        },
+        'origin-secret-credential',
+      ),
+    { message: /must not contain secret field token/u },
+  );
+
+  const remote = await E(host).provideGitRemote(
+    {
+      gitName: 'git-credential-cap',
+      remote: 'origin',
+      directions: ['fetch'],
+      url: 'https://github.com/endojs/endo.git',
+      credential: {
+        type: 'bearer',
+        label: 'github',
+        audience: 'https://github.com',
+      },
+    },
+    'origin-credential-metadata',
+  );
+  t.like(await E(remote).inspect(), {
+    allowedProtocols: ['https'],
+    credential: {
+      type: 'bearer',
+      label: 'github',
+      audience: 'https://github.com',
+    },
   });
 });
 
