@@ -251,8 +251,93 @@ test('NativeGitBackend mutation ops still throw "not yet implemented"', async t 
   await t.throwsAsync(backend.commit('msg'), {
     message: /not yet implemented/,
   });
-  await t.throwsAsync(backend.status(), { message: /not yet implemented/ });
   await t.throwsAsync(backend.diff({}), { message: /not yet implemented/ });
+});
+
+test('NativeGitBackend.status: clean worktree returns empty list', async t => {
+  const repoRoot = await provisionGitWorktree(t);
+  const backend = makeNativeGitBackend({ repoRoot });
+  const entries = await backend.status();
+  t.deepEqual([...entries], []);
+});
+
+test('NativeGitBackend.status: classifies untracked, modified, added, deleted', async t => {
+  const repoRoot = await provisionGitWorktree(t);
+  // Step 1: create + commit two tracked files that will become
+  // modified-only and deleted-only respectively.
+  await fs.promises.writeFile(path.join(repoRoot, 'modified.txt'), 'v1');
+  await fs.promises.writeFile(path.join(repoRoot, 'doomed.txt'), 'gone');
+  await execFileAsync('git', ['add', 'modified.txt', 'doomed.txt'], {
+    cwd: repoRoot,
+  });
+  await execFileAsync(
+    'git',
+    [
+      '-c',
+      'user.email=t@t',
+      '-c',
+      'user.name=T',
+      'commit',
+      '-m',
+      'baseline',
+    ],
+    { cwd: repoRoot },
+  );
+
+  // Step 2: produce four distinct status shapes WITHOUT committing.
+  await fs.promises.writeFile(path.join(repoRoot, 'untracked.txt'), 'u');
+  await fs.promises.writeFile(path.join(repoRoot, 'modified.txt'), 'v2');
+  await fs.promises.writeFile(path.join(repoRoot, 'added.txt'), 'new');
+  await execFileAsync('git', ['add', 'added.txt'], { cwd: repoRoot });
+  await fs.promises.rm(path.join(repoRoot, 'doomed.txt'));
+
+  const backend = makeNativeGitBackend({ repoRoot });
+  const entries = await backend.status();
+  const byPath = Object.fromEntries(entries.map(e => [e.path, e]));
+
+  // Untracked: index 'clean' (no entry), worktree 'untracked'.
+  t.is(byPath['untracked.txt'].index, 'clean');
+  t.is(byPath['untracked.txt'].worktree, 'untracked');
+
+  // Modified-on-disk-only: index 'clean', worktree 'modified'.
+  t.is(byPath['modified.txt'].index, 'clean');
+  t.is(byPath['modified.txt'].worktree, 'modified');
+
+  // Added-but-not-committed: index 'added', worktree 'clean'.
+  t.is(byPath['added.txt'].index, 'added');
+  t.is(byPath['added.txt'].worktree, 'clean');
+
+  // Deleted from worktree: index 'clean', worktree 'deleted'.
+  t.is(byPath['doomed.txt'].index, 'clean');
+  t.is(byPath['doomed.txt'].worktree, 'deleted');
+});
+
+test('Git.status wraps backend rows into GitStatusEntry with mount entries', async t => {
+  const repoRoot = await provisionGitWorktree(t);
+  await fs.promises.mkdir(path.join(repoRoot, 'src'), { recursive: true });
+  await fs.promises.writeFile(
+    path.join(repoRoot, 'src', 'new.js'),
+    'export default 1',
+  );
+
+  // Construct the public Git exo over a real mount so status() can mint
+  // EndoMountEntry values.  This is the only test in this file that
+  // exercises the exo + backend wired together.
+  const filePowers = makeFilePowers({ fs, path });
+  const mount = makeMount({ rootPath: repoRoot, readOnly: false, filePowers });
+  const backend = makeNativeGitBackend({ repoRoot });
+  const git = makeGit({ mount, backend });
+
+  const entries = await E(git).status();
+  t.is(entries.length, 1);
+  const [row] = entries;
+  t.is(row.path, 'src/new.js');
+  t.is(row.index, 'clean');
+  t.is(row.worktree, 'untracked');
+  // The entry is an EndoMountEntry minted on the bound mount.  Its
+  // segments reflect the repo-relative path split by `/`.
+  t.deepEqual(await E(row.entry).segments(), ['src', 'new.js']);
+  t.true(await E(row.entry).exists());
 });
 
 test('Git accepts both string and structured GitRef arguments', async t => {

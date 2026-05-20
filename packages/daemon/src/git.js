@@ -2,6 +2,7 @@
 /// <reference types="ses"/>
 
 import { q } from '@endo/errors';
+import { E } from '@endo/eventual-send';
 import { makeExo } from '@endo/exo';
 
 import { GitInterface } from './interfaces.js';
@@ -131,7 +132,28 @@ export const makeGit = ({ mount, backend }) => {
     },
 
     async status() {
-      return backend.status();
+      const raw = await backend.status();
+      // Wrap each raw record into a GitStatusEntry.  The backend
+      // produced repo-relative path strings; here we mint the
+      // authority-bearing EndoMountEntry through the bound mount so
+      // a caller can hold a path-bearing reference that's confined
+      // to this worktree.
+      const wrapped = await Promise.all(
+        raw.map(async r => {
+          const segments = r.path === '' ? [] : r.path.split('/');
+          const entry = await E(mount).entry(segments);
+          return harden({
+            entry,
+            path: r.path,
+            index: r.index,
+            worktree: r.worktree,
+            ...(r.renamedFrom !== undefined
+              ? { renamedFrom: r.renamedFrom }
+              : {}),
+          });
+        }),
+      );
+      return harden(wrapped);
     },
 
     async diff(options = {}) {

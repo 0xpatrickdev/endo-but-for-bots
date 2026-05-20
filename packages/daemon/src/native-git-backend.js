@@ -127,6 +127,72 @@ const requireRevision = (value, fieldName) => {
 const EXECUTABLE_REPO_CONFIG = /^(filter\..*\.(clean|smudge|process)|merge\..*\.driver)$/u;
 
 /**
+ * Map a `git status --porcelain=v1` index-column code to the design's
+ * `GitStatusEntry.index` enum.
+ *
+ * @param {string} code
+ * @returns {'clean' | 'added' | 'modified' | 'deleted' | 'renamed' | 'copied' | 'conflicted'}
+ */
+const indexCodeToStatus = code => {
+  switch (code) {
+    case ' ':
+      return 'clean';
+    case 'A':
+      return 'added';
+    case 'M':
+      return 'modified';
+    case 'D':
+      return 'deleted';
+    case 'R':
+      return 'renamed';
+    case 'C':
+      return 'copied';
+    case 'U':
+    case 'T':
+      // 'T' is type change (e.g. symlink ↔ regular); fold into modified.
+      return code === 'U' ? 'conflicted' : 'modified';
+    default:
+      // '?' (untracked) and '!' (ignored) — the index has no entry,
+      // so 'clean' is the closest match in the design's vocabulary.
+      return 'clean';
+  }
+};
+
+/**
+ * Map a `git status --porcelain=v1` worktree-column code to the
+ * design's `GitStatusEntry.worktree` enum.
+ *
+ * @param {string} code
+ * @param {string} indexCode
+ * @returns {'clean' | 'modified' | 'deleted' | 'untracked' | 'ignored' | 'conflicted'}
+ */
+const worktreeCodeToStatus = (code, indexCode) => {
+  if (indexCode === '?' && code === '?') return 'untracked';
+  if (indexCode === '!' && code === '!') return 'ignored';
+  switch (code) {
+    case ' ':
+      return 'clean';
+    case 'M':
+    case 'T':
+      return 'modified';
+    case 'D':
+      return 'deleted';
+    case 'U':
+      return 'conflicted';
+    default:
+      return 'clean';
+  }
+};
+
+/**
+ * @typedef {object} RawStatusEntry
+ * @property {string} path  Repository-relative path with forward slashes.
+ * @property {ReturnType<typeof indexCodeToStatus>} index
+ * @property {ReturnType<typeof worktreeCodeToStatus>} worktree
+ * @property {string} [renamedFrom]  When the index is 'renamed' or 'copied'.
+ */
+
+/**
  * Construct the native-git backend.  The backend runs the system `git`
  * binary in a confined environment derived from the
  * fae-git-tool-reference work: sanitized environment, base args that
@@ -184,11 +250,47 @@ export const makeNativeGitBackend = ({ repoRoot }) => {
   };
 
   /**
+   * Run a sanitized git invocation and return its raw stdout, untrimmed.
+   * Used by parsers (status, diff) where whitespace is significant.
+   *
+   * @param {string[]} args
+   * @returns {Promise<string>}
+   */
+  const runGitRaw = async args => {
+    await verifyRepositoryRoot();
+    try {
+      const { stdout } = await execFileAsync(
+        'git',
+        [...GIT_BASE_ARGS, ...args],
+        {
+          cwd: repoRoot,
+          env: makeGitEnv(repoRoot),
+          timeout: GIT_TIMEOUT_MS,
+          maxBuffer: GIT_MAX_BUFFER,
+        },
+      );
+      return stdout;
+    } catch (err) {
+      const error =
+        /** @type {Error & { stdout?: string, stderr?: string, code?: number }} */ (
+          err
+        );
+      const detail =
+        error.stderr || error.stdout || error.message || 'unknown git error';
+      throw new Error(
+        `git ${args[0]} failed (exit ${error.code ?? 'unknown'}):\n${truncateOutput(detail.trim())}`,
+      );
+    }
+  };
+
+  /**
    * Run a sanitized git invocation.  Always preceded by a
    * verification of the repository root.  Returns trimmed stdout
    * (or '(no output)' if nothing was printed) on success; raises a
    * structured error including the exit code and a truncated stderr
-   * on failure.
+   * on failure.  Suitable for human-display ops; parsers should call
+   * `runGitRaw` instead so leading whitespace and per-record framing
+   * are preserved.
    *
    * @param {string[]} args
    * @returns {Promise<string>}
@@ -262,7 +364,76 @@ export const makeNativeGitBackend = ({ repoRoot }) => {
     // already so the contract is complete.
     assertNoExecutableRepoConfig,
 
-    status: async () => fail('status'),
+    /**
+     * Parses `git status --porcelain=v1 -z`.  The NUL-delimited format
+     * is what we want here: it has a well-defined, ambiguity-free
+     * encoding (paths with whitespace or special characters arrive
+     * verbatim) and rename/copy records embed the source-path field
+     * inline rather than escaping it.
+     *
+     * Returns the raw structural list.  The public Git exo wraps each
+     * entry into a `GitStatusEntry` by minting an `EndoMountEntry` on
+     * the bound mount — the backend has no mount cap to mint with.
+     *
+     * @returns {Promise<RawStatusEntry[]>}
+     */
+    status: async () => {
+      // Use the raw runner: porcelain=v1 records start with a column-
+      // sensitive XY code (e.g. ' D' for a worktree-only deletion);
+      // runGit's trim() would strip a leading space and shift the path.
+      const out = await runGitRaw([
+        'status',
+        '--porcelain=v1',
+        '-z',
+        '--untracked-files=all',
+      ]);
+      if (out === '') {
+        return harden([]);
+      }
+      // `--porcelain=v1 -z` separates records with NUL.  A rename / copy
+      // record is followed by its source path in a second NUL-delimited
+      // field.  trailing empty strings (from a final NUL) are filtered.
+      const parts = out.split('\0').filter(part => part !== '');
+      /** @type {RawStatusEntry[]} */
+      const entries = [];
+      let i = 0;
+      while (i < parts.length) {
+        const record = parts[i];
+        if (record.length < 3) {
+          i += 1;
+        } else {
+          const indexCode = record[0];
+          const wtCode = record[1];
+          const filePath = record.slice(3);
+          const indexStatus = indexCodeToStatus(indexCode);
+          const worktreeStatus = worktreeCodeToStatus(wtCode, indexCode);
+          if (
+            (indexStatus === 'renamed' || indexStatus === 'copied') &&
+            i + 1 < parts.length
+          ) {
+            entries.push(
+              harden({
+                path: filePath,
+                index: indexStatus,
+                worktree: worktreeStatus,
+                renamedFrom: parts[i + 1],
+              }),
+            );
+            i += 2;
+          } else {
+            entries.push(
+              harden({
+                path: filePath,
+                index: indexStatus,
+                worktree: worktreeStatus,
+              }),
+            );
+            i += 1;
+          }
+        }
+      }
+      return harden(entries);
+    },
 
     diff: async () => fail('diff'),
 
