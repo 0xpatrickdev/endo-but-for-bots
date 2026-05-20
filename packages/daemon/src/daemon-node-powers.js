@@ -21,7 +21,7 @@ export { makeDaemonicPersistencePowers };
 
 /** @import { Reader, Writer } from '@endo/stream' */
 /** @import { ERef, FarRef } from '@endo/eventual-send' */
-/** @import { CapTpConnectionRegistrar, Config, CryptoPowers, DaemonWorkerFacet, DaemonicPersistencePowers, DaemonicPowers, EndoReadable, FilePowers, Formula, FormulaNumber, NetworkPowers, SocketPowers, WorkerDaemonFacet } from './types.js' */
+/** @import { CapTpConnectionRegistrar, Config, CryptoPowers, DaemonWorkerFacet, DaemonicPersistencePowers, DaemonicPowers, EndoReadable, FilePowers, Formula, FormulaNumber, GitPowers, NetworkPowers, SocketPowers, WorkerDaemonFacet } from './types.js' */
 /** @import { DaemonDatabase } from './daemon-database.js' */
 
 /**
@@ -386,6 +386,137 @@ export const makeFilePowers = ({ fs, path: fspath }) => {
   });
 };
 
+const gitNullDevice = process.platform === 'win32' ? 'NUL' : '/dev/null';
+const GIT_TIMEOUT_MS = 60_000;
+const GIT_MAX_BUFFER = 1024 * 1024;
+const GIT_BASE_ARGS = harden([
+  '--no-pager',
+  '--literal-pathspecs',
+  '-c',
+  'core.hooksPath=/dev/null',
+  '-c',
+  'core.fsmonitor=false',
+  '-c',
+  'core.attributesFile=/dev/null',
+  '-c',
+  'diff.external=',
+  '-c',
+  'commit.gpgSign=false',
+  '-c',
+  'tag.gpgSign=false',
+]);
+const EXECUTABLE_REPO_CONFIG = /^(filter\..*\.(clean|smudge|process)|merge\..*\.driver)$/u;
+
+/**
+ * @param {object} opts
+ * @param {typeof import('child_process')} opts.popen
+ * @param {FilePowers} opts.filePowers
+ * @returns {GitPowers}
+ */
+export const makeGitPowers = ({ popen, filePowers }) => {
+  /**
+   * @param {string} repoRoot
+   */
+  const makeGitEnv = repoRoot =>
+    harden({
+      PATH: process.env.PATH || '',
+      HOME: filePowers.joinPath(repoRoot, '.git-endo-home'),
+      XDG_CONFIG_HOME: filePowers.joinPath(repoRoot, '.git-endo-home'),
+      GIT_CONFIG_NOSYSTEM: '1',
+      GIT_CONFIG_GLOBAL: gitNullDevice,
+      GIT_TERMINAL_PROMPT: '0',
+      GIT_PAGER: 'cat',
+      TMPDIR: process.env.TMPDIR || '/tmp',
+      LANG: 'C',
+      LC_ALL: 'C',
+    });
+
+  /**
+   * @param {string} file
+   * @param {string[]} args
+   * @param {object} options
+   * @returns {Promise<{ stdout: string, stderr: string }>}
+   */
+  const execFileText = (file, args, options) =>
+    new Promise((resolve, reject) => {
+      popen.execFile(
+        file,
+        args,
+        /** @type {any} */ (options),
+        (error, stdout, stderr) => {
+          if (error) {
+            Object.assign(error, { stdout, stderr });
+            reject(error);
+          } else {
+            resolve({ stdout, stderr });
+          }
+        },
+      );
+    });
+
+  /**
+   * @param {string} repoRoot
+   * @param {string[]} args
+   */
+  const runGit = async (repoRoot, args) =>
+    execFileText('git', [...GIT_BASE_ARGS, ...args], {
+      cwd: repoRoot,
+      env: makeGitEnv(repoRoot),
+      timeout: GIT_TIMEOUT_MS,
+      maxBuffer: GIT_MAX_BUFFER,
+    });
+
+  const getRepositoryRoot = async configuredRoot => {
+    const resolvedRoot = await filePowers.realPath(configuredRoot);
+    const { stdout } = await execFileText(
+      'git',
+      ['rev-parse', '--show-toplevel'],
+      {
+        cwd: resolvedRoot,
+        env: makeGitEnv(resolvedRoot),
+        timeout: GIT_TIMEOUT_MS,
+        maxBuffer: GIT_MAX_BUFFER,
+      },
+    );
+    const actualRoot = await filePowers.realPath(stdout.trim());
+    if (actualRoot !== resolvedRoot) {
+      throw new Error(
+        `Git root must be the mount root: expected ${resolvedRoot}, got ${actualRoot}`,
+      );
+    }
+    return actualRoot;
+  };
+
+  const assertNoExecutableRepoConfig = async repoRoot => {
+    const { stdout } = await runGit(repoRoot, [
+      'config',
+      '--local',
+      '--name-only',
+      '--list',
+    ]);
+    const executableConfig = stdout
+      .split('\n')
+      .filter(name => EXECUTABLE_REPO_CONFIG.test(name));
+    if (executableConfig.length > 0) {
+      throw new Error(
+        `Refusing git operation because repository config can execute commands: ${executableConfig.join(', ')}`,
+      );
+    }
+  };
+
+  const checkRefFormat = async (repoRoot, branchName) => {
+    await runGit(repoRoot, ['check-ref-format', '--branch', branchName]);
+  };
+
+  return harden({
+    runGit,
+    getRepositoryRoot,
+    assertNoExecutableRepoConfig,
+    checkRefFormat,
+  });
+};
+harden(makeGitPowers);
+
 /**
  * @param {typeof import('crypto')} crypto
  * @returns {CryptoPowers}
@@ -661,6 +792,7 @@ export const makeDaemonicPowers = async ({
     fs,
     popen,
   );
+  const gitPowers = makeGitPowers({ popen, filePowers });
 
   return harden({
     crypto: cryptoPowers,
@@ -668,5 +800,6 @@ export const makeDaemonicPowers = async ({
     persistence: daemonicPersistencePowers,
     control: daemonicControlPowers,
     filePowers,
+    gitPowers,
   });
 };

@@ -224,12 +224,21 @@ type ScratchMountFormula = {
   readOnly: boolean;
 };
 
+type GitFormula = {
+  type: 'git';
+  mount: FormulaIdentifier;
+};
+
 export type MountDeferredTaskParams = {
   mountId: FormulaIdentifier;
 };
 
 export type ScratchMountDeferredTaskParams = {
   scratchMountId: FormulaIdentifier;
+};
+
+export type GitDeferredTaskParams = {
+  gitId: FormulaIdentifier;
 };
 
 type LookupFormula = {
@@ -411,6 +420,7 @@ export type Formula =
   | ReadableTreeFormula
   | MountFormula
   | ScratchMountFormula
+  | GitFormula
   | LookupFormula
   | MakeUnconfinedFormula
   | MakeArchiveFormula
@@ -891,6 +901,73 @@ export interface EndoMount {
   readOnly(): EndoMount;
   snapshot(): Promise<unknown>;
 }
+
+export type GitRef = {
+  kind: string;
+  name: string;
+  oid?: string;
+};
+
+export type GitCommit = {
+  oid: string;
+  subject: string;
+};
+
+export interface EndoGit {
+  worktree(): EndoMount;
+  status(): Promise<string>;
+  diff(options?: {
+    staged?: boolean;
+    base?: string | GitRef;
+    head?: string | GitRef;
+    entries?: EndoMountEntry[];
+  }): Promise<string>;
+  log(options?: { ref?: string | GitRef; maxCount?: number }): Promise<string>;
+  show(ref: string | GitRef): Promise<string>;
+  revParse(ref: string | GitRef): Promise<GitRef>;
+  add(entries: EndoMountEntry[]): Promise<string>;
+  restore(
+    entries: EndoMountEntry[],
+    options?: { staged?: boolean },
+  ): Promise<string>;
+  commit(message: string): Promise<GitCommit>;
+  currentBranch(): Promise<GitRef | undefined>;
+  branches(options?: { all?: boolean }): Promise<GitRef[]>;
+  createBranch(
+    branch: string,
+    options?: { startPoint?: string | GitRef; switchAfterCreate?: boolean },
+  ): Promise<GitRef>;
+  deleteBranch(branch: string, options?: { force?: boolean }): Promise<string>;
+  renameBranch(branch: string, newName: string): Promise<string>;
+  switch(
+    ref: string | GitRef,
+    options?: {
+      create?: boolean;
+      detach?: boolean;
+      startPoint?: string | GitRef;
+    },
+  ): Promise<string>;
+  merge(
+    ref: string | GitRef,
+    options?: { noFastForward?: boolean },
+  ): Promise<string>;
+  rebase(options: {
+    mode: 'start' | 'continue' | 'abort' | 'skip';
+    upstream?: string | GitRef;
+    branch?: string | GitRef;
+  }): Promise<string>;
+  stashPush(options?: {
+    message?: string;
+    includeUntracked?: boolean;
+    entries?: EndoMountEntry[];
+  }): Promise<string>;
+  stashList(): Promise<string>;
+  stashShow(stash?: string | GitRef): Promise<string>;
+  stashApply(stash?: string | GitRef): Promise<string>;
+  stashPop(stash?: string | GitRef): Promise<string>;
+  stashDrop(stash?: string | GitRef): Promise<string>;
+  tree(ref: string | GitRef): Promise<unknown>;
+}
 export interface EndoWorker {}
 
 export type MakeHostOrGuestOptions = {
@@ -1019,6 +1096,10 @@ export interface EndoHost extends EndoAgent {
     petName: string | string[],
     opts?: { readOnly?: boolean },
   ): Promise<EndoMount>;
+  provideGit(
+    mountName: string | string[],
+    petName: string | string[],
+  ): Promise<EndoGit>;
   provideScratchMount(petName: string | string[]): Promise<EndoMount>;
   provideHostPath(cap: unknown): Promise<string>;
   provideGuest(
@@ -1302,6 +1383,16 @@ export type FilePowers = {
   exists: (path: string) => Promise<boolean>;
 };
 
+export type GitPowers = {
+  runGit: (
+    repoRoot: string,
+    args: string[],
+  ) => Promise<{ stdout: string; stderr: string }>;
+  getRepositoryRoot: (configuredRoot: string) => Promise<string>;
+  assertNoExecutableRepoConfig: (repoRoot: string) => Promise<void>;
+  checkRefFormat: (repoRoot: string, branchName: string) => Promise<void>;
+};
+
 export type AssertValidNameFn = (name: string) => void;
 
 export type DaemonDatabase = import('./daemon-database.js').DaemonDatabase;
@@ -1466,6 +1557,7 @@ export type DaemonicPowers = {
   persistence: DaemonicPersistencePowers;
   control: DaemonicControlPowers;
   filePowers: FilePowers;
+  gitPowers?: GitPowers;
 };
 
 type FormulateResult<T> = Promise<{
@@ -1728,6 +1820,11 @@ export interface DaemonCore {
     readOnly: boolean,
     deferredTasks: DeferredTasks<MountDeferredTaskParams>,
   ) => FormulateResult<unknown>;
+
+  formulateGit: (
+    mountId: FormulaIdentifier,
+    deferredTasks: DeferredTasks<GitDeferredTaskParams>,
+  ) => FormulateResult<EndoGit>;
 
   formulateScratchMount: (
     readOnly: boolean,

@@ -319,6 +319,8 @@ export const HostInterface = M.interface('EndoHost', {
   provideMount: M.call(M.string(), NameOrPathShape)
     .optional(M.splitRecord({}, { readOnly: M.boolean() }))
     .returns(M.promise()),
+  // Derive a local Git capability from a daemon-minted Mount
+  provideGit: M.call(NameOrPathShape, NameOrPathShape).returns(M.promise()),
   // Create a daemon-managed scratch mount
   provideScratchMount: M.call(NameOrPathShape)
     .optional(M.splitRecord({}, { readOnly: M.boolean() }))
@@ -557,6 +559,114 @@ export const MountEntryInterface = M.interface('EndoMountEntry', {
   openDirectory: M.call().returns(M.promise()),
   openFile: M.call().returns(M.promise()),
   child: M.call(M.string()).returns(MountEntryShape),
+  help: M.call().returns(M.string()),
+});
+
+const GitRefShape = M.splitRecord(
+  {
+    kind: M.string(),
+    name: M.string(),
+  },
+  {
+    oid: M.string(),
+  },
+);
+
+export const GitInterface = M.interface('EndoGit', {
+  worktree: M.call().returns(M.remotable()),
+  status: M.call().returns(M.promise()),
+  diff: M.call()
+    .optional(
+      M.splitRecord(
+        {},
+        {
+          staged: M.boolean(),
+          base: M.or(M.string(), GitRefShape),
+          head: M.or(M.string(), GitRefShape),
+          entries: M.arrayOf(MountEntryShape),
+        },
+      ),
+    )
+    .returns(M.promise()),
+  log: M.call()
+    .optional(
+      M.splitRecord(
+        {},
+        {
+          ref: M.or(M.string(), GitRefShape),
+          maxCount: M.number(),
+        },
+      ),
+    )
+    .returns(M.promise()),
+  show: M.call(M.or(M.string(), GitRefShape)).returns(M.promise()),
+  revParse: M.call(M.or(M.string(), GitRefShape)).returns(M.promise()),
+  add: M.call(M.arrayOf(MountEntryShape)).returns(M.promise()),
+  restore: M.call(M.arrayOf(MountEntryShape))
+    .optional(M.splitRecord({}, { staged: M.boolean() }))
+    .returns(M.promise()),
+  commit: M.call(M.string()).returns(M.promise()),
+  currentBranch: M.call().returns(M.promise()),
+  branches: M.call()
+    .optional(M.splitRecord({}, { all: M.boolean() }))
+    .returns(M.promise()),
+  createBranch: M.call(M.string())
+    .optional(
+      M.splitRecord(
+        {},
+        {
+          startPoint: M.or(M.string(), GitRefShape),
+          switchAfterCreate: M.boolean(),
+        },
+      ),
+    )
+    .returns(M.promise()),
+  deleteBranch: M.call(M.string())
+    .optional(M.splitRecord({}, { force: M.boolean() }))
+    .returns(M.promise()),
+  renameBranch: M.call(M.string(), M.string()).returns(M.promise()),
+  switch: M.call(M.or(M.string(), GitRefShape))
+    .optional(
+      M.splitRecord(
+        {},
+        {
+          create: M.boolean(),
+          detach: M.boolean(),
+          startPoint: M.or(M.string(), GitRefShape),
+        },
+      ),
+    )
+    .returns(M.promise()),
+  merge: M.call(M.or(M.string(), GitRefShape))
+    .optional(M.splitRecord({}, { noFastForward: M.boolean() }))
+    .returns(M.promise()),
+  rebase: M.call(M.record()).returns(M.promise()),
+  stashPush: M.call()
+    .optional(
+      M.splitRecord(
+        {},
+        {
+          message: M.string(),
+          includeUntracked: M.boolean(),
+          entries: M.arrayOf(MountEntryShape),
+        },
+      ),
+    )
+    .returns(M.promise()),
+  stashList: M.call().returns(M.promise()),
+  stashShow: M.call()
+    .optional(M.or(M.string(), GitRefShape))
+    .returns(M.promise()),
+  stashApply: M.call()
+    .optional(M.or(M.string(), GitRefShape))
+    .returns(M.promise()),
+  stashPop: M.call()
+    .optional(M.or(M.string(), GitRefShape))
+    .returns(M.promise()),
+  stashDrop: M.call()
+    .optional(M.or(M.string(), GitRefShape))
+    .returns(M.promise()),
+  tree: M.call(M.or(M.string(), GitRefShape)).returns(M.promise()),
   help: M.call().returns(M.string()),
 });
 

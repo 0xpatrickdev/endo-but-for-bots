@@ -11,6 +11,8 @@ import fsp from 'fs/promises';
 import path from 'path';
 import crypto from 'crypto';
 import fs from 'fs';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
 import { E, Far } from '@endo/far';
 import { makeExo } from '@endo/exo';
 import { M } from '@endo/patterns';
@@ -44,6 +46,7 @@ import {
  */
 
 const cryptoPowers = makeCryptoPowers(crypto);
+const execFileAsync = promisify(execFile);
 
 const { raw } = String;
 
@@ -3935,6 +3938,35 @@ const createMountFixture = async (basePath, files) => {
   }
 };
 
+/**
+ * @param {string} cwd
+ * @param {string[]} args
+ */
+const git = async (cwd, args) =>
+  execFileAsync('git', args, {
+    cwd,
+    env: {
+      PATH: process.env.PATH,
+      GIT_CONFIG_NOSYSTEM: '1',
+      GIT_CONFIG_GLOBAL: process.platform === 'win32' ? 'NUL' : '/dev/null',
+    },
+  });
+
+/** @param {string} repoPath */
+const createGitFixture = async repoPath => {
+  await fs.promises.mkdir(repoPath, { recursive: true });
+  await git(repoPath, ['init', '-b', 'main']);
+  await git(repoPath, ['config', 'user.name', 'Endo Test']);
+  await git(repoPath, ['config', 'user.email', 'endo-test@example.com']);
+  await fs.promises.writeFile(
+    path.join(repoPath, 'README.md'),
+    '# repo\n',
+    'utf-8',
+  );
+  await git(repoPath, ['add', 'README.md']);
+  await git(repoPath, ['commit', '-m', 'initial']);
+};
+
 // --- Retention sync tests ---
 
 testNeedsNodeWorker(
@@ -4528,6 +4560,64 @@ test('mount snapshots capture immutable tree and file views', async t => {
   const nestedSnapshotDir = await E(snapshotTree).lookup('nested');
   const nestedSnapshotFile = await E(nestedSnapshotDir).lookup('file.txt');
   t.is(await E(nestedSnapshotFile).text(), 'nested');
+});
+
+test('provideGit derives local git capability from a mount worktree', async t => {
+  const { host, config } = await prepareHost(t);
+
+  const repoPath = path.join(config.statePath, '..', 'git-capability-repo');
+  await createGitFixture(repoPath);
+
+  await E(host).provideMount(repoPath, 'git-worktree');
+  const worktree = await E(host).lookup('git-worktree');
+  const gitCap = await E(host).provideGit('git-worktree', 'git-cap');
+
+  t.regex(await E(gitCap).status(), /^## main/u);
+
+  const featureEntry = await E(worktree).entry('feature.txt');
+  await E(worktree).writeText(featureEntry, 'feature\n');
+  await E(gitCap).add([featureEntry]);
+  const commit = await E(gitCap).commit('feature work');
+  t.like(commit, { subject: 'feature work' });
+
+  const current = await E(gitCap).currentBranch();
+  t.like(current, { kind: 'branch', name: 'main' });
+
+  await E(gitCap).createBranch('topic', { switchAfterCreate: true });
+  const topic = await E(gitCap).currentBranch();
+  t.like(topic, { kind: 'branch', name: 'topic' });
+
+  await E(worktree).writeText(featureEntry, 'feature\nscratch\n');
+  t.regex(await E(gitCap).diff({ entries: [featureEntry] }), /scratch/u);
+
+  await E(gitCap).stashPush({ message: 'scratch', entries: [featureEntry] });
+  t.regex(await E(gitCap).stashList(), /scratch/u);
+  await E(gitCap).stashPop();
+  t.regex(await E(gitCap).status(), /M feature\.txt/u);
+});
+
+test('provideGit enforces mount identity and read-only boundaries', async t => {
+  const { host, config } = await prepareHost(t);
+
+  const repoPath = path.join(config.statePath, '..', 'git-capability-repo-id');
+  const otherPath = path.join(config.statePath, '..', 'git-capability-other');
+  await createGitFixture(repoPath);
+  await createMountFixture(otherPath, {});
+
+  await E(host).provideMount(repoPath, 'git-worktree-id');
+  await E(host).provideMount(otherPath, 'git-other');
+  await E(host).provideMount(repoPath, 'git-readonly', { readOnly: true });
+
+  const gitCap = await E(host).provideGit('git-worktree-id', 'git-cap-id');
+  const otherMount = await E(host).lookup('git-other');
+  const otherEntry = await E(otherMount).entry('outside.txt');
+
+  await t.throwsAsync(() => E(gitCap).add([otherEntry]), {
+    message: /different mount root/,
+  });
+  await t.throwsAsync(() => E(host).provideGit('git-readonly', 'git-ro-cap'), {
+    message: /read-only/,
+  });
 });
 
 // symlink confinement tests
