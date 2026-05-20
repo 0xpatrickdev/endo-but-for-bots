@@ -65,7 +65,8 @@ import {
   readableTreeHelp,
 } from './help-text.js';
 import { makeMount, getMountBacking } from './mount.js';
-import { makeGit, makeNotYetImplementedBackend } from './git.js';
+import { makeGit } from './git.js';
+import { makeNativeGitBackend } from './native-git-backend.js';
 
 // Sorted:
 import {
@@ -2685,10 +2686,16 @@ const makeDaemonCore = async (
           X`Mount root ${q(backing.physicalRoot)} is not a git worktree (no .git entry at root)`,
         );
       }
-      return makeGit({
-        mount,
-        backend: makeNotYetImplementedBackend(),
+      // The native backend additionally runs `git rev-parse --show-toplevel`
+      // and verifies it matches the mount root; this catches mounts that
+      // contain a stray `.git` directory but aren't actually a worktree
+      // (e.g. submodule metadata directories).  The check is cached so
+      // subsequent operations don't re-exec.
+      const backend = makeNativeGitBackend({
+        repoRoot: backing.physicalRoot,
       });
+      await backend.assertRepositoryRoot();
+      return makeGit({ mount, backend });
     },
     lookup: ({ hub, path }, context) =>
       makeLookup(

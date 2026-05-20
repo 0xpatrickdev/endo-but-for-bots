@@ -11,6 +11,8 @@ import fsp from 'fs/promises';
 import path from 'path';
 import crypto from 'crypto';
 import fs from 'fs';
+import { execFile } from 'node:child_process';
+import { promisify as nodePromisify } from 'node:util';
 import { E, Far } from '@endo/far';
 import { makeExo } from '@endo/exo';
 import { M } from '@endo/patterns';
@@ -44,6 +46,7 @@ import {
  */
 
 const cryptoPowers = makeCryptoPowers(crypto);
+const execFileAsync = nodePromisify(execFile);
 
 const { raw } = String;
 
@@ -4909,19 +4912,30 @@ test('mount file - stat / append / snapshot', async t => {
 // git capability tests
 
 /**
- * Initialize a bare-bones repository fixture for git capability tests.
- * Writes `.git/HEAD` so the worktree-root check passes; no full repo
- * is needed at Phase 1 since the backend methods all throw "not yet
- * implemented".
+ * Initialize a real git worktree fixture.  The native backend runs
+ * `git rev-parse --show-toplevel` at formula instantiation, so the
+ * fixture must be a proper repository — `git init` plus an initial
+ * commit on `main` gives every Phase 1 test enough to work with.
  *
  * @param {string} basePath
  */
 const createGitWorktreeFixture = async basePath => {
   await fs.promises.rm(basePath, { recursive: true, force: true });
-  await fs.promises.mkdir(path.join(basePath, '.git'), { recursive: true });
-  await fs.promises.writeFile(
-    path.join(basePath, '.git', 'HEAD'),
-    'ref: refs/heads/main\n',
+  await fs.promises.mkdir(basePath, { recursive: true });
+  await execFileAsync('git', ['init', '-q', '-b', 'main'], { cwd: basePath });
+  await execFileAsync(
+    'git',
+    [
+      '-c',
+      'user.email=t@t',
+      '-c',
+      'user.name=T',
+      'commit',
+      '--allow-empty',
+      '-m',
+      'init',
+    ],
+    { cwd: basePath },
   );
   await fs.promises.writeFile(
     path.join(basePath, 'README.md'),

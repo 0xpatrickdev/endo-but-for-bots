@@ -6,12 +6,47 @@ import test from '@endo/ses-ava/prepare-endo.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { execFile } from 'node:child_process';
+import { promisify as nodePromisify } from 'node:util';
 
 import { E, Far } from '@endo/far';
 
 import { makeFilePowers } from '../src/daemon-node-powers.js';
 import { makeMount } from '../src/mount.js';
 import { makeGit, makeNotYetImplementedBackend } from '../src/git.js';
+import { makeNativeGitBackend } from '../src/native-git-backend.js';
+
+const execFileAsync = nodePromisify(execFile);
+
+/**
+ * Initialize a real git repository at a tmp path with an initial
+ * commit on `main`.  Returns the host path; the caller is responsible
+ * for adding the AVA teardown.
+ *
+ * @param {import('ava').ExecutionContext} t
+ */
+const provisionGitWorktree = async t => {
+  const root = await fs.promises.mkdtemp(
+    path.join(os.tmpdir(), 'native-git-'),
+  );
+  t.teardown(() => fs.promises.rm(root, { recursive: true, force: true }));
+  await execFileAsync('git', ['init', '-q', '-b', 'main'], { cwd: root });
+  await execFileAsync(
+    'git',
+    [
+      '-c',
+      'user.email=t@t',
+      '-c',
+      'user.name=T',
+      'commit',
+      '--allow-empty',
+      '-m',
+      'init commit',
+    ],
+    { cwd: root },
+  );
+  return root;
+};
 
 /**
  * @param {import('ava').ExecutionContext} t
@@ -108,6 +143,116 @@ test('Git scaffold methods all surface a clear "not yet implemented"', async t =
   await t.throwsAsync(E(git).add([fakeEntry]), {
     message: /Git.add is not yet implemented/,
   });
+});
+
+test('NativeGitBackend.assertRepositoryRoot accepts an exact worktree root', async t => {
+  const repoRoot = await provisionGitWorktree(t);
+  const backend = makeNativeGitBackend({ repoRoot });
+  await t.notThrowsAsync(backend.assertRepositoryRoot());
+});
+
+test('NativeGitBackend.assertRepositoryRoot rejects a non-worktree directory', async t => {
+  const bare = await fs.promises.mkdtemp(
+    path.join(os.tmpdir(), 'native-git-bare-'),
+  );
+  t.teardown(() => fs.promises.rm(bare, { recursive: true, force: true }));
+  const backend = makeNativeGitBackend({ repoRoot: bare });
+  // No `.git` here, so `git rev-parse --show-toplevel` errors out and
+  // the backend surfaces a structured failure rather than silently
+  // operating against the user's surrounding repository.
+  await t.throwsAsync(backend.assertRepositoryRoot(), {
+    message: /not a git repository|repository root|rev-parse failed/i,
+  });
+});
+
+test('NativeGitBackend.currentBranch returns the symbolic ref name', async t => {
+  const repoRoot = await provisionGitWorktree(t);
+  const backend = makeNativeGitBackend({ repoRoot });
+  const head = await backend.currentBranch();
+  t.deepEqual(head, { name: 'main', kind: 'branch' });
+});
+
+test('NativeGitBackend.branches lists the local branches', async t => {
+  const repoRoot = await provisionGitWorktree(t);
+  // Add a second branch so `branches()` returns more than one row.
+  await execFileAsync('git', ['branch', 'feature/x'], { cwd: repoRoot });
+
+  const backend = makeNativeGitBackend({ repoRoot });
+  const refs = await backend.branches();
+  const names = refs.map(r => r.name).sort();
+  t.deepEqual(names, ['feature/x', 'main']);
+  // All entries report kind 'branch'.
+  for (const ref of refs) {
+    t.is(ref.kind, 'branch');
+  }
+});
+
+test('NativeGitBackend.revParse returns the resolved commit id', async t => {
+  const repoRoot = await provisionGitWorktree(t);
+  const backend = makeNativeGitBackend({ repoRoot });
+
+  const head = await backend.revParse('HEAD');
+  t.is(head.kind, 'commit');
+  // 40-char SHA-1; future SHA-256 repos extend to 64.
+  t.regex(head.oid || '', /^[0-9a-f]{40,64}$/);
+  // The `name` echoes the input so callers can correlate.
+  t.is(head.name, 'HEAD');
+});
+
+test('NativeGitBackend.log returns structured commit records', async t => {
+  const repoRoot = await provisionGitWorktree(t);
+  // Add a second commit so log has something to enumerate.
+  await fs.promises.writeFile(path.join(repoRoot, 'a.txt'), 'a');
+  await execFileAsync('git', ['add', 'a.txt'], { cwd: repoRoot });
+  await execFileAsync(
+    'git',
+    ['-c', 'user.email=t@t', '-c', 'user.name=T', 'commit', '-m', 'add a.txt'],
+    { cwd: repoRoot },
+  );
+
+  const backend = makeNativeGitBackend({ repoRoot });
+  const commits = await backend.log({ maxCount: 5 });
+  t.is(commits.length, 2);
+  // Most-recent-first ordering matches `git log`'s default.
+  t.is(commits[0].summary, 'add a.txt');
+  t.is(commits[1].summary, 'init commit');
+  for (const commit of commits) {
+    t.regex(commit.oid, /^[0-9a-f]{40,64}$/);
+    t.is(commit.author, 'T');
+    t.is(typeof commit.committedAt, 'number');
+  }
+});
+
+test('NativeGitBackend.show returns the commit text', async t => {
+  const repoRoot = await provisionGitWorktree(t);
+  const backend = makeNativeGitBackend({ repoRoot });
+  const text = await backend.show('HEAD');
+  t.regex(text, /init commit/);
+});
+
+test('NativeGitBackend.revParse rejects revisions starting with "-"', async t => {
+  const repoRoot = await provisionGitWorktree(t);
+  const backend = makeNativeGitBackend({ repoRoot });
+  // Defends against argument-injection via a revision that looks like
+  // a flag.  The public exo's interface guard rejects non-strings, but
+  // a string starting with `-` could otherwise become `git rev-parse
+  // --verify -delete-foo`.
+  await t.throwsAsync(backend.revParse('-delete'), {
+    message: /must not start with "-"/,
+  });
+});
+
+test('NativeGitBackend mutation ops still throw "not yet implemented"', async t => {
+  const repoRoot = await provisionGitWorktree(t);
+  const backend = makeNativeGitBackend({ repoRoot });
+  // Phase 2 will fill these in.  This pins the Phase 1 contract so a
+  // future commit that lands them updates the test alongside the impl.
+  await t.throwsAsync(backend.add([]), { message: /not yet implemented/ });
+  await t.throwsAsync(backend.commit('msg'), {
+    message: /not yet implemented/,
+  });
+  await t.throwsAsync(backend.status(), { message: /not yet implemented/ });
+  await t.throwsAsync(backend.diff({}), { message: /not yet implemented/ });
 });
 
 test('Git accepts both string and structured GitRef arguments', async t => {
