@@ -310,10 +310,17 @@ interface Git {
   stashPop(index?: number): Promise<void>;
   stashDrop(index?: number): Promise<void>;
 
-  // Immutable tree access.
-  tree(ref: GitRef | string): Promise<ReadableTree>;
+  // Immutable tree access (read-only sibling capability).
+  trees(): Promise<GitTreeProvider>;
 }
 ```
+
+`trees()` returns the read-only `GitTreeProvider` defined below.  Splitting
+immutable tree access off the mutable `Git` capability means a host can
+grant a read-only auditor agent just the `GitTreeProvider` without granting
+the worktree-mutation surface.  The two concerns named in § Two Git
+Concerns, Kept Separate live as two distinguishable capabilities, not as
+two methods on one Exo.
 
 The initial implementation can keep some result types textual where the
 stable structure is not yet worth committing to.  The path-bearing inputs
@@ -352,6 +359,12 @@ The tree provider should:
 - never expose mutation methods;
 - be usable anywhere a `ReadableTree` is accepted today, including
   checkin, checkout, staging, and later VFS mounting.
+
+Obtain it from a `Git` capability via `await E(git).trees()`.  The host may
+also expose a `provideGitTreeProvider()` shortcut for cases where the
+intent is read-only auditing and the caller should not be issued the full
+`Git` capability at all; that route is part of the *Open Questions*
+discussion of long-lived named trees.
 
 ### VFS Integration
 
@@ -512,7 +525,8 @@ the extra network and credential authority remains explicit.
 
 - A read-only worktree mount may support inspection and immutable tree reads
   but must reject mutating git operations.
-- `git.tree(ref)` returns immutable read capabilities.
+- `git.trees()` returns a `GitTreeProvider` whose `tree(ref)` returns
+  immutable read capabilities; the provider itself never exposes mutation.
 - `worktree.snapshot()` remains the way to capture the live worktree into
   content-addressed snapshot storage.
 
@@ -574,12 +588,16 @@ Complete the required phases from
 
 ### Phase 5: Git-Tree Provider
 
-- Implement `tree(ref) -> ReadableTree`.
+- Implement `GitTreeProvider` as a standalone capability returned by
+  `Git.trees()`.
+- Implement `GitTreeProvider.tree(ref) -> ReadableTree`.
 - Add tests for browsing blobs and subtrees at specific refs.
 - Verify compatibility with existing checkin / checkout / stage-tree flows.
 - Add a backend-private bulk tree path for large materialization operations,
   initially using `git archive --format=tar` if the native backend remains
   the practical implementation.
+- Add a host shortcut for granting `GitTreeProvider` without granting the
+  parent `Git` (the read-only-auditor profile).
 - Keep the provider separable so it can later be mounted by the VFS
   compositor.
 
@@ -667,9 +685,11 @@ Complete the required phases from
    from a raw path string once the mount model exists.
 2. **Entries, not strings, carry path authority.**  Path strings may appear
    at UI boundaries, but git operations consume mount-minted descriptors.
-3. **Live worktree and immutable trees are separate concerns.**  Mutating
-   worktree operations and read-only revision trees should not be forced into
-   one filesystem object.
+3. **Live worktree and immutable trees are separate capabilities.**
+   Mutable worktree operations live on `Git`; immutable revision-tree reads
+   live on a separately-granted `GitTreeProvider` obtained via
+   `git.trees()`.  This lets a host grant read-only auditor agents tree
+   access without the worktree-mutation surface.
 4. **Backend choice is replaceable.**  Native git is the practical initial
    backend; the capability contract should survive a backend change.
 5. **No hidden authority expansion.**  Git does not imply network or shell
