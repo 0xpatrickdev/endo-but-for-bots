@@ -330,6 +330,10 @@ Reasons:
 - the construction-time bundling is where the host enforces "this credential is only useful with this transport against this endpoint for this repo";
 - revocation is per-bundle: revoking the credential invalidates exactly the bundles that used it, no more.
 
+The cost is that the guest holding `GitRemote` cannot observe events that touch one bundled authority without holding the controller for that authority too: a credential identity rotation (the operator swapping the bearer token behind a `BearerCredential` via `GitCredentialController.rotate()`) is invisible to the agent unless the agent is also granted the credential controller, which would defeat the non-extractable-credential guarantee.
+The agent sees only "fetch succeeded" or "fetch failed with credential-revoked"; observing *which* credential identity served a given fetch requires the host-side audit surface.
+This is the deliberate trade-off the bundling pattern makes: an agent that wants finer-grained visibility into one of the three authority axes has to either hold the controller for it (and accept the wider authority) or read the host-retained audit log.
+
 The host-side **decomposition** surface is the Phase 5 controllers (`GitRemoteController`, `GitCredentialController`).
 Splitting policy edits and credential rotation off the guest-facing cap is what lets operators change those without re-issuing the bundle to the agent.
 
