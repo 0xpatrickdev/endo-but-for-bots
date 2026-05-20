@@ -360,13 +360,40 @@ interface EndoMountBacking {
 }
 ```
 
-The exact implementation can be a hidden facet, a WeakMap keyed by public
-mount Exos, or a sealer/unsealer pair.  The requirement is more important
-than the mechanism:
+### Implementation: Hidden Facet on the Mount Formula
 
-- guests can pass mounts and entries around;
-- trusted providers can prove two values belong to the same physical mount;
-- no public method reveals ambient filesystem paths.
+The mount formula gains an additional Exo facet — `EndoMountBacking` —
+that lives alongside the guest-visible `EndoMount` and `EndoMountFile`
+facets but is never returned by any public method.  Trusted daemon code
+holds a reference to the backing facet through a private host-side name
+table keyed on the mount's formula identifier; guest-visible introspection
+(`__getMethodNames__`, `inspect`, etc.) sees only the public facets.
+
+Trade-off rationale (WeakMap vs sealer/unsealer were the other live
+options):
+
+- a hidden Exo facet **survives daemon restart trivially** because it is
+  reconstituted from the same formula as its sibling public facet, which
+  matches `provideGit()`'s expectation that "the mount-derived `Git`
+  capability re-derives correctly after restart" without any extra
+  persistence machinery;
+- a `WeakMap` keyed on the public Exo would not survive restart; every
+  `provideGit()` after restart would have to re-derive the backing
+  out-of-band, doubling the surface that has to know about mount
+  internals;
+- a sealer/unsealer pair would need a persisted seal key with its own
+  threat model (where does the key live, how is it rotated, who else has
+  unseal authority) and adds a separate first-class secret to the daemon.
+
+The hidden-facet implementation:
+
+- guests can pass mounts and entries around without ever observing the
+  backing facet;
+- trusted providers prove two values belong to the same physical mount by
+  identity-checking against the backing facet keyed on the public mount's
+  formula id;
+- no public method reveals ambient filesystem paths; `getPhysicalRoot()`
+  is on the backing facet only.
 
 ## Relationship to `@endo/platform/fs`
 
