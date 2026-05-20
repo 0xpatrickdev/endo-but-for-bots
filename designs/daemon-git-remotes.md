@@ -91,15 +91,11 @@ Remote operations add at least two authorities that local git does not need:
 | network transport | `fetch` and `push` communicate outside the daemon boundary |
 | credentials | authenticated remotes must use secrets the agent should not inspect |
 
-Keeping them separate means:
-
-- a guest with `Git` can work locally but cannot exfiltrate by pushing;
-- a guest with network access cannot silently use repo credentials;
-- a guest with one remote credential cannot retarget it to another host;
-- hosts can revoke remote authority while leaving local repo work intact.
-
-The local and remote designs should ship close together for product reasons,
-but they should remain separate capabilities for security reasons.
+Keeping them separate means each authority can be granted, revoked, and
+audited independently, and a guest with one of them does not implicitly
+hold the others.  The local and remote designs ship close together for
+product reasons but stay separate capabilities for authority-isolation
+reasons.
 
 ## Dependencies
 
@@ -477,9 +473,7 @@ This belongs in the controller layer, not in the guest-held remote cap.
 - requires push direction;
 - validates source and destination against push policy;
 - refuses force, tag creation, and deletes unless explicitly authorized;
-- uses only the bound credential and endpoint;
-- is the most security-sensitive remote operation because it is an
-  exfiltration path and an external side effect.
+- uses only the bound credential and endpoint.
 
 ## Remote Data Plane
 
@@ -586,14 +580,12 @@ state can be revoked or changed independently.
 
 ### Required Restrictions
 
-- no raw remote URLs supplied by the guest at call time;
-- no arbitrary remote add / rename / set-url on the guest facet;
-- no public access to credential material;
-- no credential helper execution;
-- no ambient SSH agent or shell fallback in the HTTPS MVP;
-- no unrestricted refspecs;
-- no force-push, tag-push, or deletion unless separately enabled;
-- no push on a fetch-only remote;
+- no remote URLs or refspecs supplied by the guest at call time;
+- no remote add / rename / set-url on the guest facet;
+- no guest access to credential material; ambient credential helpers and
+  SSH agents are not consulted in the HTTPS MVP;
+- no force-push, tag-push, or deletion unless separately enabled, and no
+  push on a fetch-only remote;
 - no use of a remote after either the remote controller or credential has
   been revoked.
 

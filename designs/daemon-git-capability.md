@@ -555,17 +555,12 @@ is a private backend data plane.  The guest still receives object
 capabilities and structured results, not host paths, tar bytes, or raw git
 command authority.
 
-This optimization is especially relevant when:
-
-- importing an immutable commit subtree into content-addressed storage;
-- staging a git tree into a scratch mount;
-- constructing a source archive from a repository subtree;
-- comparing or indexing many files from the same revision;
-- avoiding one CapTP turn, one Exo lookup, or one `git cat-file` invocation
-  per file.
-
-It is less important for one-off interactive reads, where lazy `lookup()` and
-blob reads keep latency low and avoid loading data the agent will not use.
+This optimization matters whenever many files from one revision flow
+into a single sink: importing a commit subtree into content-addressed
+storage, staging a git tree into a scratch mount, constructing a source
+archive, indexing many files at once.  For one-off interactive reads,
+lazy `lookup()` and blob reads keep latency low and avoid loading data
+the agent will not use.
 
 The archive path must obey the same authority and validation rules as the
 rest of the git-tree backend:
@@ -709,16 +704,14 @@ the extra network and credential authority remains explicit.
 
 ### Required Restrictions
 
-- No raw git command passthrough.
-- No push, pull, fetch, clone, remote mutation, or credential helpers.
-- No public config mutation.
-- No hooks.
-- No aliases.
-- No external diff, fsmonitor, textconv, custom filters, merge drivers, or
-  signing helpers unless a future explicit capability design authorizes them.
-- No accepting arbitrary host paths.
-- All path-bearing operations consume `EndoMountEntry` values from the same
-  worktree mount.
+- No raw git command passthrough; no public config mutation.
+- No push, pull, fetch, clone, remote mutation, or credential helpers
+  (those live separately on [daemon-git-remotes](daemon-git-remotes.md)).
+- No hooks, aliases, external diff, fsmonitor, textconv, custom filters,
+  merge drivers, or signing helpers unless a future explicit capability
+  design authorizes them.
+- No accepting arbitrary host paths; all path-bearing operations consume
+  `EndoMountEntry` values from the same worktree mount.
 
 ### Read-Only and Snapshot Interactions
 
