@@ -151,6 +151,8 @@ const worktree = await E(host).provideMount('/repo', 'repo-worktree');
 const git = await E(host).provideGit(worktree, 'repo-git');
 ```
 
+The `petName` (the second argument, `'repo-git'` in the example above) registers the constructed `Git` capability in the host's name table so the operator can later resolve it back by name (e.g., `await E(host).lookup('repo-git')`).  It is purely a host-side handle for later lookup; the `Git`-deriving authority is the mount cap, not the name.
+
 Cap-passing is the only normative form on `provideGit`.
 Pet-name lookup is not part of this API: an agent-facing CLI or tool adapter that needs to look up a mount by name uses a separate `E(host).lookup(name)` capability (or whatever convenience method the harness layer provides) to resolve the name to a mount cap *before* calling `provideGit`.
 
