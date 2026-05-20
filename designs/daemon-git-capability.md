@@ -421,7 +421,7 @@ for (const entry of entries) {
 }
 
 // stage a file, commit it
-const readme = E(worktree).entry('README.md');
+const readme = await E(worktree).entry('README.md');
 await E(git).add([readme]);
 const commit = await E(git).commit('docs: update README');
 
