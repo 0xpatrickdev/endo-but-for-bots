@@ -155,28 +155,41 @@ pretend they can support live worktree mutations.
 
 ## Capability Construction
 
-The preferred host flow is capability-derived:
+The preferred host flow is capability-derived.  `provideGit()` takes an
+`EndoMount` capability as its first argument and a pet name as the second:
 
 ```js
 const worktree = await E(host).provideMount('/repo', 'repo-worktree');
+const git = await E(host).provideGit(worktree, 'repo-git');
+```
+
+A pet-name lookup form is also supported as a convenience:
+
+```js
 const git = await E(host).provideGit('repo-worktree', 'repo-git');
 ```
 
+When the first argument is a string, the host resolves it against its own
+name table and treats it as cap-passing of the resolved mount.  The
+cap-passing form is canonical; the pet-name form is sugar over it that
+exists for parity with other `provide*` host methods.
+
 `provideGit()`:
 
-1. resolves the named value to an `EndoMount`;
-2. uses the host-private mount backing grant to prove the mount is physical;
+1. accepts the mount capability directly, or resolves a pet name against
+   the host's name table and uses the result;
+2. uses the host-private mount backing grant (see
+   [daemon-mount-capabilities](daemon-mount-capabilities.md) § Host-Private
+   Physical Backing) to prove the mount is physical;
 3. verifies that the physical mount root is exactly a git worktree root;
 4. constructs a `Git` formula / Exo tied to that mount identity;
 5. stores only the formula references required to reconstitute the
    capability, not a guest-visible free-form path.
 
-Whether `provideGit()` takes a pet name, a mount capability, or a sealed
-mount grant is an implementation detail.  The required invariant is that
-git authority can only be derived from an already-authorized mount.
-There should be no parallel host API that mints local `Git` from a raw path
-string once the mount model exists; that would reintroduce an independent
-filesystem authority path beside `EndoMount`.
+The required invariant is that git authority can only be derived from an
+already-authorized mount.  There must be no parallel host API that mints
+local `Git` from a raw path string once the mount model exists; that would
+reintroduce an independent filesystem authority path beside `EndoMount`.
 
 Remote repository use composes later without changing that root:
 
@@ -648,9 +661,10 @@ Complete the required phases from
 
 ## Design Decisions
 
-1. **Git derives from `EndoMount`.**  A host path string is not the public
-   authority boundary, and `Git` should not be independently provisioned
-   from one once mount-derived git exists.
+1. **Git derives from `EndoMount`, by cap-passing.**  `provideGit(mountCap,
+   petName)` is the canonical entry point.  Pet-name lookup is a
+   convenience that resolves to cap-passing; no host API mints local `Git`
+   from a raw path string once the mount model exists.
 2. **Entries, not strings, carry path authority.**  Path strings may appear
    at UI boundaries, but git operations consume mount-minted descriptors.
 3. **Live worktree and immutable trees are separate concerns.**  Mutating
