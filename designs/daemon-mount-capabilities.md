@@ -383,6 +383,9 @@ Each captured tree-entry name is the exact name that existed at some moment duri
 The captures of different files may correspond to different moments.
 A concurrent writer that touches file A and then file B during the operation may produce a snapshot in which A reflects the post-write state while B reflects the pre-write state.
 The snapshot is hash-consistent per file, not per tree.
+
+**Missing-file and missing-directory races.**  A file removed mid-snapshot (the directory walk listed it, the per-file open found it absent) and a directory renamed or removed mid-snapshot (its listing succeeded, its child traversal found the path gone) **omit that entry from the snapshot tree** rather than fail the whole operation with a structured error.  The captured tree represents what was reachable from the mount root during the operation; an entry that vanished before its bytes could be captured was reachable for less than the whole walk and is excluded.  Reasoning: the per-file consistency contract above already permits the snapshot to represent different files at different moments, so omitting a moment-zero-existed-then-vanished entry is the natural extension of that mode, and the existing `@endo/platform/fs/lite` `checkinTree()` ingestion already accommodates a tree whose listing reflects what was reachable at walk time.  The structured-error alternative ("a missing-file race fails the whole snapshot") would push the burden onto every caller to retry against a sufficiently quiescent worktree, which the per-file mode already promises not to require.  If a downstream consumer surfaces a need to distinguish "absent because never present" from "absent because raced", the structured-error variant can be added as a stricter consistency mode alongside the future transactional mode.
+
 Stronger transactional capture (single filesystem instant across the whole tree) can be future work.
 
 ## Host-Private Physical Backing
