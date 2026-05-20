@@ -333,7 +333,8 @@ interface Git {
   tree(ref: GitRef | string): Promise<ReadableTree>;
 
   // Attenuation to a read-only posture.  Mutation methods on the returned
-  // cap throw at runtime in v1; v2 narrows the type to drop them.
+  // cap throw at runtime in the first implementation phase; the type
+  // narrows to drop them when structured shapes land in Phase 7.
   readOnly(): Git;
 }
 ```
@@ -347,10 +348,10 @@ capability even though tree access lives as a method on `Git` itself.
 Decision 6): the returned `Git` exposes the same methods, but the
 mutation methods (`add`, `restore`, `commit`, `createBranch`,
 `deleteBranch`, `renameBranch`, `switch`, `merge`, `rebase`, `stashPush`,
-`stashApply`, `stashPop`, `stashDrop`) throw at runtime in v1 and are
-narrowed out of the type in v2.  A read-only auditor agent holds the
-attenuated `Git`; the operator hands it `await E(git).readOnly()` rather
-than the unattenuated cap.
+`stashApply`, `stashPop`, `stashDrop`) throw at runtime initially and
+are narrowed out of the type when structured shapes land (Phase 7).  A
+read-only auditor agent holds the attenuated `Git`; the operator hands
+it `await E(git).readOnly()` rather than the unattenuated cap.
 
 ### Alternatives Considered for Tree Access Shape
 
@@ -404,13 +405,14 @@ await E(auditor).status();          // ok — read method
 await E(auditor).commit('nope');    // throws — mutation method on read-only
 ```
 
-### Future Structured Result Shapes
+### Structured Result Shapes (Phase 7)
 
 The text-returning methods (`diff`, `show`, `merge`, `rebase`, `stashList`,
-`stashShow`) ship as `Promise<string>` in v1 and migrate to structured
-shapes in v2.  Naming the eventual shapes now lets first-generation
-consumers plan a clean migration instead of writing a parser they will
-have to throw away.
+`stashShow`) ship as `Promise<string>` in the first implementation phase
+and gain structured-shape siblings in Phase 7 of the Implementation
+Plan.  Naming the eventual shapes here lets first-phase consumers plan
+a clean migration instead of writing a parser they will have to throw
+away.
 
 ```ts
 type GitDiffHunk = {
@@ -460,16 +462,17 @@ type GitRebaseResult =
   | { status: 'in-progress'; current: GitCommit };
 ```
 
-`v2` upgrades the `Git` interface in place; v1's text-returning methods
-move under `*Text()` siblings (`diffText`, `showText`, …) so callers that
-still want the porcelain output for display can keep it.  The migration is
-named in `## Migration Strategy` as a discrete step rather than an
-ambient "we'll structurally-improve later"; consumers who write against
-v1 can flip to v2 by replacing one method call per site.
+Phase 7 upgrades the `Git` interface in place; the first phase's
+text-returning methods move under `*Text()` siblings (`diffText`,
+`showText`, …) so callers that still want the porcelain output for
+display can keep it.  The migration is named in `## Migration Strategy`
+as a discrete step rather than an ambient "we'll structurally-improve
+later"; consumers who write against the first phase can flip to the
+structured shapes by replacing one method call per site.
 
 `stashList`'s structured shape, in the same vein, becomes
 `Promise<Array<{ index: number; ref: GitRef; message: string;
-created: GitCommit }>>`.  It ships as part of the same v2 cut.
+created: GitCommit }>>`.  It ships as part of the same Phase 7 cut.
 
 ## Why `EndoMountEntry` Is Required
 
@@ -496,7 +499,7 @@ The git-tree backend's read surface is `ReadableTree` (with blobs as
 ```ts
 interface GitTreeProvider {
   // Documented name for the shape Git.tree(ref) returns when factored
-  // out conceptually; in v1 tree access is a method on Git itself, not a
+  // out conceptually; tree access is a method on Git itself, not a
   // separately-grantable cap.  See § Alternatives Considered for Tree
   // Access Shape for the trade-off.
   tree(ref: GitRef | string): Promise<ReadableTree>;
@@ -589,10 +592,11 @@ The public `Git` capability is shaped for the native-git backend in
 [`packages/fae`](../packages/fae)'s existing reference implementation.  A
 later JS backend (`isomorphic-git`, an Endo-native HTTP git smart-protocol
 client, a daemon-local object-database walker) may require contract
-revisions in v2 or v3.  The contract below is best-effort
+revisions in a later phase.  The contract below is best-effort
 backend-pluggable, not contractually backend-replaceable; methods that
 turn out to leak native-git assumptions (sanitization, askpass, allowlist
-rejection) move to a `NativeGitBackend` sub-interface during that swap.
+rejection) move to a `NativeGitBackend` sub-interface in a later phase
+if and when that swap actually happens.
 
 ```ts
 // Essential backend contract (every backend must satisfy):
@@ -616,8 +620,8 @@ interface NativeGitBackend extends GitBackend {
 The split is deliberate: it names the parts of today's implementation that
 are accidentally specific to shelling-out, so a future JS backend can
 implement the essential contract without inheriting hooks that do not
-apply to it.  Until that swap actually happens, the v1 backend is the
-native one.
+apply to it.  Until that swap actually happens, the only backend in
+flight is the native one.
 
 ### Initial Backend: Native Git
 
@@ -644,9 +648,10 @@ across that floor:
 - `git status --porcelain=v2 --branch` for `status()` (NUL-terminated with
   `-z`);
 - `git log --pretty=format:%H%x1f%s%x1f%aN%x1f%aI%x1e` for `log()`;
-- `git diff --raw -z` plus `git diff` (text) for `diff()` v1; `git diff
-  --no-color --no-ext-diff` invariants for the v2 hunk parser
-  ([§ Future Structured Result Shapes](#future-structured-result-shapes));
+- `git diff --raw -z` plus `git diff` (text) for the first `diff()`
+  phase; `git diff --no-color --no-ext-diff` invariants for the
+  structured-shape hunk parser
+  ([§ Structured Result Shapes (Phase 7)](#structured-result-shapes-phase-7));
 - `git for-each-ref --format=...` for `branches()`;
 - `git rev-parse --verify --end-of-options` for `revParse()`;
 - `git ls-tree -z --long` and `git cat-file --batch` for lazy tree reads;
@@ -671,7 +676,7 @@ valid future experiment, especially for commit-tree reads or alternate
 storage backends.  Adopting one will sharpen the line between `GitBackend`
 (essential) and `NativeGitBackend` (native-only) and may surface methods
 that should move from one to the other.  Plan for the contract to evolve
-rather than treating it as frozen.
+across phases rather than treating it as frozen.
 
 Evaluation criteria for any future backend:
 
@@ -788,8 +793,8 @@ Complete the required phases from
 - Implement `Git.tree(ref) -> ReadableTree` directly on the `Git` cap
   (the `GitTreeProvider` shape names the returned read surface).
 - Implement `Git.readOnly()` returning an attenuated `Git`; mutation
-  methods throw at runtime in v1 and are dropped from the type in v2
-  alongside the structured-result-shape migration.
+  methods throw at runtime in this phase and are dropped from the type
+  in Phase 7 alongside the structured-result-shape migration.
 - Add tests for browsing blobs and subtrees at specific refs.
 - Add tests for read-only attenuation: every mutation method on a
   `readOnly()` cap throws; every read method still works.
@@ -813,6 +818,20 @@ Complete the required phases from
   provisioning exists.
 - Update [daemon-agent-tools](daemon-agent-tools.md) to point at the
   revised model.
+
+### Phase 7: Structured Result Shapes
+
+- Land the structured shapes named in § Structured Result Shapes
+  (`GitDiff`, `GitFileDiff`, `GitDiffHunk`, `GitShow`, `GitConflict`,
+  `GitMergeResult`, `GitRebaseResult`, structured `stashList`).
+- Rename the text-returning methods to `*Text` siblings (`diffText`,
+  `showText`, `mergeText`, `rebaseText`, `stashListText`,
+  `stashShowText`) so display consumers can keep the porcelain output.
+- Drop mutation methods from the type of `readOnly()` cap returns; the
+  runtime-throws behavior from Phase 5 stays as a defense-in-depth check.
+- Migrate every in-tree consumer of the text methods to the structured
+  shape in the same window; the `*Text` siblings remain available for
+  consumers that still need porcelain.
 
 ## Testing Plan
 
@@ -867,15 +886,15 @@ Complete the required phases from
 1. Preserve the current Fae implementation as a reference branch and test
    corpus.
 2. Build the mount prerequisites.
-3. Introduce `Git` v1 (text-returning `diff` / `show` / `merge` / `rebase` /
+3. Introduce `Git` (text-returning `diff` / `show` / `merge` / `rebase` /
    `stashList` / `stashShow`) without removing any existing ad hoc tool
    immediately.
-4. Move agent adapters onto `Git` v1.
+4. Move agent adapters onto `Git`.
 5. Retire path-configured wrappers after the capability path is exercised in
    real workflows.
-6. Land `Git` v2 with the structured shapes named in § Future Structured
-   Result Shapes; rename the v1 text methods to `*Text` so display
-   consumers can keep them.
+6. Land the structured-shape phase (Phase 7 of the Implementation Plan)
+   alongside `*Text` siblings; migrate in-tree consumers to the
+   structured shapes.
 
 ## Open Questions
 
@@ -913,17 +932,20 @@ real implementation surfaces new ones.
    Shape for the split-capability variant the design panel originally
    recommended and the rationale for picking attenuation instead.
 4. **Backend choice is best-effort pluggable, not contractually swappable.**
-   The v1 contract is shaped for the `NativeGitBackend` extracted from
-   `packages/fae`.  A future JS backend may force the essential
+   The first-phase contract is shaped for the `NativeGitBackend` extracted
+   from `packages/fae`.  A future JS backend may force the essential
    `GitBackend` contract to narrow as native-only methods migrate to
    `NativeGitBackend`.  The contract is allowed to evolve at backend-swap
-   time rather than being treated as frozen by v1.
+   time rather than being treated as frozen.
 5. **No hidden authority expansion.**  Git does not imply network or shell
    access, and a read-only mount does not become writable through git.
-6. **Text in v1, structured in v2.**  `diff` / `show` / `merge` / `rebase`
-   / `stashList` / `stashShow` return `Promise<string>` in v1 and migrate
-   to the shapes named in § Future Structured Result Shapes in v2.
-   Conflict state is modeled structurally from v2 onward (`GitConflict`).
+6. **Text first, then structured shapes.**  `diff` / `show` / `merge` /
+   `rebase` / `stashList` / `stashShow` return `Promise<string>` in the
+   first implementation phase; the structured-shapes phase
+   (Implementation Plan § Phase 7) introduces the shapes named in
+   § Structured Result Shapes (Phase 7) alongside `*Text` siblings for
+   the porcelain output.  Conflict state is modeled structurally from
+   the structured-shapes phase onward (`GitConflict`).
 7. **Pin repository identity separately from the worktree mount.**  The
    git formula records (a) the worktree mount identity AND (b) a
    repository-identity pin captured at construction time (the
@@ -944,7 +966,7 @@ real implementation surfaces new ones.
    cap shape.**  The operator hands the auditor `await E(git).readOnly()`
    and the auditor holds an attenuated `Git` whose mutation methods
    throw.  No `provideGitReadOnly()` or `provideGitTreeProvider()` host
-   shortcut exists in v1; the readOnly() attenuation is the documented
+   shortcut is part of the design; the readOnly() attenuation is the documented
    path.  If a future use case wants a tree-only-grant cap that hides
    the worktree methods entirely, the separately-grantable
    `GitTreeProvider` shape from § Alternatives Considered can be added
@@ -953,4 +975,4 @@ real implementation surfaces new ones.
     operations may use native archive streams internally (see § Bulk
     Tree Data Plane), but that does not change the guest-visible
     capability surface; no `stageGitTree()` style guest API exposes the
-    bulk path in v1.
+    bulk path.

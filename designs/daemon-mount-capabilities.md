@@ -380,7 +380,7 @@ delegate to the mount rather than holding minting authority directly.
 **throws** `EndoMountMissingError` for a missing one.  Callers that want
 to test before opening use `entry.exists()` first; the `entry.exists() →
 mount.lookup(entry)` pattern is the recommended idiom.  No `maybeLookup`
-sibling exists in v1; if usage warrants one later, it can be added without
+sibling is part of the initial design; if usage warrants one later, it can be added without
 contract breakage.  The throw-on-missing default matches `openFile` /
 `openDirectory` and is consistent with the existing `lookup(path)`
 behavior that exists today.
@@ -667,11 +667,11 @@ its associated phase.
    key.
 5. **Snapshot consistency is per-file, best-effort per-tree.**  Stronger
    modes are a future addition gated on a real consumer.
-6. **`readOnly()` keeps the same-named-throwing-Exo convention in v1.**
-   The structural-narrowing form (returning a `ReadableTree` / `ReadableBlob`
-   that has no mutation methods at all) lands in Phase 5 alongside the
-   shared `Directory` / `File` adoption; the v1 form preserves source
-   compatibility for the existing daemon callers.
+6. **`readOnly()` keeps the same-named-throwing-Exo convention initially.**
+   The structural-narrowing form (returning a `ReadableTree` /
+   `ReadableBlob` that has no mutation methods at all) lands in Phase 5
+   alongside the shared `Directory` / `File` adoption; the initial form
+   preserves source compatibility for the existing daemon callers.
 7. **`displayPath()` is public.**  The data is mount-relative-only (no
    host-path leak) and the convenience is worth more than the
    alternative "callers carry their own presentation string"; treating

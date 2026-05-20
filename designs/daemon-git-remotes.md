@@ -939,7 +939,7 @@ deliverable.
     (`pushRefspecs`, `allowForcePush`, `allowDelete`) covers the
     operator-known constraints; server-side rejection covers the
     provider-specific ones.
-11. **HTTPS transport input remains a general `HttpClient` in v1.**  A
+11. **HTTPS transport input remains a general `HttpClient` initially.**  A
     dedicated `GitHttpsTransport` capability may emerge later if
     spike-measured git-specific needs (smart-protocol pipelining,
     sideband channel handling) make it worth specializing.  Until then,
