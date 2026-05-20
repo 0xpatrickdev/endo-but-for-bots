@@ -151,29 +151,34 @@ pretend they can support live worktree mutations.
 
 ## Capability Construction
 
-The preferred host flow is capability-derived.  `provideGit()` takes an
-`EndoMount` capability as its first argument and a pet name as the second:
+The host flow is capability-derived.  `provideGit()` takes an `EndoMount`
+capability as its first argument and a pet name as the second:
 
 ```js
 const worktree = await E(host).provideMount('/repo', 'repo-worktree');
 const git = await E(host).provideGit(worktree, 'repo-git');
 ```
 
-A pet-name lookup form is also supported as a convenience:
+Cap-passing is the *only* form on `provideGit`.  Name-table lookup is a
+separate capability that callers exercise via `E(host).lookup(name)`
+first and then pass the resulting cap into `provideGit`:
 
 ```js
-const git = await E(host).provideGit('repo-worktree', 'repo-git');
+const worktree = await E(host).lookup('repo-worktree');
+const git = await E(host).provideGit(worktree, 'repo-git');
 ```
 
-When the first argument is a string, the host resolves it against its own
-name table and treats it as cap-passing of the resolved mount.  The
-cap-passing form is canonical; the pet-name form is sugar over it that
-exists for parity with other `provide*` host methods.
+The reason is ocap-discipline: a `provideGit(petName, ...)` form would
+mean the daemon's `host.provideGit` is exercising its own name-table
+lookup authority on the caller's behalf, conflating the `provideGit`
+capability with a name-table-lookup capability.  Keeping the two
+separate means a caller can hold one without the other.  Agent
+harnesses (Fae / Lal / Genie) may offer string convenience to LLMs at
+the harness layer; that does not change the daemon's contract.
 
 `provideGit()`:
 
-1. accepts the mount capability directly, or resolves a pet name against
-   the host's name table and uses the result;
+1. accepts the mount capability;
 2. uses the host-private mount backing grant (see
    [daemon-mount-capabilities](daemon-mount-capabilities.md) § Host-Private
    Physical Backing) to prove the mount is physical;
@@ -833,9 +838,12 @@ real implementation surfaces new ones.
 ## Design Decisions
 
 1. **Git derives from `EndoMount`, by cap-passing.**  `provideGit(mountCap,
-   petName)` is the canonical entry point.  Pet-name lookup is a
-   convenience that resolves to cap-passing; no host API mints local `Git`
-   from a raw path string once the mount model exists.
+   petName)` is the only entry point; cap-passing is the only form.
+   Pet-name lookup is a *separate* capability on the host's name table
+   (`E(host).lookup(name)`); `provideGit` itself accepts a cap only.
+   This avoids conflating the `provideGit` capability with a
+   name-table-lookup capability.  No host API mints local `Git` from a
+   raw path string once the mount model exists.
 2. **Entries, not strings, carry path authority.**  Path strings may appear
    at UI boundaries, but git operations consume mount-minted descriptors.
 3. **Live worktree and immutable trees are separate capabilities.**
