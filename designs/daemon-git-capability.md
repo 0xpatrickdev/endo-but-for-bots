@@ -555,6 +555,7 @@ This backend uses the host-private physical mount backing, not a path granted to
 #### Native Git Version Pin
 
 The backend pins **`git >= 2.30`** as its minimum supported version (ships with Ubuntu 22.04 LTS, macOS Monterey's git-installable, Homebrew's default, RHEL 9, and Debian 12).
+The load-bearing features that motivate the 2.30 floor — and that a future maintainer considering lowering the floor must replace or work without — are `git status --porcelain=v2` (introduced in 2.11, the stable machine-readable status format the `status()` parser depends on) and `git rev-parse --end-of-options` (introduced in 2.24, the explicit option/positional separator the `revParse()` invocation uses to refuse ref strings that begin with `--`).
 The chosen parsing surfaces are stable across that floor:
 
 - `git status --porcelain=v2 --branch` for `status()` (NUL-terminated with `-z`);
