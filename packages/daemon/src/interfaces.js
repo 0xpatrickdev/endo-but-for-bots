@@ -505,13 +505,21 @@ export const BlobInterface = M.interface('EndoBlob', {
 });
 
 const PathSegmentsShape = M.arrayOf(M.string());
-const PathArgShape = M.or(M.string(), PathSegmentsShape);
+const MountEntryShape = M.remotable('EndoMountEntry');
+const PathArgShape = M.or(M.string(), PathSegmentsShape, MountEntryShape);
 
 export const MountInterface = M.interface('EndoMount', {
   // ReadableTree-compatible surface
   has: M.call().rest(PathSegmentsShape).returns(M.promise()),
   list: M.call().rest(PathSegmentsShape).returns(M.promise()),
   lookup: M.call(PathArgShape).returns(M.promise()),
+  // Mount-scoped descriptors
+  entry: M.call(M.or(M.string(), PathSegmentsShape)).returns(MountEntryShape),
+  openDirectory: M.call(PathArgShape).returns(M.promise()),
+  openFile: M.call(PathArgShape).returns(M.promise()),
+  createDirectory: M.call(PathArgShape).returns(M.promise()),
+  createFile: M.call(PathArgShape).returns(M.promise()),
+  stat: M.call(PathArgShape).returns(M.promise()),
   // Raw data I/O
   readText: M.call(PathArgShape).returns(M.promise()),
   maybeReadText: M.call(PathArgShape).returns(M.promise()),
@@ -533,8 +541,22 @@ export const MountFileInterface = M.interface('EndoMountFile', {
   streamBase64: M.call().returns(M.remotable()),
   json: M.call().returns(M.promise()),
   writeText: M.call(M.string()).returns(M.promise()),
+  appendText: M.call(M.string()).returns(M.promise()),
   writeBytes: M.call(M.remotable()).returns(M.promise()),
+  stat: M.call().returns(M.promise()),
+  snapshot: M.call().returns(M.promise()),
   readOnly: M.call().returns(M.remotable()),
+  help: M.call().returns(M.string()),
+});
+
+export const MountEntryInterface = M.interface('EndoMountEntry', {
+  path: M.call().returns(PathSegmentsShape),
+  displayPath: M.call().returns(M.string()),
+  stat: M.call().returns(M.promise()),
+  lookup: M.call().returns(M.promise()),
+  openDirectory: M.call().returns(M.promise()),
+  openFile: M.call().returns(M.promise()),
+  child: M.call(M.string()).returns(MountEntryShape),
   help: M.call().returns(M.string()),
 });
 
