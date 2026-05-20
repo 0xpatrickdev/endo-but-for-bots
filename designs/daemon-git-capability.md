@@ -326,6 +326,73 @@ The initial implementation can keep some result types textual where the
 stable structure is not yet worth committing to.  The path-bearing inputs
 should not regress back to arbitrary strings.
 
+### Future Structured Result Shapes
+
+The text-returning methods (`diff`, `show`, `merge`, `rebase`, `stashList`,
+`stashShow`) ship as `Promise<string>` in v1 and migrate to structured
+shapes in v2.  Naming the eventual shapes now lets first-generation
+consumers plan a clean migration instead of writing a parser they will
+have to throw away.
+
+```ts
+type GitDiffHunk = {
+  oldStart: number;
+  oldLines: number;
+  newStart: number;
+  newLines: number;
+  lines: Array<{ kind: 'context' | 'add' | 'remove'; text: string }>;
+};
+
+type GitFileDiff = {
+  oldEntry?: EndoMountEntry;
+  newEntry?: EndoMountEntry;
+  oldMode?: number;
+  newMode?: number;
+  status: 'added' | 'modified' | 'deleted' | 'renamed' | 'copied';
+  hunks: GitDiffHunk[];
+  binary?: { oldSizeBytes?: number; newSizeBytes?: number };
+};
+
+type GitDiff = { files: GitFileDiff[] };
+
+type GitShow = {
+  commit: GitCommit;
+  parents: string[];
+  diff: GitDiff;
+};
+
+type GitConflict = {
+  entry: EndoMountEntry;
+  base?: { oid: string };
+  ours: { oid: string };
+  theirs: { oid: string };
+  markerStyle: 'merge' | 'diff3';
+};
+
+type GitMergeResult =
+  | { status: 'up-to-date'; head: GitRef }
+  | { status: 'fast-forward'; head: GitRef }
+  | { status: 'merged'; head: GitRef; merged: GitCommit }
+  | { status: 'conflicts'; conflicts: GitConflict[] };
+
+type GitRebaseResult =
+  | { status: 'completed'; head: GitRef; replayed: GitCommit[] }
+  | { status: 'conflicts'; current: GitCommit; conflicts: GitConflict[] }
+  | { status: 'aborted'; head: GitRef }
+  | { status: 'in-progress'; current: GitCommit };
+```
+
+`v2` upgrades the `Git` interface in place; v1's text-returning methods
+move under `*Text()` siblings (`diffText`, `showText`, …) so callers that
+still want the porcelain output for display can keep it.  The migration is
+named in `## Migration Strategy` as a discrete step rather than an
+ambient "we'll structurally-improve later"; consumers who write against
+v1 can flip to v2 by replacing one method call per site.
+
+`stashList`'s structured shape, in the same vein, becomes
+`Promise<Array<{ index: number; ref: GitRef; message: string;
+created: GitCommit }>>`.  It ships as part of the same v2 cut.
+
 ## Why `EndoMountEntry` Is Required
 
 `EndoMountFile` is correct for an existing file, but git routinely needs to
@@ -654,10 +721,15 @@ Complete the required phases from
 1. Preserve the current Fae implementation as a reference branch and test
    corpus.
 2. Build the mount prerequisites.
-3. Introduce `Git` without removing any existing ad hoc tool immediately.
-4. Move agent adapters onto `Git`.
+3. Introduce `Git` v1 (text-returning `diff` / `show` / `merge` / `rebase` /
+   `stashList` / `stashShow`) without removing any existing ad hoc tool
+   immediately.
+4. Move agent adapters onto `Git` v1.
 5. Retire path-configured wrappers after the capability path is exercised in
    real workflows.
+6. Land `Git` v2 with the structured shapes named in § Future Structured
+   Result Shapes; rename the v1 text methods to `*Text` so display
+   consumers can keep them.
 
 ## Open Questions
 
