@@ -854,6 +854,13 @@ export interface EndoReadable {
   json(): Promise<unknown>;
 }
 
+export interface EndoReadableTree {
+  sha256(): string;
+  has(...pathSegments: string[]): Promise<boolean>;
+  list(...pathSegments: string[]): Promise<string[]>;
+  lookup(path: string | string[]): Promise<EndoReadableTree | EndoReadable>;
+}
+
 export type EndoMountStat = {
   type: 'file' | 'directory';
   size: number;
@@ -980,7 +987,7 @@ export interface EndoGit {
   stashApply(stash?: string | GitRef): Promise<string>;
   stashPop(stash?: string | GitRef): Promise<string>;
   stashDrop(stash?: string | GitRef): Promise<string>;
-  tree(ref: string | GitRef): Promise<unknown>;
+  tree(ref: string | GitRef): Promise<EndoReadableTree>;
 }
 
 export type GitRemotePolicy = {
@@ -1433,6 +1440,10 @@ export type GitPowers = {
     repoRoot: string,
     args: string[],
   ) => Promise<{ stdout: string; stderr: string }>;
+  runGitBytes: (
+    repoRoot: string,
+    args: string[],
+  ) => Promise<{ stdout: Uint8Array; stderr: string }>;
   getRepositoryRoot: (configuredRoot: string) => Promise<string>;
   assertNoExecutableRepoConfig: (repoRoot: string) => Promise<void>;
   checkRefFormat: (repoRoot: string, branchName: string) => Promise<void>;
