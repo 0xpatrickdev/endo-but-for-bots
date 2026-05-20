@@ -1,8 +1,10 @@
 # Endo Design Documents
 
 *Last updated: 2026-05-20 (daemon mount and git capability plans revised
-per design-panel review: structured-result-shape migration named,
-GitTreeProvider split off Git, EndoMountBacking pinned to hidden-Exo-facet,
+per design-panel review: structured-result-shape migration deferred to Phase 7,
+`tree(ref)` and `readOnly()` both live on the `Git` cap,
+`NativeGitBackend` hardening envelope split off the essential `GitBackend` contract,
+EndoMountBacking pinned to hidden-Exo-facet,
 credential-injection mechanism named, native git pinned to >=2.30,
 restart-mid-operation tests added, open-question debt reduced from 20 to 2)*
 
@@ -11,8 +13,11 @@ restart-mid-operation tests added, open-question debt reduced from 20 to 2)*
 `EndoMount`, mount-scoped entry descriptors as values, snapshotting,
 and trusted physical-backing provenance as a hidden Exo facet),
 [daemon-git-capability](daemon-git-capability.md) (added 2026-05-18,
-revised 2026-05-20; revised git design over `EndoMount`, `EndoMountFile`,
-and `GitTreeProvider` as a sibling capability obtained via `git.trees()`),
+revised 2026-05-20; revised git design over `EndoMount` /
+`EndoMountFile`; `tree(ref)` for historical reads and `readOnly()`
+for attenuation both live on the `Git` cap; `NativeGitBackend`
+hardening envelope split off the essential `GitBackend` contract;
+structured result shapes deferred to Phase 7),
 [daemon-git-remotes](daemon-git-remotes.md) (added 2026-05-18, revised
 2026-05-20; MVP remote-git companion for fetch, pull, push, bounded HTTPS
 transport, controller-owned endpoint policy, and non-extractable
@@ -406,7 +411,7 @@ capabilities available to agents.
 | ~~daemon-content-store-gc~~ | **Complete** | Content-store pruning and scratch-mount directory cleanup at GC time; landed in PR #99 |
 | daemon-mount | In Progress | Phases 1-3, 5 implemented; symlink confinement, 20 integration tests; Phase 4 (sub-mounts, snapshot) and Phase 6 (CLI) remaining |
 | daemon-mount-capabilities | Proposed | Complete `EndoMount`: snapshot bridge, mount-scoped descriptors, handle-first navigation, trusted backing provenance |
-| daemon-git-capability | Proposed | Revised git design over `EndoMount` / `EndoMountEntry`, plus immutable git-tree providers |
+| daemon-git-capability | Proposed | Revised git design over `EndoMount` / `EndoMountEntry`; `tree(ref)` and `readOnly()` both live on the `Git` cap |
 | daemon-git-remotes | Proposed | MVP remote-git companion: fetch / pull / push composed from local `Git`, bounded HTTPS transport, endpoint policy, and credential caps |
 | filesystem-watchers | Not Started | `EndoMount.followNameChanges` parity with `EndoDirectory`; Node `fs.watch` adapter on `FilePowers` |
 | daemon-locator-terminology | Not Started | Clean locator API; unblocked |
