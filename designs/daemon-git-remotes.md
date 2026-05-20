@@ -199,9 +199,13 @@ interface GitRemote {
     tags?: boolean;
   }): Promise<GitFetchResult>;
 
+  // strategy uses an enum string rather than a tagged union because pull is
+  // a one-shot operation with mutually-exclusive integration choices, not a
+  // state machine.  rebase() uses a tagged union because its phases
+  // (start/continue/abort/skip) take genuinely different inputs.
   pull(options?: {
     branch?: GitRef | string;
-    mode?: 'merge' | 'rebase' | 'ff-only';
+    strategy?: 'merge' | 'rebase' | 'ff-only';
   }): Promise<GitPullResult>;
 
   push(options?: {
@@ -216,9 +220,15 @@ interface GitRemote {
 ### Result Types
 
 ```ts
+type GitRefUpdate = {
+  local?: GitRef; // present on push and on fetches that update tracking refs
+  remote: GitRef | string; // GitRef when known structurally, string otherwise
+  result: 'created' | 'updated' | 'up-to-date' | 'fast-forward'
+    | 'forced' | 'pruned' | 'rejected';
+};
+
 type GitFetchResult = {
-  updatedRefs: GitRef[];
-  prunedRefs: GitRef[];
+  updatedRefs: GitRefUpdate[]; // includes pruned entries with result='pruned'
 };
 
 type GitPullResult = {
@@ -228,13 +238,15 @@ type GitPullResult = {
 };
 
 type GitPushResult = {
-  updatedRefs: Array<{
-    local: GitRef;
-    remote: string;
-    result: 'created' | 'updated' | 'up-to-date';
-  }>;
+  updatedRefs: GitRefUpdate[];
 };
 ```
+
+`updatedRefs` is shape-aligned across fetch and push so consumers that
+present a unified "what changed on the remote" view do not branch on the
+operation.  Pruned refs are folded into the same array with
+`result: 'pruned'` instead of a separate `prunedRefs` field; that keeps
+the typed shape singular and lets a caller filter rather than join.
 
 The first implementation may return backend text alongside these summaries
 if native git output is still operationally useful.  The structured result

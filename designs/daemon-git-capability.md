@@ -287,6 +287,9 @@ interface Git {
   }): Promise<GitRef>;
   deleteBranch(name: string, options?: { force?: boolean }): Promise<void>;
   renameBranch(from: string, to: string): Promise<void>;
+  // switch() takes any ref, not only a branch name — it matches `git switch
+  // --detach <oid>` and the deliberate `*Branch` family is for branch-only
+  // operations.  A caller switching to a tag or commit-oid uses this method.
   switch(ref: GitRef | string): Promise<void>;
 
   // History editing and integration.
