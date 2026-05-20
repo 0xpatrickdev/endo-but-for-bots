@@ -830,28 +830,31 @@ export interface EndoReadable {
   json(): Promise<unknown>;
 }
 
+export interface EndoReadableTree {
+  sha256(): string;
+  has(...pathSegments: string[]): Promise<boolean>;
+  list(...pathSegments: string[]): Promise<string[]>;
+  lookup(path: string | string[]): Promise<EndoReadableTree | EndoReadable>;
+}
+
 export type EndoMountStat = {
-  type: 'file' | 'directory';
-  size: number;
-  mtimeMs: number;
+  kind: 'file' | 'directory' | 'symlink';
+  sizeBytes: number;
+  modifiedMs: number;
 };
 
 export interface EndoMountEntry {
-  path(): string[];
+  segments(): string[];
   displayPath(): string;
-  stat(): Promise<EndoMountStat | undefined>;
-  lookup(): Promise<EndoMount | EndoMountFile>;
-  openDirectory(): Promise<EndoMount>;
-  openFile(): Promise<EndoMountFile>;
   child(name: string): EndoMountEntry;
 }
 
 export interface EndoMountFile {
   text(): Promise<string>;
-  streamBase64(): FarRef<Reader<Uint8Array>>;
+  streamBase64(): FarRef<Reader<string>>;
   json(): Promise<unknown>;
   writeText(content: string): Promise<void>;
-  appendText(content: string): Promise<void>;
+  append(content: string): Promise<void>;
   writeBytes(readableRef: FarRef<AsyncIterator<Uint8Array>>): Promise<void>;
   stat(): Promise<EndoMountStat>;
   snapshot(): Promise<FarRef<EndoReadable>>;
@@ -860,17 +863,12 @@ export interface EndoMountFile {
 
 export interface EndoMount {
   has(...pathSegments: string[]): Promise<boolean>;
+  has(entry: EndoMountEntry): Promise<boolean>;
   list(...pathSegments: string[]): Promise<string[]>;
   lookup(
     path: string | string[] | EndoMountEntry,
   ): Promise<EndoMount | EndoMountFile>;
   entry(path: string | string[]): EndoMountEntry;
-  openDirectory(path: string | string[] | EndoMountEntry): Promise<EndoMount>;
-  openFile(path: string | string[] | EndoMountEntry): Promise<EndoMountFile>;
-  createDirectory(
-    path: string | string[] | EndoMountEntry,
-  ): Promise<EndoMount>;
-  createFile(path: string | string[] | EndoMountEntry): Promise<EndoMountFile>;
   stat(
     path: string | string[] | EndoMountEntry,
   ): Promise<EndoMountStat | undefined>;
@@ -882,15 +880,20 @@ export interface EndoMount {
     path: string | string[] | EndoMountEntry,
     content: string,
   ): Promise<void>;
+  makeDirectory(path: string | string[] | EndoMountEntry): Promise<void>;
+  makeFile(
+    path: string | string[] | EndoMountEntry,
+    content?: string | Uint8Array,
+  ): Promise<void>;
   remove(path: string | string[] | EndoMountEntry): Promise<void>;
   move(
     from: string | string[] | EndoMountEntry,
     to: string | string[] | EndoMountEntry,
   ): Promise<void>;
-  makeDirectory(path: string | string[] | EndoMountEntry): Promise<void>;
   readOnly(): EndoMount;
   snapshot(): Promise<unknown>;
 }
+
 export interface EndoWorker {}
 
 export type MakeHostOrGuestOptions = {
@@ -1295,9 +1298,12 @@ export type FilePowers = {
   removeDirectory: (path: string) => Promise<void>;
   renamePath: (source: string, target: string) => Promise<void>;
   realPath: (path: string) => Promise<string>;
-  statPath: (
-    path: string,
-  ) => Promise<{ type: 'file' | 'directory'; size: number; mtimeMs: number }>;
+  pathIdentity: (path: string) => Promise<string>;
+  statPath: (path: string) => Promise<{
+    kind: 'file' | 'directory' | 'symlink';
+    sizeBytes: number;
+    modifiedMs: number;
+  }>;
   isDirectory: (path: string) => Promise<boolean>;
   exists: (path: string) => Promise<boolean>;
 };
@@ -1530,6 +1536,7 @@ type FormulateNumberedHostParams = {
 
 export type FormulaValueTypes = {
   directory: EndoDirectory;
+  mount: EndoMount;
   network: EndoNetwork;
   peer: EndoGateway;
   'pet-store': PetStore;
@@ -1727,12 +1734,12 @@ export interface DaemonCore {
     mountPath: string,
     readOnly: boolean,
     deferredTasks: DeferredTasks<MountDeferredTaskParams>,
-  ) => FormulateResult<unknown>;
+  ) => FormulateResult<EndoMount>;
 
   formulateScratchMount: (
     readOnly: boolean,
     deferredTasks: DeferredTasks<ScratchMountDeferredTaskParams>,
-  ) => FormulateResult<unknown>;
+  ) => FormulateResult<EndoMount>;
 
   formulateInvitation: (
     hostAgentId: FormulaIdentifier,

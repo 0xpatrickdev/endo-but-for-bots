@@ -212,7 +212,7 @@ export const helpTextEntries = harden([
     {
       '': 'EndoMount - Live mutable access to a filesystem directory.\n\nAll paths are confined to the mount root. Symlinks that escape\nthe root are invisible. Use readOnly() for an attenuated view.',
       help: 'help(methodName?) -> string\nGet documentation for this interface or a specific method.',
-      has: 'has(...pathSegments) -> Promise<boolean>\nCheck if a path exists within the mount.\nEach argument is one path segment: has("dir", "file.txt").',
+      has: 'has(...pathSegments | entry) -> Promise<boolean>\nCheck if a path exists within the mount.\nEither pass path segments (has("dir", "file.txt")) or a single EndoMountEntry.',
       list: 'list(...pathSegments) -> Promise<string[]>\nList directory entries at the given path.\nEach argument is one path segment: list("subdir").\nCall with no arguments to list the root.\nEntries with symlinks escaping the mount root are excluded.',
       lookup:
         'lookup(path) -> Promise<EndoMount | EndoMountFile>\nResolve a path within the mount.\npath: string | string[] — Name or path segments.\nReturns EndoMount for directories, EndoMountFile for files.',
@@ -226,7 +226,10 @@ export const helpTextEntries = harden([
         'remove(path) -> Promise<void>\nRemove a file or empty directory.\npath: string | string[] — Name or path segments.',
       move: 'move(from, to) -> Promise<void>\nRename an entry within the mount.\nfrom: string | string[] — Source name or path segments.\nto: string | string[] — Destination name or path segments.',
       makeDirectory:
-        'makeDirectory(path) -> Promise<void>\nCreate a directory (and missing parents).\npath: string | string[] — Name or path segments.',
+        'makeDirectory(path) -> Promise<void>\nCreate a directory (and missing parents) at the given path.\npath: string | string[] | EndoMountEntry — Name, path segments, or mount entry.',
+      makeFile:
+        'makeFile(path, content?) -> Promise<void>\nCreate a file at the given path, with optional initial content.\npath: string | string[] | EndoMountEntry — Name, path segments, or mount entry.\ncontent: string | Uint8Array (optional) — Initial bytes. An existing file is truncated when content is provided.',
+      stat: 'stat(path) -> Promise<EndoMountStat | undefined>\nQuery metadata for a path within the mount.\npath: string | string[] | EndoMountEntry — Name, path segments, or mount entry.\nReturns undefined when the path is missing or escapes the mount.',
       readOnly:
         'readOnly() -> EndoMount\nReturns a read-only view of this mount.',
       snapshot:
@@ -244,6 +247,8 @@ export const helpTextEntries = harden([
       json: 'json() -> Promise<any>\nRead and parse the file as JSON.',
       writeText:
         'writeText(content) -> Promise<void>\nWrite a string to the file. Throws if read-only.',
+      append:
+        'append(content) -> Promise<void>\nAppend a string to the file. Throws if read-only.',
       writeBytes:
         'writeBytes(readableRef) -> Promise<void>\nWrite bytes from an async iterator. Throws if read-only.',
       readOnly:
