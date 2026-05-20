@@ -109,7 +109,7 @@ The guest should hold `EndoMount`, `EndoMountFile`, and related
 capabilities.  The guest should not receive the physical path that the
 daemon uses internally to implement a mount.
 
-### 2. Strings Select Within a Capability; They Are Not the Capability
+### 2. Strings Are Selectors, Not Authorities
 
 Relative strings remain useful for user input and convenience calls, but
 they should be consumed to mint mount-owned capabilities.  New APIs should
@@ -360,10 +360,16 @@ than reimplementing traversal:
   `@endo/platform/fs/lite` `checkinTree()`.
 
 `snapshot()` must state its consistency guarantee.  The minimum viable
-contract is "best-effort point-in-time traversal": if concurrent writers
-mutate the live tree during capture, the result is a valid snapshot but not
-necessarily one produced from a single filesystem instant.  Stronger
-transactional capture can be future work.
+contract is **per-file consistency, no per-tree guarantee**: each captured
+blob is the exact bytes that were present in that file at some moment
+during the snapshot operation, and each captured tree-entry name is the
+exact name that existed at some moment during the snapshot operation, but
+the captures of different files may correspond to different moments.  A
+concurrent writer that touches file A and then file B during the
+operation may produce a snapshot in which A reflects the post-write state
+while B reflects the pre-write state.  The snapshot is hash-consistent
+per file, not per tree.  Stronger transactional capture (single
+filesystem instant across the whole tree) can be future work.
 
 ## Host-Private Physical Backing
 

@@ -91,10 +91,10 @@ That work should remain useful as a reference for a `NativeGitBackend`.
 
 | Earlier shape | Revised shape |
 |---|---|
-| Repository root string configures authority | `EndoMount` carries public worktree authority |
-| Path strings are passed into git calls | `EndoMountEntry` values are passed after mount-local resolution |
-| Git only means commands against a worktree | Git has a mutable worktree facet plus immutable tree providers |
-| Adapter details leak into the tool design | Public `Git` capability is backend-neutral |
+| Repository root string configured authority | `EndoMount` carries public worktree authority |
+| Path strings were passed into git calls | `EndoMountEntry` values are passed after mount-local resolution |
+| Git only meant commands against a worktree | Git exposes a mutable worktree capability plus a sibling `GitTreeProvider` for immutable trees |
+| Adapter details leaked into the tool design | Public `Git` capability is backend-shaped (native-first), with `NativeGitBackend` named separately |
 
 ## Architecture
 
