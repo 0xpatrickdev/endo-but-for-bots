@@ -237,6 +237,8 @@ type GitRemoteFormula = {
   directions: Array<'fetch' | 'pull' | 'push'>;
   allowedRefs?: string[];
   allowForcePush?: boolean;
+  allowedProtocols?: string[];
+  credential?: GitRemoteCredentialPolicy;
 };
 
 export type MountDeferredTaskParams = {
@@ -862,6 +864,10 @@ export interface EndoReadableTree {
   lookup(path: string | string[]): Promise<EndoReadableTree | EndoReadable>;
 }
 
+export interface EndoGitTree extends EndoReadableTree {
+  archiveTar(): FarRef<Reader<string>>;
+}
+
 export type EndoMountStat = {
   type: 'file' | 'directory';
   size: number;
@@ -988,8 +994,14 @@ export interface EndoGit {
   stashApply(stash?: string | GitRef): Promise<string>;
   stashPop(stash?: string | GitRef): Promise<string>;
   stashDrop(stash?: string | GitRef): Promise<string>;
-  tree(ref: string | GitRef): Promise<EndoReadableTree>;
+  tree(ref: string | GitRef): Promise<EndoGitTree>;
 }
+
+export type GitRemoteCredentialPolicy = {
+  type: string;
+  label?: string;
+  audience?: string;
+};
 
 export type GitRemotePolicy = {
   remote: string;
@@ -997,6 +1009,8 @@ export type GitRemotePolicy = {
   directions: Array<'fetch' | 'pull' | 'push'>;
   allowedRefs?: string[];
   allowForcePush?: boolean;
+  allowedProtocols?: string[];
+  credential?: GitRemoteCredentialPolicy;
 };
 
 export interface EndoGitRemote {

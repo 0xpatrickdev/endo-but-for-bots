@@ -403,6 +403,7 @@ capabilities available to agents.
 | daemon-mount-capabilities | Proposed | Complete `EndoMount`: snapshot bridge, mount-scoped descriptors, handle-first navigation, trusted backing provenance |
 | daemon-git-capability | Proposed | Revised git design over `EndoMount` / `EndoMountEntry`, plus immutable git-tree providers |
 | daemon-git-remotes | Proposed | MVP remote-git companion: fetch / pull / push composed from local `Git`, bounded HTTPS transport, endpoint policy, and credential caps |
+| daemon-git-implementation-evaluation | In Progress | Current git implementation performance/security audit, including archive tree check-in, HTTPS-first remote policy, and sealed credential follow-up work |
 | filesystem-watchers | Not Started | `EndoMount.followNameChanges` parity with `EndoDirectory`; Node `fs.watch` adapter on `FilePowers` |
 | daemon-locator-terminology | Not Started | Clean locator API; unblocked |
 | daemon-rename-to-manager | Not Started | Rename `daemon.js`/`Daemon`/`MignonicPowers` to `manager.js`/`Manager`/`WorkerPowers` to align JS with Rust `endor` nomenclature |

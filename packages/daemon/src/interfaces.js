@@ -710,6 +710,15 @@ export const ReadableTreeInterface = M.interface('EndoReadableTree', {
   lookup: M.call(M.or(M.string(), M.arrayOf(M.string()))).returns(M.promise()),
 });
 
+export const GitTreeInterface = M.interface('EndoGitTree', {
+  help: M.call().optional(M.string()).returns(M.string()),
+  sha256: M.call().returns(M.string()),
+  has: M.call().rest(M.arrayOf(M.string())).returns(M.promise()),
+  list: M.call().rest(M.arrayOf(M.string())).returns(M.promise()),
+  lookup: M.call(M.or(M.string(), M.arrayOf(M.string()))).returns(M.promise()),
+  archiveTar: M.call().returns(M.promise()),
+});
+
 export const DaemonFacetForWorkerInterface = M.interface(
   'EndoDaemonFacetForWorker',
   {},
