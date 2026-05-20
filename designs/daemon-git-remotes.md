@@ -7,6 +7,11 @@
 | **Author** | 0xPatrick (prompted) |
 | **Status** | Proposed |
 
+> **Read in order.** This is doc 3 of 3.  It requires
+> [daemon-mount-capabilities](daemon-mount-capabilities.md) (doc 1) and
+> [daemon-git-capability](daemon-git-capability.md) (doc 2) as
+> prerequisites.
+
 ## What is the Problem Being Solved?
 
 The local-worktree design in
@@ -249,6 +254,27 @@ operation.  Pruned refs are folded into the same array with
 `result: 'pruned'` instead of a separate `prunedRefs` field; that keeps
 the typed shape singular and lets a caller filter rather than join.
 
+### Sample Use
+
+```js
+// fetch updates from origin
+const fetched = await E(remote).fetch({ prune: true });
+console.error(`updated ${fetched.updatedRefs.length} refs`);
+
+// publish a local branch as agent/topic
+const pushed = await E(remote).push({
+  source: 'agent/topic',
+  destination: 'refs/heads/agent/topic',
+  setUpstream: true,
+});
+for (const update of pushed.updatedRefs) {
+  console.error(update.remote, update.result);
+}
+
+// fast-forward pull
+await E(remote).pull({ strategy: 'ff-only' });
+```
+
 The first implementation may return backend text alongside these summaries
 if native git output is still operationally useful.  The structured result
 is the stable public shape.
@@ -274,11 +300,15 @@ The controller can narrow or widen policy after creation.  The guest-held
 
 ## Capability Construction
 
-The preferred host flow is composition:
+The preferred host flow is composition.  These calls are **one-time host
+setup**, run once when the operator provisions a remote for an agent; the
+resulting `GitRemote` (and credential cap) survive across daemon restart
+via formula reconstitution and do not need to be re-issued per agent
+session.
 
 ```js
 const worktree = await E(host).provideMount('/repo', 'repo-worktree');
-const git = await E(host).provideGit('repo-worktree', 'repo-git');
+const git = await E(host).provideGit(worktree, 'repo-git');
 
 const http = await E(host).provideHttpClient('github-http', {
   allowedOrigins: ['https://github.com'],
@@ -288,7 +318,7 @@ const credential = await E(host).provideBearerCredential('github-token', {
   audience: 'https://github.com',
 });
 
-const { remote, controller } = await E(host).provideGitRemote({
+const remote = await E(host).provideGitRemote({
   git,
   name: 'origin',
   url: 'https://github.com/endojs/endo.git',
@@ -305,15 +335,42 @@ const { remote, controller } = await E(host).provideGitRemote({
 });
 ```
 
-The exact maker names are placeholders.  The required properties are:
+The exact maker names are placeholders.  Phase 5 (see *Implementation
+Plan*) adds a sibling `provideGitRemoteController()` that returns the
+host-held controller for revocation / policy updates; until then, the
+operator's only post-setup lever is `revoke()` on the credential cap.
+
+The required properties are:
 
 - the remote is bound to one local `Git`;
 - the endpoint is host-specified and inspectable;
 - the transport is separately authorized and bounded before the remote is
   constructed;
-- the remote controller carries bounded endpoint / remote-use authority;
 - the credential is separately authorized and non-extractable;
-- the agent receives only `remote`, not the controllers.
+- the agent receives only `remote`, not the credential or transport caps.
+
+### Why bundle local + transport + credential into one `GitRemote`?
+
+The deliberate ergonomic choice is to compose the three authority inputs
+into one guest-facing capability rather than expose them separately and
+ask the agent to compose them on every call.  Reasons:
+
+- the agent's mental model is "fetch from origin / push to origin", not
+  "compose local repo + HTTPS transport + bearer credential for one
+  HTTPS GET";
+- the composition is fixed at construction time; an agent that holds
+  three loose caps could try to recombine them in ways the operator did
+  not authorize;
+- the construction-time bundling is where the host enforces "this
+  credential is only useful with this transport against this endpoint
+  for this repo";
+- revocation is per-bundle: revoking the credential invalidates exactly
+  the bundles that used it, no more.
+
+The host-side **decomposition** surface is the Phase 5 controllers
+(`GitRemoteController`, `GitCredentialController`).  Splitting policy
+edits and credential rotation off the guest-facing cap is what lets
+operators change those without re-issuing the bundle to the agent.
 
 ## Credentials
 

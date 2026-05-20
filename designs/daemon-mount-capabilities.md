@@ -3,9 +3,34 @@
 | | |
 |---|---|
 | **Created** | 2026-05-18 |
-| **Updated** | 2026-05-18 |
+| **Updated** | 2026-05-20 |
 | **Author** | 0xPatrick (prompted) |
 | **Status** | Proposed |
+
+> **Read in order.** This is doc 1 of 3.  The trio works as one design:
+> (1) [daemon-mount-capabilities](daemon-mount-capabilities.md) (you are
+> here) completes the mount surface; (2)
+> [daemon-git-capability](daemon-git-capability.md) builds a local git
+> capability on top of it; (3)
+> [daemon-git-remotes](daemon-git-remotes.md) adds the remote MVP on top
+> of (2).  Read in that order.
+
+## What You Should Know First
+
+This document assumes you know the following Endo primitives in one-line
+form; the rest of the doc names them without re-introducing them.
+
+- **`EndoMount`** (today) is the daemon's existing live-mount Exo: it
+  grants confined live access to one physical directory and returns
+  `EndoMountFile` handles.
+- **`ReadableTree` / `ReadableBlob`** are the shared read-surface
+  interfaces in [platform-fs](platform-fs.md); `EndoMount` and
+  `EndoMountFile` are already structurally compatible with their read
+  side.
+- **`Exo`** is the Endo "passable object with an interface guard"
+  primitive (`makeExo(name, interfaceGuard, methods)`); every public
+  capability in this doc is implemented as an Exo or a record under
+  `harden()`.
 
 ## What is the Problem Being Solved?
 

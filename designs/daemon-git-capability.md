@@ -7,6 +7,11 @@
 | **Author** | 0xPatrick (prompted) |
 | **Status** | Proposed |
 
+> **Read in order.** This is doc 2 of 3.  It requires
+> [daemon-mount-capabilities](daemon-mount-capabilities.md) (doc 1) as a
+> prerequisite and is required by
+> [daemon-git-remotes](daemon-git-remotes.md) (doc 3).
+
 ## What is the Problem Being Solved?
 
 Agents need useful local git workflows without receiving ambient shell
@@ -321,6 +326,29 @@ two methods on one Exo.
 The initial implementation can keep some result types textual where the
 stable structure is not yet worth committing to.  The path-bearing inputs
 should not regress back to arbitrary strings.
+
+### Sample Use
+
+```js
+// status the worktree
+const entries = await E(git).status();
+for (const entry of entries) {
+  if (entry.worktree !== 'clean') {
+    console.error(entry.path, entry.worktree);
+  }
+}
+
+// stage a file, commit it
+const readme = E(worktree).entry('README.md');
+await E(git).add([readme]);
+const commit = await E(git).commit('docs: update README');
+
+// browse a historical tree without touching the worktree
+const trees = await E(git).trees();
+const headTree = await E(trees).tree('HEAD');
+const oldReadme = await E(headTree).lookup('README.md');
+const text = await E(oldReadme).text();
+```
 
 ### Future Structured Result Shapes
 
