@@ -32,10 +32,14 @@ The important authority boundaries are:
 | `Git` | bounded local repository and worktree operations for that mount |
 | `GitTree` | immutable read authority for one git tree object |
 | `GitRemote` | bounded use of one remote name for fetch / pull / push |
+| `GitCredential` | non-extractable bearer/basic credential metadata and sealed use |
+| `GitRemoteController` / `GitCredentialController` | host-held policy, audit, rotation, and revocation |
 
 The native-git adapter runs selected `git` commands through daemon-owned powers.
 The execution envelope disables interactive prompting, system/global git config,
-hooks, external diff, fsmonitor, pagers, signing, and credential helpers.
+hooks, external diff, fsmonitor, pagers, signing, and ambient credential
+helpers.  Credentialed HTTPS calls opt into one daemon-owned helper for that
+single invocation.
 
 The first remote implementation is intentionally conservative:
 
@@ -46,7 +50,10 @@ The first remote implementation is intentionally conservative:
 - force push is rejected unless explicitly enabled;
 - remote protocols default to `https`;
 - `file` and `ssh` remotes require explicit opt-in through `allowedProtocols`;
-- credential policy currently accepts only non-secret metadata.
+- credential policy accepts either non-secret metadata or a daemon-minted
+  non-extractable `GitCredential`;
+- remote and credential controllers persist policy, audit, rotation, and
+  revocation sidecars across daemon restart.
 
 ## What This Branch Starts
 
@@ -55,13 +62,21 @@ This branch begins two data-plane changes from the design notes.
 First, git trees now expose an `archiveTar()` method.  The daemon's tree
 check-in path prefers that method when it is present, parses the native
 `git archive --format=tar` output, validates archive entry paths, and stores
-regular files, directories, and symlinks into the daemon content store.
+regular files and directories into the daemon content store.  Symlinks and
+unsupported modes are rejected until the mount/tree design has a portable
+symlink policy.
 
 Second, `GitRemote` now makes the first remote transport policy explicit.
 HTTPS is the default protocol.  Local filesystem remotes and SSH-style remotes
 are rejected unless the host opts into those protocols for that capability.
 Credential-looking secret fields such as `token`, `password`, `secret`,
 `privateKey`, and `passphrase` are rejected at capability construction time.
+
+Third, bearer and basic credentials are represented by non-extractable daemon
+capabilities.  Credential formulas contain only metadata; secret material lives
+in daemon-side sealed state and is supplied to native git only by trusted
+backend code.  Remote and credential controllers add the first restart-durable
+policy update, audit, rotation, and revocation surfaces.
 
 ## Performance Evaluation
 
@@ -103,16 +118,38 @@ whole tree through one native git command and one daemon parser.  It also keeps
 the data plane local and binary, rather than stretching tree contents across
 many CapTP messages.
 
-### Current Archive Limit
+### Current Archive Shape
 
-The initial archive implementation still buffers the tar output through the
-existing git command helper.  That is a deliberate first increment, not the
-final performance design.
+The archive implementation now uses a spawned native git process and streams
+stdout through the daemon's existing base64 reader-ref boundary.  The daemon
+decodes and parses the tar stream incrementally, validates each entry before
+storing it, and rejects path traversal, duplicate paths, unsupported modes, and
+symlinks.  That removes the full-archive buffer that existed in the first
+data-plane increment.  The daemon only selects this archive acceleration for
+GitTree objects registered by the local trusted backend; arbitrary guest objects
+that happen to expose an `archiveTar` method fall back to the normal
+`ReadableTree` check-in path.
 
-The next archive step should stream stdout from a spawned git process directly
-into a tar parser and the content store.  Until then, very large trees can still
-hit the native command buffer limit, and a large blob can still transiently live
-in memory as part of the full tar output.
+The remaining work is measurement rather than a known buffering bug: benchmark
+the generic object-walk check-in path against archive check-in on small,
+medium, and large repositories, then keep the faster path behind the
+backend-neutral `ReadableTree` contract.
+
+Benchmark note, 2026-05-20: a local proxy benchmark compared a generic
+object-walk shape (`git ls-tree -rz -r` plus one `git cat-file blob` process per
+file) with the archive shape (`git archive --format=tar HEAD`) on generated
+repositories.  This measures the native process/data-plane difference, not the
+full daemon content-store write cost.
+
+| Size | Files | Payload bytes | Object-walk wall time | Archive wall time |
+|---|---:|---:|---:|---:|
+| small | 25 | 25,600 | 332 ms | 14 ms |
+| medium | 500 | 512,000 | 6,724 ms | 42 ms |
+| large | 2,000 | 4,096,000 | 26,579 ms | 135 ms |
+
+The result is directionally strong enough to keep the archive path as the
+preferred daemon check-in acceleration and to reserve object-walk fallback for
+non-git `ReadableTree` providers.
 
 ### Remote Fetch and Push
 
@@ -161,30 +198,41 @@ The implementation has several good least-authority properties:
 - native git runs with a constrained environment;
 - ambient prompts, pagers, external diff, signing, hooks, and credential helpers
   are suppressed;
+- repository git-dir and common-dir filesystem identities are pinned after the
+  first operation, so replacing `.git` under a mounted worktree fails closed;
 - remote operations are separated from local repository operations;
 - `GitRemote` directions and ref policies are explicit;
 - `GitRemote` defaults to HTTPS instead of inheriting arbitrary remote
   transport silently;
+- `GitRemote` push rejects raw refspec syntax, deletes, tags, and force by
+  default;
 - secret-shaped credential fields are rejected rather than stored in formulas
   or echoed through inspect output.
+- bearer/basic credentials are daemon-minted, non-extractable capabilities;
+- credential secret material is absent from formulas, inspect output, command
+  arguments, logs, and guest-visible values;
+- credential audience is checked against the remote URL before invoking native
+  git;
+- remote controllers can update direction/ref/push policy, record audit
+  entries, and revoke a remote across daemon restart;
+- credential controllers can rotate or revoke sealed credential state across
+  daemon restart.
 
 ### Remaining Security Gaps
 
-The current remote implementation is not yet a full credential-safe HTTPS
-backend.  It is a safer policy envelope around native git remotes.
+The current remote implementation is now a credential-bearing HTTPS-capable
+native-git backend, but it is still a conservative first implementation.
 
 The main remaining gaps are:
 
 | Gap | Why it matters | Direction |
 |---|---|---|
-| No sealed credential cap yet | Authenticated HTTPS cannot happen without exposing or ambiently using a secret | Add non-extractable bearer/basic credential capabilities |
 | Endpoint policy is protocol-level first | `https` is better than arbitrary transport, but not the same as host/repo allowlisting | Bind remotes to exact origins and repository identities |
-| Existing repo remote config is still consulted | A preexisting `origin` can affect operations if the host does not bind an expected URL | Prefer controller-owned endpoint binding over mutable repo config |
-| `remote add` mutates `.git/config` | Policy state should not be hidden in mutable repository config | Use trusted temp config or backend-owned config state |
-| Credential helper suppression is coarse | Good for safety, but not a complete positive credential story | Inject credentials only through trusted backend code |
+| Existing repo remote config is still consulted when no explicit URL is supplied | A preexisting `origin` can affect operations if the host does not bind an expected URL | Prefer explicit endpoint binding and controller-owned policy over mutable repo config |
+| Credential helper injection uses a helper command plus sealed-state path | The secret value is absent from argv/env, but a pipe/fd helper would further narrow process-visible metadata | Move from helper-file state reads to trusted pipe or fd-passing once portability is verified |
 | Native git is trusted process code | Any native-git backend inherits git's parser and transport attack surface | Keep backend swappable and narrow inputs |
-| Archive tar is parsed in daemon code | Bulk input needs path and type validation | Keep accepting only git archive's regular file / dir / symlink set |
-| Revocation is formula-level only | Long-running native git processes need interruption semantics | Connect remote and credential controller revocation to process cancellation |
+| Archive tar is parsed in daemon code | Bulk input needs path and type validation | Keep accepting only regular file and directory entries until symlink policy is designed |
+| In-flight revocation does not interrupt already-running native git | Long-running native git processes need interruption semantics | Connect remote and credential controller revocation to process cancellation |
 
 The most important principle is that the guest-visible `GitRemote` should never
 receive a token, private key, credential-helper output, or arbitrary network
@@ -215,7 +263,7 @@ It gives one bounded command that emits a standard archive format.  The daemon
 can validate paths and entry types before committing content to the content
 store.
 
-The forward-looking shape is a streaming tar reader:
+The current shape is a streaming tar reader:
 
 ```text
 GitTree.archiveTar()
@@ -225,8 +273,8 @@ GitTree.archiveTar()
   -> content-store tree JSON
 ```
 
-The current branch has the API and validation shape but still buffers the tar
-inside the native git helper.
+This is intentionally an internal acceleration path for daemon tree check-in,
+not a reason to make arbitrary host archives a general guest-visible authority.
 
 ### Remote Packfile Plane
 
@@ -246,23 +294,18 @@ authority explicit.
 
 ## Near-Term Implementation Plan
 
-1. Land the current archive and HTTPS-default policy increment.
-2. Replace buffered `archiveTar()` with a streaming `spawn`-based native git
-   path.
-3. Add archive tests for nested directories, symlinks, duplicate paths, path
-   traversal rejection, and large-tree behavior.
-4. Introduce credential capabilities that can be used by trusted backend code
-   without giving the guest secret material.
-5. Bind `GitRemote` to explicit HTTPS origins and repository URLs, not just
+1. Add archive tests for nested directories, duplicate paths, path traversal
+   rejection, and larger-tree behavior beyond the current symlink rejection
+   coverage.
+2. Keep tightening `GitRemote` around explicit endpoint policy rather than
+   mutable repository remote config.
+3. Bind `GitRemote` to explicit HTTPS origins and repository URLs, not just
    protocol names.
-6. Stop using mutable repository remote config as the policy source of record.
-7. Return structured fetch / pull / push summaries with stdout and stderr as
-   diagnostic fields, not as the primary API contract.
-8. Add audit records for endpoint, refs, direction, result, and credential
+4. Extend structured fetch / pull / push summaries with updated-ref detail and
+   audit-safe stderr separation.
+5. Add audit records for endpoint, refs, direction, result, and credential
    policy label.
-9. Add cancellation and revocation tests for in-flight native git processes.
-10. Benchmark object-walk check-in versus archive check-in on small, medium, and
-    large repositories.
+6. Add cancellation and revocation tests for in-flight native git processes.
 
 ## Longer-Term Backend Options
 
@@ -293,4 +336,3 @@ The git data-plane work is on track when:
 - fetch and push move packfiles over a bounded transport instead of CapTP;
 - failures report structured policy or git errors that are safe to show to the
   guest.
-
