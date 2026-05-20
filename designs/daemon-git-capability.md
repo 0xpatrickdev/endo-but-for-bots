@@ -776,54 +776,54 @@ later be replaced by a thin adapter over the proper `Git` capability.
 Complete the required phases from
 [daemon-mount-capabilities](daemon-mount-capabilities.md):
 
-- [ ] `snapshot()`;
-- [ ] `EndoMountEntry`;
-- [ ] handle-oriented open/create APIs;
-- [ ] metadata;
-- [ ] host-private physical backing provenance.
+- [x] `snapshot()`;
+- [x] `EndoMountEntry`;
+- [x] handle-oriented open/create APIs;
+- [x] metadata;
+- [x] host-private physical backing provenance.
 
 ### Phase 1: Backend Contract and Formula Skeleton
 
-- [ ] Add `GitBackend` abstraction.
-- [ ] Add `Git` interface guards and types.
-- [ ] Add `git` formula type tying a git capability to a mount formula identity.
-- [ ] Add host method to derive git from an existing physical worktree mount.
-- [ ] Add exact-repository-root verification.
+- [x] Add `GitBackend` abstraction.
+- [x] Add `Git` interface guards and types.
+- [x] Add `git` formula type tying a git capability to a mount formula identity.
+- [x] Add host method to derive git from an existing physical worktree mount.
+- [x] Add exact-repository-root verification.
 
 ### Phase 2: Local Inspection Surface
 
-- [ ] Implement `worktree`, `status`, `diff`, `log`, `show`, and `revParse`.
-- [ ] Convert backend path results into `EndoMountEntry` values minted from the
+- [x] Implement `worktree`, `status`, `diff`, `log`, `show`, and `revParse`.
+- [x] Convert backend path results into `EndoMountEntry` values minted from the
   worktree mount.
-- [ ] Return structured status entries with optional live nodes when available.
+- [x] Return structured status entries with optional live nodes when available.
 
 ### Phase 3: Local Mutation Surface
 
-- [ ] Implement `add`, `restore`, and `commit`.
-- [ ] Implement branch listing / create / delete / rename / switch.
-- [ ] Enforce read-only mount rejection on all mutation calls.
-- [ ] Port the native hardening checks from the reference implementation into
+- [x] Implement `add`, `restore`, and `commit`.
+- [x] Implement branch listing / create / delete / rename / switch.
+- [x] Enforce read-only mount rejection on all mutation calls.
+- [x] Port the native hardening checks from the reference implementation into
   backend tests.
 
 ### Phase 4: Integration Workflows
 
-- [ ] Implement merge, rebase, and stash operations.
-- [ ] Define conflict-state reporting and ensure conflict entries are represented
+- [x] Implement merge, rebase, and stash operations.
+- [x] Define conflict-state reporting and ensure conflict entries are represented
   by `EndoMountEntry`, not path strings.
-- [ ] Add restart / persistence tests for long-lived git capabilities.
+- [x] Add restart / persistence tests for long-lived git capabilities.
 
 ### Phase 5: Git-Tree Reads and Read-Only Attenuation
 
-- [ ] Implement `Git.tree(ref) -> ReadableTree` directly on the `Git` cap
+- [x] Implement `Git.tree(ref) -> ReadableTree` directly on the `Git` cap
   (the `GitTreeProvider` shape names the returned read surface).
-- [ ] Implement `Git.readOnly()` returning an attenuated `Git`; mutation
+- [x] Implement `Git.readOnly()` returning an attenuated `Git`; mutation
   methods throw at runtime in this phase and are dropped from the type
   in Phase 7 alongside the structured-result-shape migration.
-- [ ] Add tests for browsing blobs and subtrees at specific refs.
-- [ ] Add tests for read-only attenuation: every mutation method on a
+- [x] Add tests for browsing blobs and subtrees at specific refs.
+- [x] Add tests for read-only attenuation: every mutation method on a
   `readOnly()` cap throws; every read method still works.
-- [ ] Verify compatibility with existing checkin / checkout / stage-tree flows.
-- [ ] Add a backend-private bulk tree path for large materialization operations,
+- [x] Verify compatibility with existing checkin / checkout / stage-tree flows.
+- [x] Add a backend-private bulk tree path for large materialization operations,
   initially using `git archive --format=tar` if the native backend remains
   the practical implementation.
 - [ ] Keep the read surface separable enough that, if a build-system or

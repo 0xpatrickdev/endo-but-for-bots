@@ -789,48 +789,48 @@ The public `GitRemote` contract should survive those swaps.
 
 ### Phase 1: Remote Model (MVA)
 
-- [ ] Add `GitRemote` and credential-capability types (`BearerCredential`,
+- [x] Add `GitRemote` and credential-capability types (`BearerCredential`,
   `BasicCredential`).
-- [ ] Add `git-remote` formula type bound to a local `Git`.
-- [ ] Add a host method to mint a `GitRemote` with policy baked in at
+- [x] Add `git-remote` formula type bound to a local `Git`.
+- [x] Add a host method to mint a `GitRemote` with policy baked in at
   construction (`provideGitRemote({...})`), including fetch-only,
   push-limited, and branch-limited validation.
-- [ ] The minimum viable agent flow (fetch + ff-only-pull + branch-limited
+- [x] The minimum viable agent flow (fetch + ff-only-pull + branch-limited
   push) is exercised end-to-end on this surface, with no controller in
   sight.  Controllers come in Phase 5.
 
 ### Phase 2: HTTPS Credentialed Fetch
 
-- [ ] Support HTTPS bearer/basic credential injection through trusted backend
+- [x] Support HTTPS bearer/basic credential injection through trusted backend
   code.
 - [ ] Implement `fetch()` with fixed endpoint and approved refspecs.
-- [ ] Keep packfile transfer on the HTTPS/native-git data plane rather than
+- [x] Keep packfile transfer on the HTTPS/native-git data plane rather than
   relaying git object bytes through CapTP.
-- [ ] Add revocation tests for remote and credential caps.
+- [x] Add revocation tests for remote and credential caps.
 
 ### Phase 3: Pull and Local Integration
 
-- [ ] Implement `pull()` as `fetch + local Git integration`.
-- [ ] Make the default integration mode explicit.
+- [x] Implement `pull()` as `fetch + local Git integration`.
+- [x] Make the default integration mode explicit.
 - [ ] Add divergence / conflict tests.
 
 ### Phase 4: Push for MVP
 
-- [ ] Implement branch-limited `push()`.
-- [ ] Deny force, tags, and deletes by default.
-- [ ] Keep push packfile transfer on the bounded HTTPS/native-git data plane.
-- [ ] Add audit entries for outbound ref updates.
-- [ ] Add end-to-end tests for publishing `agent/*` branches.
+- [x] Implement branch-limited `push()`.
+- [x] Deny force, tags, and deletes by default.
+- [x] Keep push packfile transfer on the bounded HTTPS/native-git data plane.
+- [x] Add audit entries for outbound ref updates.
+- [x] Add end-to-end tests for publishing `agent/*` branches.
 
 ### Phase 5: Controllers and Revocation
 
-- [ ] Add `GitRemoteController` and `GitCredentialController` for
+- [x] Add `GitRemoteController` and `GitCredentialController` for
   post-construction policy updates and revocation.
 - [ ] Add `GitRemoteSet` if a collection capability is useful (host can also
   defer this).
-- [ ] Wire `revoke()` against in-flight operations (see *daemon-restart
+- [x] Wire `revoke()` against in-flight operations (see *daemon-restart
   mid-operation* in the testing plan).
-- [ ] The agent-facing surface from Phase 1 does not change; controllers add a
+- [x] The agent-facing surface from Phase 1 does not change; controllers add a
   parallel host-held authority for ops-team work.
 
 ### Phase 6: Interactive Provisioning

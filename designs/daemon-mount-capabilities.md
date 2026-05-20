@@ -573,30 +573,30 @@ later adapter or migration is mostly mechanical.
 
 ### Phase 1: Finish the Existing Contract
 
-- [ ] Implement `EndoMount.snapshot()`.
-- [ ] Add integration tests for snapshot round-tripping:
-  - [ ] live mount -> snapshot tree
-  - [ ] nested directories
+- [x] Implement `EndoMount.snapshot()`.
+- [x] Add integration tests for snapshot round-tripping:
+  - [x] live mount -> snapshot tree
+  - [x] nested directories
   - [ ] binary file streaming
   - [ ] symlink confinement behavior
 - [ ] Update `daemon-mount.md` status once shipped.
 
 ### Phase 2: Add Entry Descriptors
 
-- [ ] Add `EndoMountEntryInterface`.
-- [ ] Add `entry(path)` to `EndoMount`.
-- [ ] Store normalized relative segments plus mount lineage provenance.
+- [x] Add `EndoMountEntryInterface`.
+- [x] Add `entry(path)` to `EndoMount`.
+- [x] Store normalized relative segments plus mount lineage provenance.
 - [ ] Add `segments()`, `displayPath()`, and `child()` on entries
   (value-shaped, no observational authority and no handle-minting per
   Design Decision 3).
 - [ ] Observational queries (`has(entry)`, `stat(entry)`) and
   handle-minting (`lookup(entry)`) all live on `EndoMount` and accept
   an entry as the path-bearing argument; see next phase.
-- [ ] Add descriptor provenance tests:
-  - [ ] entries from one mount rejected by another mount
+- [x] Add descriptor provenance tests:
+  - [x] entries from one mount rejected by another mount
   - [ ] read-only entries (via `readOnly()` mount) cannot regain write
     authority through handle-minting on a sibling mutable mount
-  - [ ] missing entries can round-trip without creating files
+  - [x] missing entries can round-trip without creating files
 
 ### Phase 3: Add Entry Overloads, Metadata, and the `makeFile` Sibling
 
@@ -604,22 +604,22 @@ later adapter or migration is mostly mechanical.
   overloads on `EndoMount`.  Each accepts an entry as the
   path-bearing argument (the no-observational-authority queries an
   earlier draft had on the entry itself).
-- [ ] Add `stat(path)` for the path-form metadata query.
+- [x] Add `stat(path)` for the path-form metadata query.
 - [ ] Add `makeFile(path, content?)` as the path-form sibling of
   `makeDirectory` (parallel construction; binary content via
   `Uint8Array`).  Existing path-form mutators (`writeText`, `remove`,
   `move`, `makeDirectory`) keep their current signatures unchanged.
-- [ ] Add `stat`, `append`, and `snapshot` on `EndoMountFile`.
-- [ ] Keep existing path convenience methods for compatibility.
-- [ ] Update help text and TypeScript declarations together with interface
+- [x] Add `stat`, `append`, and `snapshot` on `EndoMountFile`.
+- [x] Keep existing path convenience methods for compatibility.
+- [x] Update help text and TypeScript declarations together with interface
   guards.
 
 ### Phase 4: Add Trusted Backing Provenance
 
-- [ ] Introduce the host-private physical-backing facet or sealed-grant
+- [x] Introduce the host-private physical-backing facet or sealed-grant
   mechanism.
-- [ ] Ensure public mounts do not expose backing paths.
-- [ ] Add tests proving trusted code can correlate a mount with its backing
+- [x] Ensure public mounts do not expose backing paths.
+- [x] Add tests proving trusted code can correlate a mount with its backing
   while guest-visible introspection cannot recover that path.
 
 ### Phase 5: Converge with Shared Filesystem Types
