@@ -4459,6 +4459,77 @@ test('mount file writeText and json', async t => {
   t.is(actualContent, '{"version": 2}');
 });
 
+test('mount entry descriptors support create, open, stat, and provenance', async t => {
+  const { host, config } = await prepareHost(t);
+
+  const mountPath = path.join(config.statePath, '..', 'mount-test-entry');
+  const otherPath = path.join(config.statePath, '..', 'mount-test-entry-other');
+  await createMountFixture(mountPath, {
+    'src/existing.txt': 'existing',
+  });
+  await createMountFixture(otherPath, {});
+
+  await E(host).provideMount(mountPath, 'test-mount-entry');
+  await E(host).provideMount(otherPath, 'test-mount-entry-other');
+  const mount = await E(host).lookup(['test-mount-entry']);
+  const otherMount = await E(host).lookup(['test-mount-entry-other']);
+
+  const createdEntry = await E(mount).entry(['src', 'created.txt']);
+  t.is(await E(createdEntry).displayPath(), 'src/created.txt');
+  t.deepEqual(await E(createdEntry).path(), ['src', 'created.txt']);
+  t.is(await E(createdEntry).stat(), undefined);
+
+  const createdFile = await E(mount).createFile(createdEntry);
+  await E(createdFile).writeText('created');
+  await E(createdFile).appendText(' and appended');
+  t.is(await E(createdFile).text(), 'created and appended');
+
+  const stat = await E(mount).stat(createdEntry);
+  t.like(stat, { type: 'file', size: 'created and appended'.length });
+
+  const srcEntry = await E(mount).entry('src');
+  const srcDir = await E(mount).openDirectory(srcEntry);
+  t.deepEqual(await E(srcDir).list(), ['created.txt', 'existing.txt']);
+
+  const childEntry = await E(srcEntry).child('created.txt');
+  const openedFile = await E(childEntry).openFile();
+  t.is(await E(openedFile).text(), 'created and appended');
+
+  await t.throwsAsync(() => E(otherMount).readText(createdEntry), {
+    message: /different mount root/,
+  });
+});
+
+test('mount snapshots capture immutable tree and file views', async t => {
+  const { host, config } = await prepareHost(t);
+
+  const mountPath = path.join(config.statePath, '..', 'mount-test-snapshot');
+  await createMountFixture(mountPath, {
+    'live.txt': 'initial',
+    'nested/file.txt': 'nested',
+  });
+
+  await E(host).provideMount(mountPath, 'test-mount-snapshot');
+  const mount = await E(host).lookup(['test-mount-snapshot']);
+
+  const snapshotTree = await E(mount).snapshot();
+  const snapshotFile = await E(snapshotTree).lookup('live.txt');
+  const liveFile = await E(mount).openFile('live.txt');
+
+  const snapshotBlob = await E(liveFile).snapshot();
+
+  await E(liveFile).writeText('changed');
+  await E(mount).writeText(['nested', 'file.txt'], 'changed nested');
+
+  t.is(await E(snapshotFile).text(), 'initial');
+  t.is(await E(snapshotBlob).text(), 'initial');
+  t.is(await E(liveFile).text(), 'changed');
+
+  const nestedSnapshotDir = await E(snapshotTree).lookup('nested');
+  const nestedSnapshotFile = await E(nestedSnapshotDir).lookup('file.txt');
+  t.is(await E(nestedSnapshotFile).text(), 'nested');
+});
+
 // symlink confinement tests
 
 /**
