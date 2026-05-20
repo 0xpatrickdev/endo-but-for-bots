@@ -520,6 +520,8 @@ export const MountInterface = M.interface('EndoMount', {
   remove: M.call(PathArgShape).returns(M.promise()),
   move: M.call(PathArgShape, PathArgShape).returns(M.promise()),
   makeDirectory: M.call(PathArgShape).returns(M.promise()),
+  // Descriptor minting (mount-scoped logical references)
+  entry: M.call(PathArgShape).returns(M.remotable()),
   // Attenuation
   readOnly: M.call().returns(M.remotable()),
   // Snapshot
@@ -536,6 +538,17 @@ export const MountFileInterface = M.interface('EndoMountFile', {
   writeBytes: M.call(M.remotable()).returns(M.promise()),
   readOnly: M.call().returns(M.remotable()),
   help: M.call().returns(M.string()),
+});
+
+export const MountEntryInterface = M.interface('EndoMountEntry', {
+  segments: M.call().returns(M.arrayOf(M.string())),
+  displayPath: M.call().returns(M.string()),
+  exists: M.call().returns(M.promise()),
+  stat: M.call().returns(M.promise()),
+  lookup: M.call().returns(M.promise()),
+  openFile: M.call().returns(M.promise()),
+  openDirectory: M.call().returns(M.promise()),
+  child: M.call(M.string()).returns(M.remotable()),
 });
 
 export const ReadableTreeInterface = M.interface('EndoReadableTree', {

@@ -7,7 +7,11 @@ import { q } from '@endo/errors';
 import { makeExo } from '@endo/exo';
 
 import { mountHelp, mountFileHelp, makeHelp } from './help-text.js';
-import { MountInterface, MountFileInterface } from './interfaces.js';
+import {
+  MountInterface,
+  MountFileInterface,
+  MountEntryInterface,
+} from './interfaces.js';
 import { makeReaderRef } from './reader-ref.js';
 
 /**
@@ -158,6 +162,55 @@ harden(isConfinedPath);
  */
 
 /**
+ * Provenance maps for mount-scoped entry descriptors.  An entry minted by
+ * one mount lineage carries a private sentinel that consumers can probe to
+ * verify it was minted by an authorized mount.  Phase 2 records the keys;
+ * Phase 3 adds the consumers that check them.
+ *
+ * @type {WeakMap<object, object>}
+ */
+const entryLineageKey = new WeakMap();
+/** @type {WeakMap<object, object>} */
+const mountLineageKey = new WeakMap();
+
+/**
+ * Test helper exposed for downstream consumers (Phase 3 mount nav, the
+ * future git capability) — returns the lineage sentinel for a mount or
+ * entry exo, or undefined if the value is not one we minted.
+ *
+ * @param {object} value
+ * @returns {object | undefined}
+ */
+export const lineageOf = value => {
+  return entryLineageKey.get(value) || mountLineageKey.get(value);
+};
+harden(lineageOf);
+
+/**
+ * Validate a segment for descriptor minting.  Stricter than
+ * `assertValidSegment`: also rejects `.` and `..` so the descriptor's
+ * normalized segments are exactly what the caller named.
+ *
+ * @param {string} segment
+ */
+const assertDescriptorSegment = segment => {
+  assertValidSegment(segment);
+  if (segment === '.' || segment === '..') {
+    throw new Error(
+      `Mount entry segment must not be ${q(segment)}; entry paths reject traversal rather than clamping`,
+    );
+  }
+};
+harden(assertDescriptorSegment);
+
+/**
+ * @typedef {object} EndoMountStat
+ * @property {'file' | 'directory' | 'symlink'} kind
+ * @property {number} [sizeBytes]
+ * @property {number} [modifiedMs]
+ */
+
+/**
  * @typedef {object} MountContext
  * @property {string} currentDir
  * @property {string} confinementRoot
@@ -165,6 +218,8 @@ harden(isConfinedPath);
  * @property {FilePowers} filePowers
  * @property {string} description
  * @property {CheckinTreeFn} [checkin]
+ * @property {object} [lineage]  Sentinel shared across a mount lineage
+ *   (root mount + its lookup-derived sub-mounts + its readOnly attenuations).
  */
 
 /**
@@ -176,6 +231,10 @@ harden(isConfinedPath);
 const makeMountExo = ctx => {
   const { currentDir, confinementRoot, readOnly, filePowers, description } =
     ctx;
+  // Every makeMountExo call shares its lineage sentinel with the caller
+  // (lookup-derived sub-mounts and readOnly attenuations inherit) or, if
+  // no lineage was passed in, mints a fresh one for this lineage's root.
+  const lineage = ctx.lineage || harden({});
 
   const assertWritable = () => {
     if (readOnly) {
@@ -242,6 +301,7 @@ const makeMountExo = ctx => {
           ...ctx,
           currentDir: target,
           description: `Subdirectory of ${description}`,
+          lineage,
         });
       }
 
@@ -307,6 +367,26 @@ const makeMountExo = ctx => {
       await filePowers.makePath(target);
     },
 
+    entry(pathArg) {
+      const rawSegments = typeof pathArg === 'string' ? [pathArg] : pathArg;
+      // Normalize segments once at minting time; reject traversal rather
+      // than silently clamping.  Missing paths are fine — descriptors are
+      // logical references, not handles.
+      const normalized = harden([...rawSegments]);
+      for (const segment of normalized) {
+        assertDescriptorSegment(segment);
+      }
+      return makeMountEntryExo({
+        segments: normalized,
+        readOnly,
+        confinementRoot,
+        currentDir,
+        filePowers,
+        checkin: ctx.checkin,
+        lineage,
+      });
+    },
+
     readOnly() {
       if (readOnly) {
         return this; // eslint-disable-line no-invalid-this
@@ -315,6 +395,7 @@ const makeMountExo = ctx => {
         ...ctx,
         readOnly: true,
         description: `Read-only view of ${description}`,
+        lineage,
       });
     },
 
@@ -334,9 +415,144 @@ const makeMountExo = ctx => {
   });
 
   selfExo = exo;
+  mountLineageKey.set(exo, lineage);
   return exo;
 };
 harden(makeMountExo);
+
+/**
+ * Create a mount-scoped entry descriptor.  Entries are logical references:
+ * they may name a present, absent, or pending path inside the mount.  They
+ * carry mount-lineage provenance so future consumers can verify the entry
+ * was minted by an authorized mount.
+ *
+ * @param {object} args
+ * @param {readonly string[]} args.segments  Normalized relative segments.
+ * @param {boolean} args.readOnly  True if the minting mount was read-only.
+ * @param {string} args.confinementRoot
+ * @param {string} args.currentDir  The minting mount's effective root.
+ * @param {FilePowers} args.filePowers
+ * @param {CheckinTreeFn} [args.checkin]
+ * @param {object} args.lineage
+ * @returns {object}
+ */
+const makeMountEntryExo = ({
+  segments,
+  readOnly,
+  confinementRoot,
+  currentDir,
+  filePowers,
+  checkin,
+  lineage,
+}) => {
+  // Resolve the entry's physical path once; subsequent operations confine
+  // again at use time to defend against TOCTOU symlink shuffling.
+  const resolved = resolveSegments(
+    currentDir,
+    confinementRoot,
+    [...segments],
+    filePowers,
+  );
+
+  const displayPath = segments.length === 0 ? '.' : segments.join('/');
+
+  const entryExo = makeExo('EndoMountEntry', MountEntryInterface, {
+    segments() {
+      return harden([...segments]);
+    },
+
+    displayPath() {
+      return displayPath;
+    },
+
+    async exists() {
+      await null;
+      return filePowers.exists(resolved);
+    },
+
+    async stat() {
+      await null;
+      const present = await filePowers.exists(resolved);
+      if (!present) {
+        return undefined;
+      }
+      // filePowers exposes isDirectory but not a richer stat surface yet;
+      // size and modified-time fields are intentionally omitted in this
+      // phase per the EndoMountStat shape (both are optional).
+      const isDir = await filePowers.isDirectory(resolved);
+      return harden({ kind: isDir ? 'directory' : 'file' });
+    },
+
+    async lookup() {
+      await null;
+      await assertConfined(resolved, confinementRoot, filePowers);
+      const isDir = await filePowers.isDirectory(resolved);
+      if (isDir) {
+        return makeMountExo({
+          currentDir: resolved,
+          confinementRoot,
+          readOnly,
+          filePowers,
+          description: `Mount at ${displayPath}`,
+          checkin,
+          lineage,
+        });
+      }
+      return makeMountFileExo(resolved, readOnly, filePowers, confinementRoot);
+    },
+
+    async openFile() {
+      await null;
+      await assertConfined(resolved, confinementRoot, filePowers);
+      const isDir = await filePowers.isDirectory(resolved);
+      if (isDir) {
+        throw new Error(
+          `Entry ${q(displayPath)} is a directory; use openDirectory()`,
+        );
+      }
+      // The entry's read-only bit propagates to the minted file handle so
+      // an entry from a readOnly() mount cannot be used to write.
+      return makeMountFileExo(resolved, readOnly, filePowers, confinementRoot);
+    },
+
+    async openDirectory() {
+      await null;
+      await assertConfined(resolved, confinementRoot, filePowers);
+      const isDir = await filePowers.isDirectory(resolved);
+      if (!isDir) {
+        throw new Error(
+          `Entry ${q(displayPath)} is not a directory; use openFile() or lookup()`,
+        );
+      }
+      return makeMountExo({
+        currentDir: resolved,
+        confinementRoot,
+        readOnly,
+        filePowers,
+        description: `Mount at ${displayPath}`,
+        checkin,
+        lineage,
+      });
+    },
+
+    child(name) {
+      assertDescriptorSegment(name);
+      return makeMountEntryExo({
+        segments: harden([...segments, name]),
+        readOnly,
+        confinementRoot,
+        currentDir,
+        filePowers,
+        checkin,
+        lineage,
+      });
+    },
+  });
+
+  entryLineageKey.set(entryExo, lineage);
+  return entryExo;
+};
+harden(makeMountEntryExo);
 
 /**
  * Create a transient file exo for a file within a mount.

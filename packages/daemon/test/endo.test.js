@@ -4561,6 +4561,160 @@ test('mount snapshot - scratch mount snapshots its current contents', async t =>
   t.is(await E(inner).text(), 'second');
 });
 
+test('mount entry - mint a descriptor and read its presentation data', async t => {
+  const { host, config } = await prepareHost(t);
+
+  const mountPath = path.join(config.statePath, '..', 'mount-test-entry-mint');
+  await createMountFixture(mountPath, {
+    'a/b/c.txt': 'leaf',
+  });
+
+  await E(host).provideMount(mountPath, 'test-mount-entry-mint');
+  const mount = await E(host).lookup(['test-mount-entry-mint']);
+
+  const entry = await E(mount).entry(['a', 'b', 'c.txt']);
+  t.deepEqual(await E(entry).segments(), ['a', 'b', 'c.txt']);
+  t.is(await E(entry).displayPath(), 'a/b/c.txt');
+  t.true(await E(entry).exists());
+
+  const stat = await E(entry).stat();
+  t.deepEqual(stat, { kind: 'file' });
+});
+
+test('mount entry - missing path is representable without creating files', async t => {
+  const { host, config } = await prepareHost(t);
+
+  const mountPath = path.join(config.statePath, '..', 'mount-test-entry-miss');
+  await createMountFixture(mountPath, {});
+
+  await E(host).provideMount(mountPath, 'test-mount-entry-miss');
+  const mount = await E(host).lookup(['test-mount-entry-miss']);
+
+  // Naming a path that does not exist does not create it.
+  const ghost = await E(mount).entry(['phantom', 'nowhere.txt']);
+  t.deepEqual(await E(ghost).segments(), ['phantom', 'nowhere.txt']);
+  t.is(await E(ghost).displayPath(), 'phantom/nowhere.txt');
+  t.false(await E(ghost).exists());
+  t.is(await E(ghost).stat(), undefined);
+
+  // The path is still not present on disk.
+  const onDisk = await fs.promises
+    .access(path.join(mountPath, 'phantom'))
+    .catch(err => err);
+  t.true(onDisk instanceof Error);
+});
+
+test('mount entry - rejects `.` and `..` at descriptor minting', async t => {
+  const { host, config } = await prepareHost(t);
+
+  const mountPath = path.join(config.statePath, '..', 'mount-test-entry-trav');
+  await createMountFixture(mountPath, { 'inside.txt': 'safe' });
+
+  await E(host).provideMount(mountPath, 'test-mount-entry-trav');
+  const mount = await E(host).lookup(['test-mount-entry-trav']);
+
+  // Unlike lookup (which clamps `..`), entry minting must reject traversal
+  // rather than silently normalize it away.
+  await t.throwsAsync(E(mount).entry(['..']), {
+    message: /reject traversal/,
+  });
+  await t.throwsAsync(E(mount).entry(['.']), {
+    message: /reject traversal/,
+  });
+  await t.throwsAsync(E(mount).entry(['a', '..', 'b']), {
+    message: /reject traversal/,
+  });
+
+  // Also still rejects path-separator characters within a segment.
+  await t.throwsAsync(E(mount).entry(['has/slash']), {
+    message: /must not contain/,
+  });
+});
+
+test('mount entry - openFile and openDirectory mint typed handles', async t => {
+  const { host, config } = await prepareHost(t);
+
+  const mountPath = path.join(config.statePath, '..', 'mount-test-entry-open');
+  await createMountFixture(mountPath, {
+    'src/index.js': 'export default 1',
+    'src/lib/util.js': 'export const x = 2',
+  });
+
+  await E(host).provideMount(mountPath, 'test-mount-entry-open');
+  const mount = await E(host).lookup(['test-mount-entry-open']);
+
+  // Open a file via its entry.
+  const fileEntry = await E(mount).entry(['src', 'index.js']);
+  const file = await E(fileEntry).openFile();
+  t.is(await E(file).text(), 'export default 1');
+
+  // Open a directory via its entry.
+  const dirEntry = await E(mount).entry(['src']);
+  const dir = await E(dirEntry).openDirectory();
+  const entries = await E(dir).list();
+  t.deepEqual([...entries].sort(), ['index.js', 'lib']);
+
+  // openFile on a directory entry fails clearly.
+  await t.throwsAsync(E(dirEntry).openFile(), {
+    message: /is a directory/,
+  });
+
+  // openDirectory on a file entry fails clearly.
+  await t.throwsAsync(E(fileEntry).openDirectory(), {
+    message: /not a directory/,
+  });
+});
+
+test('mount entry - child() composes path segments', async t => {
+  const { host, config } = await prepareHost(t);
+
+  const mountPath = path.join(config.statePath, '..', 'mount-test-entry-child');
+  await createMountFixture(mountPath, {
+    'a/b/c.txt': 'deep',
+  });
+
+  await E(host).provideMount(mountPath, 'test-mount-entry-child');
+  const mount = await E(host).lookup(['test-mount-entry-child']);
+
+  // Compose by chaining child().
+  const aDir = await E(mount).entry(['a']);
+  const bDir = await E(aDir).child('b');
+  const leaf = await E(bDir).child('c.txt');
+
+  t.deepEqual(await E(leaf).segments(), ['a', 'b', 'c.txt']);
+  t.is(await E(leaf).displayPath(), 'a/b/c.txt');
+  const leafFile = await E(leaf).openFile();
+  t.is(await E(leafFile).text(), 'deep');
+
+  // child() also rejects traversal at compose time.
+  await t.throwsAsync(E(bDir).child('..'), { message: /reject traversal/ });
+});
+
+test('mount entry - entries from a read-only mount mint read-only handles', async t => {
+  const { host, config } = await prepareHost(t);
+
+  const mountPath = path.join(config.statePath, '..', 'mount-test-entry-ro');
+  await createMountFixture(mountPath, {
+    'existing.txt': 'do not modify',
+  });
+
+  await E(host).provideMount(mountPath, 'test-mount-entry-ro', {
+    readOnly: true,
+  });
+  const mount = await E(host).lookup(['test-mount-entry-ro']);
+
+  // Reading via the entry is allowed.
+  const entry = await E(mount).entry(['existing.txt']);
+  const file = await E(entry).openFile();
+  t.is(await E(file).text(), 'do not modify');
+
+  // The minted file handle inherits read-only status so an entry cannot be
+  // used to regain write authority that readOnly() removed.
+  await t.throwsAsync(E(file).writeText('overwrite attempt'), {
+    message: /read-only/,
+  });
+});
+
 // symlink confinement tests
 
 /**
