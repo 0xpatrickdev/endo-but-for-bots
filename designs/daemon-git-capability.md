@@ -1025,14 +1025,21 @@ real implementation surfaces new ones.
      not the parent repo's.  Swapping a submodule's `.git` indirection
      re-pins (correctly: it is a different repository as far as the
      submodule's local `Git` cap is concerned).
-   - **Empty / unborn repos**: the `EMPTY` sentinel means the pin
-     matches any future first-commit; the next successful `commit`
-     triggers a re-pin (or the pin verification fails with a structured
-     warning if the operator wants strict-pin semantics for the unborn
-     case).
+   - **Empty / unborn repos**: the `EMPTY` sentinel pins the repository
+     identity to the unborn state.  The first guest-initiated `commit`
+     creates a first-commit OID that does not match the `EMPTY` sentinel,
+     so the next pin-verification call fails closed with a structured
+     warning naming the new first-commit OID.  The host then re-derives
+     `Git` against the now-non-empty repo to refresh the pin; the guest
+     does not implicitly re-pin by committing.  Fail-closed preserves
+     the "guests cannot mutate the pin" invariant unconditionally
+     (Design Decision 5): a guest-initiated commit must not silently
+     widen the repository-identity authority a pin was minted to
+     bound.
 
    **Re-pinning** is a host-side operation: the host can re-derive
-   `Git` with a refreshed pin.  Guests cannot mutate the pin.
+   `Git` with a refreshed pin.  Guests cannot mutate the pin under any
+   path, including the unborn-to-non-empty transition above.
 8. **Read-only worktree mounts permit inspection + immutable trees +
    `worktree.snapshot()`; reject everything else.**  A read-only `Git`
    can be obtained two ways and the two paths produce the same authority
