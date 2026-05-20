@@ -22,10 +22,11 @@ agents call directly.  Credential injection runs through a daemon-shipped
 env).  CapTP carries control-plane authority (which repo, which endpoint,
 which credential, which directions and refs) while git packfile bytes
 travel on the bounded HTTPS data plane outside CapTP messages.  Endpoint
-policy is controller-owned; the guest receives `GitRemote` only.
-Controllers (`GitRemoteController`, `GitCredentialController`) and
-collection capabilities (`GitRemoteSet`) land in a later phase so the
-first phase stays minimum.
+policy is formula-owned in Phase 1; controller-owned once Phase 5 lands.
+The guest receives `GitRemote` only.  Controllers
+(`GitRemoteController`, `GitCredentialController`) and collection
+capabilities (`GitRemoteSet`) land in Phase 5 so the first phase stays
+minimum.
 
 ## What is the Problem Being Solved?
 
@@ -192,9 +193,11 @@ type GitRemotePolicy = {
 };
 ```
 
-The URL is controller-owned policy, not something the guest can mutate.
-`allowedBranches` is the user-facing shortcut; implementations may compile
-it into refspec policy.
+The URL is formula-owned policy in Phase 1 (baked into the `git-remote`
+formula at construction time and immutable thereafter) and becomes
+controller-mediated once Phase 5 lands; the guest cannot mutate it in
+either phase.  `allowedBranches` is the user-facing shortcut;
+implementations may compile it into refspec policy.
 
 ### `GitRemote`
 
@@ -526,9 +529,11 @@ That invocation carries authority and policy through CapTP:
 The bulk git object exchange should then happen outside CapTP through the
 approved git transport.  For the HTTPS MVP, trusted backend code should run
 the git smart HTTP protocol, either through native git or a future HTTP git
-client, using the controller-owned URL and sealed credential material.  The
-packfiles, deltas, and large object payloads should not be serialized as
-CapTP messages merely because the initiating authority was a CapTP object.
+client, using the policy-owned URL (formula-owned in Phase 1;
+controller-mediated once Phase 5 lands) and sealed credential material.
+The packfiles, deltas, and large object payloads should not be serialized
+as CapTP messages merely because the initiating authority was a CapTP
+object.
 
 This distinction keeps several boundaries clear:
 
@@ -672,7 +677,8 @@ The first backend may still use native git internally.  A native `git`
 process cannot literally consume an Endo `HttpClient` object, so the MVP
 should not pretend that generic HTTP-client composition is already the
 runtime call path.  The transport capability is still a real required input:
-trusted daemon code must verify the controller-owned URL against the granted
+trusted daemon code must verify the policy-owned URL (formula-owned in
+Phase 1; controller-mediated once Phase 5 lands) against the granted
 transport authority, then invoke native git only with the approved URL,
 approved refspecs, and sealed credential material.
 
@@ -955,8 +961,14 @@ deliverable.
    justify folding network and credentials into base local `Git`.
 3. **HTTPS first.**  It gives the shortest path to a secure useful release and
    composes with existing HTTP / OAuth patterns.
-4. **Endpoints are controller-owned.**  Guests use remotes; hosts decide what
-   they point at.
+4. **Endpoint policy ownership is phase-conditional: formula-owned in
+   Phase 1, controller-owned once Phase 5 lands.**  In Phase 1, endpoint
+   policy is baked into the `git-remote` formula at construction time
+   and is immutable thereafter; the only post-construction lever is
+   credential revocation.  Once the Phase 5 `GitRemoteController` lands,
+   the policy becomes controller-mediated and can be narrowed or widened
+   post-construction.  Guests use remotes in both phases; hosts decide
+   what they point at.
 5. **Push is bounded by default.**  A practical default permits review-branch
    publication without granting arbitrary external write authority.
 6. **CapTP is the remote control plane.**  Remote git packfiles should move
@@ -969,7 +981,8 @@ deliverable.
    or `E(git).rebase()` separately, but the bundled `pull()` is the
    ergonomic path for the common case.
 8. **`GitRemote.inspect()` reveals the full remote URL.**  The URL is
-   controller-owned policy that the host already chose to share; hiding
+   policy the host already chose to share (formula-owned in Phase 1;
+   controller-mediated once Phase 5 lands); hiding
    it behind a host-assigned label adds an indirection without obviously
    protecting anything (the guest can correlate operations to the URL
    anyway).  Construction-time rejection of URLs with embedded

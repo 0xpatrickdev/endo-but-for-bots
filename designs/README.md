@@ -20,7 +20,8 @@ hardening envelope split off the essential `GitBackend` contract;
 structured result shapes deferred to Phase 7),
 [daemon-git-remotes](daemon-git-remotes.md) (added 2026-05-18, revised
 2026-05-20; MVP remote-git companion for fetch, pull, push, bounded HTTPS
-transport, controller-owned endpoint policy, and non-extractable
+transport, phase-conditional endpoint policy (formula-owned in Phase 1;
+controller-owned once Phase 5 lands), and non-extractable
 credentials with a `GIT_ASKPASS`-fed-by-anonymous-pipe injection mechanism), [endopi](endopi.md)
 (added 2026-05-15; comparative analysis of the pi agent harness against
 endo's daemon + chat + familiar + cli; sibling of `endoclaw.md`; spins out
