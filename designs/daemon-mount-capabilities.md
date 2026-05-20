@@ -203,8 +203,7 @@ interface EndoMount {
   entry(path: string | string[]): EndoMountEntry;
 
   // Handle-oriented navigation and creation.
-  // (createDirectory replaces the legacy makeDirectory for sibling-coherence
-  // with createFile; see Migration Notes.)
+  // (createDirectory matches the sibling createFile naming.)
   openDirectory(path: string | string[] | EndoMountEntry): Promise<EndoMount>;
   openFile(path: string | string[] | EndoMountEntry): Promise<EndoMountFile>;
   createDirectory(path: string | string[] | EndoMountEntry):
@@ -537,12 +536,10 @@ later adapter or migration is mostly mechanical.
 
 - Existing users of `list`, `lookup`, `readText`, `writeText`, `remove`,
   and `move` continue to work.
-- `makeDirectory(path)` is retained as a compatibility alias for
-  `createDirectory(path)` for one release, then removed.  The two are the
-  same operation; the rename gives sibling-coherence with `createFile`
-  (`make*` / `create*` co-existence is the kind of surface drift that
-  implementations otherwise carry forever).  Internal callers should move
-  to `createDirectory` in the same window.
+- `makeDirectory(path)` is renamed to `createDirectory(path)` for
+  sibling-coherence with `createFile`.  No compatibility shim is needed
+  (no library consumers yet); the rename lands in one PR.  The
+  operation is unchanged.
 - New code that performs more than one operation on the same node should
   prefer entries and handles.
 - Git should depend on `EndoMountEntry`, not on free-form relative path
