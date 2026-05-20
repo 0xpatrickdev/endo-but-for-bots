@@ -127,11 +127,12 @@ credential capabilities.  The guest may receive only `remote`, or both
 `git` and `remote`, but cannot recover or retarget the transport or
 credential authority that was used to construct it.
 
-```text
-EndoMount --------------------> Git
-                                   \
-HTTPS transport cap ---------------> GitRemote
-credential cap --------------------/
+```mermaid
+flowchart LR
+  mount[EndoMount] --> git[Git]
+  transport[HTTPS transport cap] --> remote[GitRemote]
+  cred[credential cap] --> remote
+  git --> remote
 ```
 
 ## MVP Transport Scope

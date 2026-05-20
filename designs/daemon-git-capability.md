@@ -98,22 +98,13 @@ That work should remain useful as a reference for a `NativeGitBackend`.
 
 ## Architecture
 
-```text
-HOST
- |
- | provideMount('/repo', 'worktree')
- v
-EndoMount  <------------------------------+
- |                                         |
- | host-private backing grant              |
- v                                         |
-Git provider                               |
- |                                         |
- +--> Git capability over live worktree ---+
- |
- +--> git-tree backend for refs / commits
-      |
-      +--> ReadableTree / ReadableBlob
+```mermaid
+flowchart TD
+  host[HOST] -->|provideMount '/repo' 'worktree'| mount[EndoMount]
+  mount -.->|host-private backing grant| gitProvider[Git provider]
+  gitProvider -->|over live worktree| git[Git capability]
+  git -->|trees()| tree[GitTreeProvider]
+  tree -->|tree ref| rt[ReadableTree / ReadableBlob]
 ```
 
 The public worktree authority remains the `EndoMount`.  Trusted daemon code
@@ -193,10 +184,12 @@ reintroduce an independent filesystem authority path beside `EndoMount`.
 
 Remote repository use composes later without changing that root:
 
-```text
-EndoMount --------------------> Git
-                                   \
-transport cap + credential cap ----> GitRemote
+```mermaid
+flowchart LR
+  mount[EndoMount] --> git[Git]
+  transport[HTTPS transport cap] --> remote[GitRemote]
+  cred[credential cap] --> remote
+  git --> remote
 ```
 
 ## Proposed Public Vocabulary
@@ -440,11 +433,13 @@ discussion of long-lived named trees.
 
 When the VFS namespace exists, a host could compose:
 
-```text
-/worktree        physical EndoMount, read-write
-/ref/main        git-tree backend for main, read-only
-/ref/review      git-tree backend for feature/review, read-only
-/scratch         memory backend, read-write
+```mermaid
+flowchart LR
+  vfs((VFS namespace))
+  vfs --> w["/worktree (physical EndoMount, read-write)"]
+  vfs --> rm["/ref/main (git-tree backend, read-only)"]
+  vfs --> rr["/ref/review (git-tree backend, read-only)"]
+  vfs --> sc["/scratch (memory backend, read-write)"]
 ```
 
 The guest sees ordinary filesystem trees.  Git remains the provider of the
