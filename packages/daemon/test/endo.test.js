@@ -4960,9 +4960,14 @@ test('provideGit derives a Git capability from a physical worktree mount', async
   // worktree() round-trips the mount cap unchanged.
   t.is(await E(git).worktree(), mount);
 
-  // Scaffold methods all surface "not yet implemented" through the
-  // stub backend.  Phase 2 lands the native backend.
-  await t.throwsAsync(E(git).status(), { message: /not yet implemented/ });
+  // status() works through the native backend wired by the formula
+  // instantiator.  The fixture's README.md is untracked, so a single
+  // GitStatusEntry comes back with an EndoMountEntry on the bound
+  // mount.
+  const entries = await E(git).status();
+  t.is(entries.length, 1);
+  t.is(entries[0].path, 'README.md');
+  t.is(entries[0].worktree, 'untracked');
 });
 
 test('provideGit rejects a mount whose root is not a git worktree', async t => {
