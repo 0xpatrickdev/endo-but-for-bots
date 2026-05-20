@@ -50,74 +50,82 @@ test.afterEach.always(async t => {
   }
 });
 
-test.serial('git tool supports local branch, rebase, and stash workflows', async t => {
-  const root = await makeRepo();
-  t.context = { root };
-  const tool = makeGitTool(root);
+test.serial(
+  'git tool supports local branch, rebase, and stash workflows',
+  async t => {
+    const root = await makeRepo();
+    t.context = { root };
+    const tool = makeGitTool(root);
 
-  t.regex(await tool.execute({ operation: 'status' }), /^## main/u);
+    t.regex(await tool.execute({ operation: 'status' }), /^## main/u);
 
-  await tool.execute({
-    operation: 'branchCreate',
-    branch: 'feature',
-    switchAfterCreate: true,
-  });
-  await writeFile(join(root, 'feature.txt'), 'feature\n', 'utf-8');
-  await tool.execute({ operation: 'add', paths: ['feature.txt'] });
-  await tool.execute({ operation: 'commit', message: 'feature work' });
+    await tool.execute({
+      operation: 'branchCreate',
+      branch: 'feature',
+      switchAfterCreate: true,
+    });
+    await writeFile(join(root, 'feature.txt'), 'feature\n', 'utf-8');
+    await tool.execute({ operation: 'add', paths: ['feature.txt'] });
+    await tool.execute({ operation: 'commit', message: 'feature work' });
 
-  await tool.execute({ operation: 'switch', target: 'main' });
-  await writeFile(join(root, 'main.txt'), 'main\n', 'utf-8');
-  await tool.execute({ operation: 'add', paths: ['main.txt'] });
-  await tool.execute({ operation: 'commit', message: 'main work' });
+    await tool.execute({ operation: 'switch', target: 'main' });
+    await writeFile(join(root, 'main.txt'), 'main\n', 'utf-8');
+    await tool.execute({ operation: 'add', paths: ['main.txt'] });
+    await tool.execute({ operation: 'commit', message: 'main work' });
 
-  await tool.execute({ operation: 'switch', target: 'feature' });
-  await tool.execute({
-    operation: 'rebase',
-    mode: 'start',
-    upstream: 'main',
-  });
+    await tool.execute({ operation: 'switch', target: 'feature' });
+    await tool.execute({
+      operation: 'rebase',
+      mode: 'start',
+      upstream: 'main',
+    });
 
-  const log = await tool.execute({ operation: 'log', maxCount: 3 });
-  t.regex(log, /feature work/u);
-  t.regex(log, /main work/u);
+    const log = await tool.execute({ operation: 'log', maxCount: 3 });
+    t.regex(log, /feature work/u);
+    t.regex(log, /main work/u);
 
-  await writeFile(join(root, 'README.md'), '# repo\nscratch\n', 'utf-8');
-  await tool.execute({
-    operation: 'stashPush',
-    message: 'scratch',
-  });
-  t.regex(await tool.execute({ operation: 'stashList' }), /scratch/u);
-  await tool.execute({ operation: 'stashPop' });
-  t.regex(await tool.execute({ operation: 'status' }), /M README\.md/u);
-});
+    await writeFile(join(root, 'README.md'), '# repo\nscratch\n', 'utf-8');
+    await tool.execute({
+      operation: 'stashPush',
+      message: 'scratch',
+    });
+    t.regex(await tool.execute({ operation: 'stashList' }), /scratch/u);
+    await tool.execute({ operation: 'stashPop' });
+    t.regex(await tool.execute({ operation: 'status' }), /M README\.md/u);
+  },
+);
 
-test.serial('git tool rejects scope expansion and unsupported operations', async t => {
-  const root = await makeRepo();
-  t.context = { root };
-  const tool = makeGitTool(root);
+test.serial(
+  'git tool rejects scope expansion and unsupported operations',
+  async t => {
+    const root = await makeRepo();
+    t.context = { root };
+    const tool = makeGitTool(root);
 
-  await t.throwsAsync(
-    () => tool.execute({ operation: 'add', paths: ['../outside.txt'] }),
-    { message: /Path traversal not allowed/u },
-  );
-  await t.throwsAsync(
-    () => tool.execute({ operation: 'push' }),
-    { message: /Unsupported git operation/u },
-  );
-});
+    await t.throwsAsync(
+      () => tool.execute({ operation: 'add', paths: ['../outside.txt'] }),
+      { message: /Path traversal not allowed/u },
+    );
+    await t.throwsAsync(() => tool.execute({ operation: 'push' }), {
+      message: /Unsupported git operation/u,
+    });
+  },
+);
 
-test.serial('git tool refuses roots broader or narrower than the repository', async t => {
-  const root = await makeRepo();
-  t.context = { root };
-  const subdir = join(root, 'src');
-  await mkdir(subdir);
-  const tool = makeGitTool(subdir);
+test.serial(
+  'git tool refuses roots broader or narrower than the repository',
+  async t => {
+    const root = await makeRepo();
+    t.context = { root };
+    const subdir = join(root, 'src');
+    await mkdir(subdir);
+    const tool = makeGitTool(subdir);
 
-  await t.throwsAsync(() => tool.execute({ operation: 'status' }), {
-    message: /Git root must be the configured root/u,
-  });
-});
+    await t.throwsAsync(() => tool.execute({ operation: 'status' }), {
+      message: /Git root must be the configured root/u,
+    });
+  },
+);
 
 test.serial('git tool refuses executable repo-local filters', async t => {
   const root = await makeRepo();
@@ -148,9 +156,7 @@ test('daemon git tool converts path strings to mount entries', async t => {
     add: async entries => {
       calls.push({
         method: 'add',
-        paths: await Promise.all(
-          entries.map(entry => entry.segments()),
-        ),
+        paths: await Promise.all(entries.map(entry => entry.segments())),
       });
       return '(no output)';
     },
@@ -162,9 +168,7 @@ test('daemon git tool converts path strings to mount entries', async t => {
     await tool.execute({ operation: 'add', paths: ['src/main.js'] }),
     '(no output)',
   );
-  t.deepEqual(calls, [
-    { method: 'add', paths: [['src', 'main.js']] },
-  ]);
+  t.deepEqual(calls, [{ method: 'add', paths: [['src', 'main.js']] }]);
   await t.throwsAsync(
     () => tool.execute({ operation: 'add', paths: ['../escape.js'] }),
     { message: /Invalid repository path/u },

@@ -229,8 +229,7 @@ export const helpTextEntries = harden([
         'makeDirectory(path) -> Promise<void>\nCreate a directory (and missing parents) at the given path.\npath: string | string[] | EndoMountEntry — Name, path segments, or mount entry.',
       makeFile:
         'makeFile(path, content?) -> Promise<void>\nCreate a file at the given path, with optional initial content.\npath: string | string[] | EndoMountEntry — Name, path segments, or mount entry.\ncontent: string | Uint8Array (optional) — Initial bytes. An existing file is truncated when content is provided.',
-      stat:
-        'stat(path) -> Promise<EndoMountStat | undefined>\nQuery metadata for a path within the mount.\npath: string | string[] | EndoMountEntry — Name, path segments, or mount entry.\nReturns undefined when the path is missing or escapes the mount.',
+      stat: 'stat(path) -> Promise<EndoMountStat | undefined>\nQuery metadata for a path within the mount.\npath: string | string[] | EndoMountEntry — Name, path segments, or mount entry.\nReturns undefined when the path is missing or escapes the mount.',
       readOnly:
         'readOnly() -> EndoMount\nReturns a read-only view of this mount.',
       snapshot:

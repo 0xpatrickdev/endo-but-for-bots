@@ -261,11 +261,7 @@ const makeMountExo = ctx => {
    * @returns {string[]}
    */
   const segmentsFromHasArgs = args => {
-    if (
-      args.length === 1 &&
-      typeof args[0] === 'object' &&
-      args[0] !== null
-    ) {
+    if (args.length === 1 && typeof args[0] === 'object' && args[0] !== null) {
       return segmentsFromPathArg(args[0]);
     }
     for (const arg of args) {

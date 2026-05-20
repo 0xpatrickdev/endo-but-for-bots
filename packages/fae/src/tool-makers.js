@@ -631,7 +631,8 @@ export const makeGitTool = configuredRoot => {
     );
   };
 
-  const EXECUTABLE_REPO_CONFIG = /^(filter\..*\.(clean|smudge|process)|merge\..*\.driver)$/u;
+  const EXECUTABLE_REPO_CONFIG =
+    /^(filter\..*\.(clean|smudge|process)|merge\..*\.driver)$/u;
 
   const assertNoExecutableRepoConfig = async () => {
     const repoRoot = await getRepoRoot();
@@ -715,7 +716,8 @@ export const makeGitTool = configuredRoot => {
           },
           startPoint: {
             type: 'string',
-            description: 'Starting revision for branchCreate or switch(create).',
+            description:
+              'Starting revision for branchCreate or switch(create).',
           },
           switchAfterCreate: {
             type: 'boolean',
@@ -743,8 +745,7 @@ export const makeGitTool = configuredRoot => {
           },
           mode: {
             type: 'string',
-            description:
-              'Rebase mode: start, continue, abort, or skip.',
+            description: 'Rebase mode: start, continue, abort, or skip.',
           },
           upstream: {
             type: 'string',
@@ -815,8 +816,7 @@ export const makeGitTool = configuredRoot => {
           return runGit(command);
         }
         case 'show': {
-          const { ref = 'HEAD' } =
-            /** @type {{ ref?: unknown }} */ (args);
+          const { ref = 'HEAD' } = /** @type {{ ref?: unknown }} */ (args);
           return runGit([
             'show',
             '--no-ext-diff',
@@ -841,10 +841,13 @@ export const makeGitTool = configuredRoot => {
           ]);
         }
         case 'restore': {
-          const { paths, staged = false, ref } =
-            /** @type {{ paths?: unknown, staged?: boolean, ref?: unknown }} */ (
-              args
-            );
+          const {
+            paths,
+            staged = false,
+            ref,
+          } = /** @type {{ paths?: unknown, staged?: boolean, ref?: unknown }} */ (
+            args
+          );
           await assertNoExecutableRepoConfig();
           const command = ['restore'];
           if (staged) {
@@ -869,15 +872,17 @@ export const makeGitTool = configuredRoot => {
         case 'currentBranch':
           return runGit(['branch', '--show-current']);
         case 'branchList': {
-          const { all = false } =
-            /** @type {{ all?: boolean }} */ (args);
+          const { all = false } = /** @type {{ all?: boolean }} */ (args);
           return runGit(['branch', '--list', ...(all ? ['--all'] : [])]);
         }
         case 'branchCreate': {
-          const { branch, startPoint, switchAfterCreate = false } =
-            /** @type {{ branch?: unknown, startPoint?: unknown, switchAfterCreate?: boolean }} */ (
-              args
-            );
+          const {
+            branch,
+            startPoint,
+            switchAfterCreate = false,
+          } = /** @type {{ branch?: unknown, startPoint?: unknown, switchAfterCreate?: boolean }} */ (
+            args
+          );
           const name = await requireBranchName(branch, 'branch');
           if (switchAfterCreate) {
             await assertNoExecutableRepoConfig();
@@ -984,10 +989,13 @@ export const makeGitTool = configuredRoot => {
           }
         }
         case 'stashPush': {
-          const { message, includeUntracked = false, paths } =
-            /** @type {{ message?: unknown, includeUntracked?: boolean, paths?: unknown }} */ (
-              args
-            );
+          const {
+            message,
+            includeUntracked = false,
+            paths,
+          } = /** @type {{ message?: unknown, includeUntracked?: boolean, paths?: unknown }} */ (
+            args
+          );
           const command = ['stash', 'push'];
           await assertNoExecutableRepoConfig();
           if (includeUntracked) {
@@ -1181,8 +1189,7 @@ export const makeDaemonGitTool = git => {
           );
         }
         case 'show': {
-          const { ref = 'HEAD' } =
-            /** @type {{ ref?: unknown }} */ (args);
+          const { ref = 'HEAD' } = /** @type {{ ref?: unknown }} */ (args);
           return E(git).show(requireRevision(ref, 'ref'));
         }
         case 'revParse': {
@@ -1212,15 +1219,17 @@ export const makeDaemonGitTool = git => {
         case 'currentBranch':
           return formatResult(await E(git).currentBranch());
         case 'branchList': {
-          const { all = false } =
-            /** @type {{ all?: boolean }} */ (args);
+          const { all = false } = /** @type {{ all?: boolean }} */ (args);
           return formatResult(await E(git).branches(harden({ all })));
         }
         case 'branchCreate': {
-          const { branch, startPoint, switchAfterCreate = false } =
-            /** @type {{ branch?: unknown, startPoint?: unknown, switchAfterCreate?: boolean }} */ (
-              args
-            );
+          const {
+            branch,
+            startPoint,
+            switchAfterCreate = false,
+          } = /** @type {{ branch?: unknown, startPoint?: unknown, switchAfterCreate?: boolean }} */ (
+            args
+          );
           return formatResult(
             await E(git).createBranch(
               requireNonEmptyString(branch, 'branch'),
@@ -1295,10 +1304,13 @@ export const makeDaemonGitTool = git => {
           );
         }
         case 'stashPush': {
-          const { message, includeUntracked = false, paths } =
-            /** @type {{ message?: unknown, includeUntracked?: boolean, paths?: unknown }} */ (
-              args
-            );
+          const {
+            message,
+            includeUntracked = false,
+            paths,
+          } = /** @type {{ message?: unknown, includeUntracked?: boolean, paths?: unknown }} */ (
+            args
+          );
           return E(git).stashPush(
             harden({
               includeUntracked,

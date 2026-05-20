@@ -19,8 +19,7 @@ import { makeGitTool } from '../src/tool-makers.js';
 // eslint-disable-next-line no-underscore-dangle
 export const make = (_powers, _context, { env = {} } = {}) => {
   const envRecord = /** @type {Record<string, string | undefined>} */ (env);
-  const repoRoot =
-    envRecord.FAE_GIT_ROOT || envRecord.FAE_CWD || process.cwd();
+  const repoRoot = envRecord.FAE_GIT_ROOT || envRecord.FAE_CWD || process.cwd();
   const impl = makeGitTool(repoRoot);
   return makeExo('GitTool', FaeToolInterface, {
     schema: () => impl.schema(),

@@ -353,7 +353,11 @@ export const makeFilePowers = ({ fs, path: fspath }) => {
   const statPath = async path => {
     const stat = await fs.promises.lstat(path);
     const kind = /** @type {'directory' | 'file' | 'symlink'} */ (
-      stat.isDirectory() ? 'directory' : stat.isSymbolicLink() ? 'symlink' : 'file'
+      stat.isDirectory()
+        ? 'directory'
+        : stat.isSymbolicLink()
+          ? 'symlink'
+          : 'file'
     );
     return harden({
       kind,
@@ -421,7 +425,8 @@ const GIT_BASE_ARGS = harden([
   '-c',
   'tag.gpgSign=false',
 ]);
-const EXECUTABLE_REPO_CONFIG = /^(filter\..*\.(clean|smudge|process)|merge\..*\.driver)$/u;
+const EXECUTABLE_REPO_CONFIG =
+  /^(filter\..*\.(clean|smudge|process)|merge\..*\.driver)$/u;
 
 /**
  * @param {string} value
@@ -538,9 +543,7 @@ export const makeGitPowers = ({ popen, filePowers }) => {
         args,
         /** @type {any} */ ({ ...options, encoding: 'buffer' }),
         (error, stdout, stderr) => {
-          const stdoutBytes = new Uint8Array(
-            /** @type {Buffer} */ (stdout),
-          );
+          const stdoutBytes = new Uint8Array(/** @type {Buffer} */ (stdout));
           const stderrText = /** @type {Buffer} */ (stderr).toString('utf-8');
           if (error) {
             Object.assign(error, { stdout: stdoutBytes, stderr: stderrText });
@@ -607,7 +610,10 @@ export const makeGitPowers = ({ popen, filePowers }) => {
   const ensureCredentialHelper = async repoRoot => {
     const helperDir = filePowers.joinPath(repoRoot, '.git-endo-home');
     await filePowers.makePath(helperDir);
-    const helperPath = filePowers.joinPath(helperDir, 'git-credential-helper.cjs');
+    const helperPath = filePowers.joinPath(
+      helperDir,
+      'git-credential-helper.cjs',
+    );
     await filePowers.writeFileText(helperPath, GIT_CREDENTIAL_HELPER_SOURCE);
     return helperPath;
   };
@@ -631,12 +637,7 @@ export const makeGitPowers = ({ popen, filePowers }) => {
     )} ${shellQuote(credential.secretPath)}`;
     return execFileText(
       'git',
-      [
-        ...GIT_BASE_ARGS,
-        '-c',
-        `credential.helper=${helperCommand}`,
-        ...args,
-      ],
+      [...GIT_BASE_ARGS, '-c', `credential.helper=${helperCommand}`, ...args],
       {
         cwd: repoRoot,
         env: makeGitEnv(repoRoot),
