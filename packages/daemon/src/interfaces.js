@@ -690,23 +690,32 @@ export const GitRemoteInterface = M.interface('EndoGitRemote', {
       M.splitRecord(
         {},
         {
-          refspecs: M.arrayOf(M.string()),
           prune: M.boolean(),
+          tags: M.boolean(),
         },
       ),
     )
     .returns(M.promise()),
   pull: M.call()
-    .optional(M.splitRecord({}, { branch: M.string() }))
+    .optional(
+      M.splitRecord(
+        {},
+        {
+          branch: M.or(M.string(), M.record()),
+          strategy: M.or('merge', 'rebase', 'ff-only'),
+        },
+      ),
+    )
     .returns(M.promise()),
   push: M.call()
     .optional(
       M.splitRecord(
         {},
         {
-          source: M.string(),
-          target: M.string(),
-          forceWithLease: M.boolean(),
+          source: M.or(M.string(), M.record()),
+          destination: M.string(),
+          force: M.boolean(),
+          setUpstream: M.boolean(),
         },
       ),
     )
@@ -724,10 +733,12 @@ export const GitRemoteControllerInterface = M.interface(
   'EndoGitRemoteController',
   {
     inspect: M.call().returns(M.promise()),
-    setAllowedDirections: M.call(
-      M.arrayOf(M.or('fetch', 'pull', 'push')),
-    ).returns(M.promise()),
-    setAllowedRefs: M.call(M.arrayOf(M.string())).returns(M.promise()),
+    setAllowedDirections: M.call(M.arrayOf(M.or('fetch', 'push'))).returns(
+      M.promise(),
+    ),
+    setFetchRefspecs: M.call(M.arrayOf(M.string())).returns(M.promise()),
+    setPushRefspecs: M.call(M.arrayOf(M.string())).returns(M.promise()),
+    setAllowedBranches: M.call(M.arrayOf(M.string())).returns(M.promise()),
     setAllowForcePush: M.call(M.boolean()).returns(M.promise()),
     setAllowTags: M.call(M.boolean()).returns(M.promise()),
     setAllowDelete: M.call(M.boolean()).returns(M.promise()),

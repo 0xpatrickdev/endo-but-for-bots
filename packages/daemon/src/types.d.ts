@@ -235,12 +235,13 @@ type GitRemoteFormula = {
   git: FormulaIdentifier;
   remote: string;
   url?: string;
-  directions: Array<'fetch' | 'pull' | 'push'>;
-  allowedRefs?: string[];
+  allowedDirections: Array<'fetch' | 'push'>;
+  fetchRefspecs: string[];
+  pushRefspecs: string[];
+  allowedBranches?: string[];
   allowForcePush?: boolean;
   allowTags?: boolean;
   allowDelete?: boolean;
-  allowedProtocols?: string[];
   credential?: GitRemoteCredentialPolicy;
   credentialId?: FormulaIdentifier;
 };
@@ -1083,37 +1084,62 @@ export type GitRunOptions = {
 export type GitRemotePolicy = {
   remote: string;
   url?: string;
-  directions: Array<'fetch' | 'pull' | 'push'>;
-  allowedRefs?: string[];
+  allowedDirections: Array<'fetch' | 'push'>;
+  fetchRefspecs: string[];
+  pushRefspecs: string[];
+  allowedBranches?: string[];
   allowForcePush?: boolean;
   allowTags?: boolean;
   allowDelete?: boolean;
-  allowedProtocols?: string[];
   credential?: GitRemoteCredentialPolicy;
   credentialId?: FormulaIdentifier;
 };
 
-export type GitRemoteOperationResult = {
-  operation: 'fetch' | 'pull' | 'push';
-  status: 'completed';
-  remote: string;
-  refs: string[];
-  diagnostics: { output: string };
-  output: string;
+export type GitRefUpdateResult =
+  | 'created'
+  | 'updated'
+  | 'up-to-date'
+  | 'fast-forward'
+  | 'forced'
+  | 'pruned'
+  | 'rejected';
+
+export type GitRefUpdate = {
+  /** Present on push and on fetches that update tracking refs. */
+  local?: GitRef;
+  /** GitRef when known structurally, string otherwise. */
+  remote: GitRef | string;
+  result: GitRefUpdateResult;
+};
+
+export type GitFetchResult = {
+  /** Includes pruned entries with result='pruned'. */
+  updatedRefs: GitRefUpdate[];
+};
+
+export type GitPullResult = {
+  fetch: GitFetchResult;
+  integration: 'up-to-date' | 'fast-forward' | 'merge' | 'rebase';
+  head?: GitRef;
+};
+
+export type GitPushResult = {
+  updatedRefs: GitRefUpdate[];
 };
 
 export interface EndoGitRemote {
   inspect(): Promise<GitRemotePolicy & { revoked: boolean }>;
-  fetch(options?: {
-    refspecs?: string[];
-    prune?: boolean;
-  }): Promise<GitRemoteOperationResult>;
-  pull(options?: { branch?: string }): Promise<GitRemoteOperationResult>;
+  fetch(options?: { prune?: boolean; tags?: boolean }): Promise<GitFetchResult>;
+  pull(options?: {
+    branch?: GitRef | string;
+    strategy?: 'merge' | 'rebase' | 'ff-only';
+  }): Promise<GitPullResult>;
   push(options?: {
-    source?: string;
-    target?: string;
-    forceWithLease?: boolean;
-  }): Promise<GitRemoteOperationResult>;
+    source?: GitRef | string;
+    destination?: string;
+    force?: boolean;
+    setUpstream?: boolean;
+  }): Promise<GitPushResult>;
 }
 
 export interface EndoGitCredential {
@@ -1123,8 +1149,12 @@ export interface EndoGitCredential {
 
 export interface EndoGitRemoteController {
   inspect(): Promise<GitRemotePolicy & { revoked: boolean }>;
-  setAllowedDirections(directions: Array<'fetch' | 'pull' | 'push'>): Promise<void>;
-  setAllowedRefs(refs: string[]): Promise<void>;
+  setAllowedDirections(
+    allowedDirections: Array<'fetch' | 'push'>,
+  ): Promise<void>;
+  setFetchRefspecs(refspecs: string[]): Promise<void>;
+  setPushRefspecs(refspecs: string[]): Promise<void>;
+  setAllowedBranches(branches: string[]): Promise<void>;
   setAllowForcePush(flag: boolean): Promise<void>;
   setAllowTags(flag: boolean): Promise<void>;
   setAllowDelete(flag: boolean): Promise<void>;
@@ -1134,7 +1164,9 @@ export interface EndoGitRemoteController {
 
 export interface EndoGitCredentialController {
   inspect(): Promise<GitCredentialMetadata>;
-  rotate(secret: string | { username?: string; password?: string }): Promise<void>;
+  rotate(
+    secret: string | { username?: string; password?: string },
+  ): Promise<void>;
   revoke(): Promise<void>;
 }
 
@@ -1143,7 +1175,7 @@ export type GitRemoteAuditRecord = {
   operation: 'fetch' | 'pull' | 'push';
   status: 'completed';
   remote: string;
-  refs: string[];
+  updatedRefs: GitRefUpdate[];
   credentialLabel?: string;
 };
 
@@ -1285,9 +1317,10 @@ export interface EndoHost extends EndoAgent {
       gitName?: string | string[];
       remote?: string;
       url?: string;
-      directions?: Array<'fetch' | 'pull' | 'push'>;
-      allowedRefs?: string[];
-      allowedProtocols?: string[];
+      allowedDirections?: Array<'fetch' | 'push'>;
+      fetchRefspecs?: string[];
+      pushRefspecs?: string[];
+      allowedBranches?: string[];
       allowForcePush?: boolean;
       allowTags?: boolean;
       allowDelete?: boolean;
@@ -1593,9 +1626,7 @@ export type FilePowers = {
   renamePath: (source: string, target: string) => Promise<void>;
   realPath: (path: string) => Promise<string>;
   pathIdentity: (path: string) => Promise<string>;
-  statPath: (
-    path: string,
-  ) => Promise<{
+  statPath: (path: string) => Promise<{
     kind: 'file' | 'directory' | 'symlink';
     sizeBytes: number;
     modifiedMs: number;
@@ -1625,9 +1656,7 @@ export type GitPowers = {
     options?: GitRunOptions,
   ) => Promise<{ stdout: string; stderr: string }>;
   getRepositoryRoot: (configuredRoot: string) => Promise<string>;
-  getRepositoryIdentity: (
-    repoRoot: string,
-  ) => Promise<{
+  getRepositoryIdentity: (repoRoot: string) => Promise<{
     gitDir: string;
     commonDir: string;
     gitDirIdentity: string;

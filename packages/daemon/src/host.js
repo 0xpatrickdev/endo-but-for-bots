@@ -368,6 +368,25 @@ export const makeHostMaker = ({
     };
 
     /**
+     * Reject URLs that embed userinfo. Per
+     * designs/daemon-git-remotes.md § Design Decision 8, this prevents
+     * the inspect()-revealed URL from carrying a secret.
+     *
+     * @param {string} url
+     */
+    const assertNoUrlUserinfo = url => {
+      let parsed;
+      try {
+        parsed = new URL(url);
+      } catch {
+        return;
+      }
+      if (parsed.username !== '' || parsed.password !== '') {
+        throw makeError(X`provideGitRemote: url must not embed userinfo`);
+      }
+    };
+
+    /**
      * Derive a bounded remote-git capability from a local Git capability.
      *
      * @param {Record<string, unknown>} options
@@ -377,8 +396,7 @@ export const makeHostMaker = ({
       const { namePath } = assertPetNamePath(namePathFrom(petName));
       const gitRef = options.git;
       const gitName = options.gitName;
-      const hasGitName =
-        typeof gitName === 'string' || Array.isArray(gitName);
+      const hasGitName = typeof gitName === 'string' || Array.isArray(gitName);
       if (gitRef === undefined && !hasGitName) {
         throw new Error('provideGitRemote requires git or gitName');
       }
@@ -403,27 +421,44 @@ export const makeHostMaker = ({
           X`provideGitRemote: expected git formula, got ${q(gitFormula.type)}`,
         );
       }
+      // Design Decision 8: a remote bound to a read-only Git could not
+      // implement its own contract (even fetch mutates .git refs).
+      if (gitFormula.readOnly === true) {
+        throw makeError(
+          X`provideGitRemote: git argument must be writable; received a read-only Git`,
+        );
+      }
 
       const remote =
         options.remote === undefined ? 'origin' : `${options.remote}`;
       const url = options.url === undefined ? undefined : `${options.url}`;
-      /** @type {Array<'fetch' | 'pull' | 'push'>} */
-      const directions = [];
-      const optionDirections = Array.isArray(options.directions)
-        ? options.directions
-        : ['fetch', 'pull', 'push'];
+      if (url !== undefined) {
+        assertNoUrlUserinfo(url);
+      }
+      /** @type {Array<'fetch' | 'push'>} */
+      const allowedDirections = [];
+      const optionDirections = Array.isArray(options.allowedDirections)
+        ? options.allowedDirections
+        : ['fetch', 'push'];
+      const seenDirections = new Set();
       for (const optionDirection of optionDirections) {
         const direction = `${optionDirection}`;
-        if (!['fetch', 'pull', 'push'].includes(direction)) {
+        if (direction !== 'fetch' && direction !== 'push') {
           throw new Error(`Unsupported git remote direction ${direction}`);
         }
-        directions.push(/** @type {'fetch' | 'pull' | 'push'} */ (direction));
+        if (!seenDirections.has(direction)) {
+          seenDirections.add(direction);
+          allowedDirections.push(direction);
+        }
       }
-      const allowedRefs = Array.isArray(options.allowedRefs)
-        ? options.allowedRefs.map(ref => `${ref}`)
-        : undefined;
-      const allowedProtocols = Array.isArray(options.allowedProtocols)
-        ? options.allowedProtocols.map(protocol => `${protocol}`)
+      const fetchRefspecs = Array.isArray(options.fetchRefspecs)
+        ? options.fetchRefspecs.map(ref => `${ref}`)
+        : [];
+      const pushRefspecs = Array.isArray(options.pushRefspecs)
+        ? options.pushRefspecs.map(ref => `${ref}`)
+        : [];
+      const allowedBranches = Array.isArray(options.allowedBranches)
+        ? options.allowedBranches.map(branch => `${branch}`)
         : undefined;
       const allowForcePush = options.allowForcePush === true;
       const allowTags = options.allowTags === true;
@@ -458,9 +493,10 @@ export const makeHostMaker = ({
         remote,
         harden({
           url,
-          directions,
-          allowedRefs,
-          allowedProtocols,
+          allowedDirections,
+          fetchRefspecs,
+          pushRefspecs,
+          allowedBranches,
           allowForcePush,
           allowTags,
           allowDelete,
@@ -480,7 +516,11 @@ export const makeHostMaker = ({
       if (typeof value !== 'string' || value.length === 0) {
         throw new Error(`${fieldName} is required`);
       }
-      if (value.includes('\0') || value.includes('\n') || value.includes('\r')) {
+      if (
+        value.includes('\0') ||
+        value.includes('\n') ||
+        value.includes('\r')
+      ) {
         throw new Error(`${fieldName} must be a single line`);
       }
       return value;

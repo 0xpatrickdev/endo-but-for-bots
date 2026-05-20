@@ -31,10 +31,7 @@ import {
   makeRefIterator,
 } from '../index.js';
 import { checkinTarTree } from '../src/daemon.js';
-import {
-  makeCryptoPowers,
-  makeGitPowers,
-} from '../src/daemon-node-powers.js';
+import { makeCryptoPowers, makeGitPowers } from '../src/daemon-node-powers.js';
 import { makeDaemonDatabase } from '../src/daemon-database-node.js';
 import { makeGitRemote } from '../src/git.js';
 import { formatId, parseId } from '../src/formula-identifier.js';
@@ -4014,12 +4011,7 @@ const writeTarOctal = (block, offset, size, value) => {
   writeTarText(block, offset, size, text);
 };
 
-const makeTarEntry = ({
-  name,
-  mode = 0o644,
-  type = '0',
-  content = '',
-}) => {
+const makeTarEntry = ({ name, mode = 0o644, type = '0', content = '' }) => {
   const header = new Uint8Array(512);
   const contentBytes =
     typeof content === 'string' ? textEncoder.encode(content) : content;
@@ -4027,14 +4019,11 @@ const makeTarEntry = ({
   writeTarOctal(header, 100, 8, mode);
   writeTarOctal(header, 124, 12, contentBytes.byteLength);
   writeTarText(header, 156, 1, type);
-  const padding = new Uint8Array(
-    (512 - (contentBytes.byteLength % 512)) % 512,
-  );
+  const padding = new Uint8Array((512 - (contentBytes.byteLength % 512)) % 512);
   return concatByteArrays([header, contentBytes, padding]);
 };
 
-const makeTarArchive = entries =>
-  concatByteArrays([...entries, tarTerminator]);
+const makeTarArchive = entries => concatByteArrays([...entries, tarTerminator]);
 
 const makeTarContentStore = () => {
   let nextStore = 0;
@@ -4155,7 +4144,13 @@ test('GitRemote forwards credential cancellation to native git', async t => {
   let receivedCancellation;
   const gitPowers = harden({
     getRepositoryRoot: async root => root,
-    runGit: async () => {
+    runGit: async (_root, args) => {
+      // The fetch path takes a before/after for-each-ref snapshot
+      // around the credentialed fetch invocation; the snapshot calls
+      // are non-credentialed and must succeed silently.
+      if (args[0] === 'for-each-ref') {
+        return { stdout: '', stderr: '' };
+      }
       throw new Error('expected credentialed git invocation');
     },
     runGitCredentialed: async (_root, _args, _credential, options) => {
@@ -4189,7 +4184,9 @@ test('GitRemote forwards credential cancellation to native git', async t => {
     policy: harden({
       remote: 'origin',
       url: 'https://example.com/repo.git',
-      directions: ['fetch'],
+      allowedDirections: ['fetch'],
+      fetchRefspecs: ['+refs/heads/*:refs/remotes/origin/*'],
+      pushRefspecs: [],
       credentialId: 'credential-id',
     }),
     state: harden({
@@ -4217,7 +4214,7 @@ test('GitRemote forwards credential cancellation to native git', async t => {
     }),
   });
 
-  await t.throwsAsync(() => remote.fetch({ refspecs: ['main'] }), {
+  await t.throwsAsync(() => remote.fetch(), {
     message: /git fetch failed.*cancelled/su,
   });
   t.truthy(receivedCancellation);
@@ -4900,10 +4897,7 @@ test('provideGit structured status covers common entry states', async t => {
 
   await E(host).provideMount(repoPath, 'git-status-worktree');
   const worktree = await E(host).lookup('git-status-worktree');
-  const gitCap = await E(host).provideGit(
-    worktree,
-    'git-status-cap',
-  );
+  const gitCap = await E(host).provideGit(worktree, 'git-status-cap');
 
   await E(worktree).writeText('tracked.txt', 'tracked\nmodified\n');
   await E(worktree).writeText('staged-added.txt', 'added\n');
@@ -4959,7 +4953,11 @@ test('provideGit structured status covers common entry states', async t => {
 test('provideGit structured status reports conflicted entries', async t => {
   const { host, config } = await prepareHost(t);
 
-  const repoPath = path.join(config.statePath, '..', 'git-status-conflict-repo');
+  const repoPath = path.join(
+    config.statePath,
+    '..',
+    'git-status-conflict-repo',
+  );
   await createGitFixture(repoPath);
   await fs.promises.writeFile(
     path.join(repoPath, 'conflict.txt'),
@@ -5030,8 +5028,9 @@ test('provideGit enforces mount identity and read-only boundaries', async t => {
   const roGitFromWritable = await E(gitCap).readOnly();
   // eslint-disable-next-line no-underscore-dangle
   const roGitMethods = await E(roGit).__getMethodNames__();
-  // eslint-disable-next-line no-underscore-dangle
-  const roGitFromWritableMethods = await E(roGitFromWritable).__getMethodNames__();
+  const roGitFromWritableMethods =
+    // eslint-disable-next-line no-underscore-dangle
+    await E(roGitFromWritable).__getMethodNames__();
   t.deepEqual(
     roGitMethods.slice().sort(),
     roGitFromWritableMethods.slice().sort(),
@@ -5082,10 +5081,7 @@ test('provideGit fails closed when repository identity changes', async t => {
 
   await E(host).provideMount(repoPath, 'git-identity-worktree');
   const identityWorktree = await E(host).lookup('git-identity-worktree');
-  const gitCap = await E(host).provideGit(
-    identityWorktree,
-    'git-identity-cap',
-  );
+  const gitCap = await E(host).provideGit(identityWorktree, 'git-identity-cap');
   t.deepEqual(await E(gitCap).status(), []);
 
   await fs.promises.rm(path.join(repoPath, '.git'), {
@@ -5255,13 +5251,18 @@ test('provideGitRemote supports bounded local fetch, pull, and push', async t =>
       git: gitCap,
       remote: 'origin',
       url: barePath,
-      directions: ['fetch', 'pull', 'push'],
-      allowedProtocols: ['file'],
+      allowedDirections: ['fetch', 'push'],
+      fetchRefspecs: ['+refs/heads/*:refs/remotes/origin/*'],
+      pushRefspecs: ['refs/heads/main:refs/heads/main'],
     },
     'origin-remote',
   );
 
-  await E(remote).push({ source: 'main', target: 'main' });
+  const initialPush = await E(remote).push({
+    source: 'refs/heads/main',
+    destination: 'refs/heads/main',
+  });
+  t.true(Array.isArray(initialPush.updatedRefs));
   await git(config.statePath, ['clone', barePath, peerPath]);
   await git(peerPath, ['switch', 'main']);
   await git(peerPath, ['config', 'user.name', 'Peer Test']);
@@ -5275,44 +5276,53 @@ test('provideGitRemote supports bounded local fetch, pull, and push', async t =>
   await git(peerPath, ['commit', '-m', 'upstream work']);
   await git(peerPath, ['push', 'origin', 'main']);
 
-  const fetchResult = await E(remote).fetch({ refspecs: ['main'] });
-  t.like(fetchResult, {
-    operation: 'fetch',
-    status: 'completed',
-    remote: 'origin',
-    refs: ['main'],
+  const fetchResult = await E(remote).fetch({ prune: true });
+  t.true(Array.isArray(fetchResult.updatedRefs));
+  // A fast-forward update on origin/main should be reflected.
+  const refUpdate = fetchResult.updatedRefs.find(update =>
+    `${update.remote}`.includes('main'),
+  );
+  t.truthy(refUpdate);
+  const pullResult = await E(remote).pull({
+    branch: 'main',
+    strategy: 'ff-only',
   });
-  t.regex(fetchResult.output, /main/u);
-  await E(remote).pull({ branch: 'main' });
+  t.like(pullResult, { integration: 'fast-forward' });
   t.is(await E(worktree).readText('upstream.txt'), 'from upstream\n');
 
   const localEntry = await E(worktree).entry('local.txt');
   await E(worktree).writeText(localEntry, 'from local\n');
   await E(gitCap).add([localEntry]);
   await E(gitCap).commit('local work');
-  const pushResult = await E(remote).push({ source: 'main', target: 'main' });
-  t.like(pushResult, {
-    operation: 'push',
-    status: 'completed',
-    remote: 'origin',
-    refs: ['main:main'],
+  const pushResult = await E(remote).push({
+    source: 'refs/heads/main',
+    destination: 'refs/heads/main',
   });
-  t.regex(pushResult.output, /main/u);
+  t.true(Array.isArray(pushResult.updatedRefs));
+  t.truthy(
+    pushResult.updatedRefs.find(
+      update => `${update.remote}` === 'refs/heads/main',
+    ),
+  );
   await t.throwsAsync(
-    () => E(remote).push({ source: 'main', forceWithLease: true }),
+    () =>
+      E(remote).push({
+        source: 'refs/heads/main',
+        destination: 'refs/heads/main',
+        force: true,
+      }),
     { message: /does not allow force push/ },
   );
   await t.throwsAsync(
-    () => E(remote).push({ source: 'main:refs/heads/side' }),
+    () =>
+      E(remote).push({
+        source: 'refs/heads/main:refs/heads/side',
+        destination: 'refs/heads/main',
+      }),
     { message: /single ref, not a refspec/ },
   );
-  await git(repoPath, ['tag', 'v1']);
   await t.throwsAsync(
-    () => E(remote).push({ source: 'refs/tags/v1', target: 'refs/tags/v1' }),
-    { message: /does not allow tag push/ },
-  );
-  await t.throwsAsync(
-    () => E(remote).push({ source: '', target: 'refs/heads/main' }),
+    () => E(remote).push({ source: '', destination: 'refs/heads/main' }),
     { message: /does not allow deleting refs/ },
   );
 
@@ -5320,84 +5330,120 @@ test('provideGitRemote supports bounded local fetch, pull, and push', async t =>
     {
       gitName: 'git-remote-cap',
       remote: 'origin',
-      directions: ['push'],
-      allowedRefs: ['main', 'refs/heads/agent/'],
-      allowedProtocols: ['file'],
+      allowedDirections: ['push'],
+      allowedBranches: ['agent/main', 'agent/topic'],
     },
     'origin-push-limited',
   );
   await t.throwsAsync(
     () =>
       E(pushLimited).push({
-        source: 'main',
-        target: 'refs/heads/review/main',
+        source: 'refs/heads/main',
+        destination: 'refs/heads/review/main',
       }),
-    { message: /does not allow ref/ },
+    { message: /does not allow push of/ },
   );
   const limitedPushResult = await E(pushLimited).push({
-    source: 'main',
-    target: 'refs/heads/agent/main',
+    source: 'refs/heads/agent/main',
+    destination: 'refs/heads/agent/main',
   });
-  t.regex(limitedPushResult.output, /agent\/main/u);
+  t.truthy(
+    limitedPushResult.updatedRefs.find(
+      update => `${update.remote}` === 'refs/heads/agent/main',
+    ),
+  );
 
   const fetchOnly = await E(host).provideGitRemote(
     {
       gitName: 'git-remote-cap',
       remote: 'origin',
-      directions: ['fetch'],
-      allowedProtocols: ['file'],
+      allowedDirections: ['fetch'],
+      fetchRefspecs: ['+refs/heads/*:refs/remotes/origin/*'],
     },
     'origin-fetch-only',
   );
-  await t.throwsAsync(() => E(fetchOnly).push({ source: 'main' }), {
-    message: /does not allow push/,
-  });
+  await t.throwsAsync(
+    () =>
+      E(fetchOnly).push({
+        source: 'refs/heads/main',
+        destination: 'refs/heads/main',
+      }),
+    {
+      message: /does not allow push/,
+    },
+  );
 });
 
-test('provideGitRemote defaults to HTTPS-only remote URLs', async t => {
+test('GitRemotePolicy rejects URLs with embedded userinfo', async t => {
   const { host, config } = await prepareHost(t);
 
-  const repoPath = path.join(config.statePath, '..', 'git-remote-policy-repo');
-  const barePath = path.join(config.statePath, '..', 'git-remote-policy-bare.git');
-  await fs.promises.rm(barePath, { recursive: true, force: true });
+  const repoPath = path.join(
+    config.statePath,
+    '..',
+    'git-remote-userinfo-repo',
+  );
   await createGitFixture(repoPath);
-  await git(repoPath, ['init', '--bare', barePath]);
-  await git(repoPath, ['remote', 'add', 'origin', barePath]);
 
-  await E(host).provideMount(repoPath, 'git-policy-worktree');
-  const policyWorktree = await E(host).lookup('git-policy-worktree');
-  await E(host).provideGit(policyWorktree, 'git-policy-cap');
-  const remote = await E(host).provideGitRemote(
-    {
-      gitName: 'git-policy-cap',
-      remote: 'origin',
-      directions: ['fetch'],
-    },
-    'origin-default-https',
+  await E(host).provideMount(repoPath, 'git-userinfo-worktree');
+  const userinfoWorktree = await E(host).lookup('git-userinfo-worktree');
+  await E(host).provideGit(userinfoWorktree, 'git-userinfo-cap');
+
+  await t.throwsAsync(
+    () =>
+      E(host).provideGitRemote(
+        {
+          gitName: 'git-userinfo-cap',
+          remote: 'origin',
+          url: 'https://user:password@github.com/endojs/endo.git',
+          allowedDirections: ['fetch'],
+          fetchRefspecs: ['+refs/heads/*:refs/remotes/origin/*'],
+        },
+        'origin-userinfo',
+      ),
+    { message: /must not embed userinfo/ },
   );
+});
 
-  await t.throwsAsync(() => E(remote).fetch({ refspecs: ['main'] }), {
-    message: /protocol.*file.*not allowed/u,
-  });
+test('provideGitRemote rejects read-only Git', async t => {
+  const { host, config } = await prepareHost(t);
 
-  const sshRemote = await E(host).provideGitRemote(
-    {
-      gitName: 'git-policy-cap',
-      remote: 'new-origin',
-      directions: ['fetch'],
-      url: 'git@github.com:endojs/endo.git',
-    },
-    'origin-default-no-ssh',
+  const repoPath = path.join(
+    config.statePath,
+    '..',
+    'git-remote-readonly-repo',
   );
-  await t.throwsAsync(() => E(sshRemote).fetch({ refspecs: ['main'] }), {
-    message: /protocol.*ssh.*not allowed/u,
+  await createGitFixture(repoPath);
+
+  await E(host).provideMount(repoPath, 'git-remote-readonly-mount', {
+    readOnly: true,
   });
+  const readOnlyMount = await E(host).lookup('git-remote-readonly-mount');
+  await E(host).provideGit(readOnlyMount, 'git-remote-readonly-cap');
+
+  await t.throwsAsync(
+    () =>
+      E(host).provideGitRemote(
+        {
+          gitName: 'git-remote-readonly-cap',
+          remote: 'origin',
+          url: 'https://github.com/endojs/endo.git',
+          allowedDirections: ['fetch'],
+          fetchRefspecs: ['+refs/heads/*:refs/remotes/origin/*'],
+        },
+        'origin-readonly',
+      ),
+    { message: /git argument must be writable/ },
+  );
 });
 
 test('provideGitRemote rejects secret credential fields and exposes metadata', async t => {
   const { host, config } = await prepareHost(t);
 
-  const repoPath = path.join(config.statePath, '..', 'git-remote-credential-repo');
+  const repoPath = path.join(
+    config.statePath,
+    '..',
+    'git-remote-credential-repo',
+  );
   await createGitFixture(repoPath);
 
   await E(host).provideMount(repoPath, 'git-credential-worktree');
@@ -5410,7 +5456,8 @@ test('provideGitRemote rejects secret credential fields and exposes metadata', a
         {
           gitName: 'git-credential-cap',
           remote: 'origin',
-          directions: ['fetch'],
+          allowedDirections: ['fetch'],
+          fetchRefspecs: ['+refs/heads/*:refs/remotes/origin/*'],
           credential: { type: 'bearer', token: 'secret' },
         },
         'origin-secret-credential',
@@ -5422,7 +5469,8 @@ test('provideGitRemote rejects secret credential fields and exposes metadata', a
     {
       gitName: 'git-credential-cap',
       remote: 'origin',
-      directions: ['fetch'],
+      allowedDirections: ['fetch'],
+      fetchRefspecs: ['+refs/heads/*:refs/remotes/origin/*'],
       url: 'https://github.com/endojs/endo.git',
       credential: {
         type: 'bearer',
@@ -5433,7 +5481,7 @@ test('provideGitRemote rejects secret credential fields and exposes metadata', a
     'origin-credential-metadata',
   );
   t.like(await E(remote).inspect(), {
-    allowedProtocols: ['https'],
+    allowedDirections: ['fetch'],
     credential: {
       type: 'bearer',
       label: 'github',
@@ -5476,7 +5524,8 @@ test('provideGit credentials keep secrets out of formulas and inspect output', a
     {
       gitName: 'git-sealed-cap',
       remote: 'origin',
-      directions: ['fetch'],
+      allowedDirections: ['fetch'],
+      fetchRefspecs: ['+refs/heads/*:refs/remotes/origin/*'],
       url: 'https://example.com/repo.git',
       credential,
     },
@@ -5581,7 +5630,8 @@ test('GitRemote credential revocation is checked before network transfer', async
       {
         gitName: 'git-revoked-cap',
         remote: 'origin',
-        directions: ['fetch'],
+        allowedDirections: ['fetch'],
+        fetchRefspecs: ['+refs/heads/*:refs/remotes/origin/*'],
         url: 'https://example.com/repo.git',
         credential,
       },
@@ -5599,7 +5649,7 @@ test('GitRemote credential revocation is checked before network transfer', async
   {
     const { host } = await makeHost(config, cancelled);
     const remote = await E(host).lookup('revoked-remote');
-    await t.throwsAsync(() => E(remote).fetch({ refspecs: ['main'] }), {
+    await t.throwsAsync(() => E(remote).fetch(), {
       message: /Git credential has been revoked/u,
     });
   }
@@ -5627,8 +5677,9 @@ test('GitRemoteController updates policy, records audit, and revokes after resta
         gitName: 'git-control-cap',
         remote: 'origin',
         url: barePath,
-        directions: ['fetch', 'push'],
-        allowedProtocols: ['file'],
+        allowedDirections: ['fetch', 'push'],
+        fetchRefspecs: ['+refs/heads/*:refs/remotes/origin/*'],
+        pushRefspecs: ['refs/heads/main:refs/heads/main'],
       },
       'controlled-origin',
     );
@@ -5637,14 +5688,18 @@ test('GitRemoteController updates policy, records audit, and revokes after resta
       'controlled-origin-controller',
     );
 
-    await E(remote).push({ source: 'main', target: 'main' });
-    t.like((await E(controller).audit())[0], {
-      operation: 'push',
-      refs: ['main:main'],
+    await E(remote).push({
+      source: 'refs/heads/main',
+      destination: 'refs/heads/main',
     });
+    t.like((await E(controller).audit())[0], { operation: 'push' });
     await E(controller).setAllowedDirections(['fetch']);
     await t.throwsAsync(
-      () => E(remote).push({ source: 'main', target: 'main' }),
+      () =>
+        E(remote).push({
+          source: 'refs/heads/main',
+          destination: 'refs/heads/main',
+        }),
       { message: /does not allow push/u },
     );
   }
@@ -5656,15 +5711,16 @@ test('GitRemoteController updates policy, records audit, and revokes after resta
     const remote = await E(host).lookup('controlled-origin');
     const controller = await E(host).lookup('controlled-origin-controller');
     t.like(await E(controller).inspect(), {
-      directions: ['fetch'],
+      allowedDirections: ['fetch'],
       revoked: false,
     });
-    t.like((await E(controller).audit())[0], {
-      operation: 'push',
-      refs: ['main:main'],
-    });
+    t.like((await E(controller).audit())[0], { operation: 'push' });
     await t.throwsAsync(
-      () => E(remote).push({ source: 'main', target: 'main' }),
+      () =>
+        E(remote).push({
+          source: 'refs/heads/main',
+          destination: 'refs/heads/main',
+        }),
       { message: /does not allow push/u },
     );
     await E(controller).revoke();
@@ -5677,7 +5733,7 @@ test('GitRemoteController updates policy, records audit, and revokes after resta
     const remote = await E(host).lookup('controlled-origin');
     const controller = await E(host).lookup('controlled-origin-controller');
     t.like(await E(controller).inspect(), { revoked: true });
-    await t.throwsAsync(() => E(remote).fetch({ refspecs: ['main'] }), {
+    await t.throwsAsync(() => E(remote).fetch(), {
       message: /Git remote has been revoked/u,
     });
   }

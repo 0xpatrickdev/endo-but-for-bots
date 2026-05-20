@@ -255,7 +255,8 @@ const makeTarByteReader = readerRef => {
  * @param {number} mode
  */
 const assertRegularTarMode = (archivePath, mode) => {
-  const hasOnlyPermissions = Number.isSafeInteger(mode) && mode >= 0 && mode <= 0o777;
+  const hasOnlyPermissions =
+    Number.isSafeInteger(mode) && mode >= 0 && mode <= 0o777;
   const hasExecutableBit =
     Math.floor(mode / 0o100) % 2 === 1 ||
     Math.floor(mode / 0o10) % 2 === 1 ||
@@ -357,7 +358,9 @@ export const checkinTarTree = async (readerRef, contentStore) => {
     if (typeFlag === '5') {
       assertDirectoryTarMode(archivePath, mode);
       if (size !== 0) {
-        throw new Error(`Directory tar entry has content for ${q(archivePath)}`);
+        throw new Error(
+          `Directory tar entry has content for ${q(archivePath)}`,
+        );
       }
       ensureDirectory(segments);
     } else if (typeFlag === '0' || typeFlag === '\0') {
@@ -762,9 +765,10 @@ const makeDaemonCore = async (
     if (text === undefined) {
       return harden({ revoked: false, policy: harden({}), audit: harden([]) });
     }
-    const state = /** @type {{ revoked?: boolean, policy?: Record<string, unknown>, audit?: unknown[] }} */ (
-      JSON.parse(text)
-    );
+    const state =
+      /** @type {{ revoked?: boolean, policy?: Record<string, unknown>, audit?: unknown[] }} */ (
+        JSON.parse(text)
+      );
     return harden({
       revoked: state.revoked === true,
       policy: harden(
@@ -787,7 +791,9 @@ const makeDaemonCore = async (
    */
   const rotateGitCredential = async (formulaNumber, formula, secret) => {
     if (formula.type !== 'git-credential') {
-      throw new Error(`Expected git-credential formula, got ${q(formula.type)}`);
+      throw new Error(
+        `Expected git-credential formula, got ${q(formula.type)}`,
+      );
     }
     if (formula.kind === 'bearer') {
       const token =
@@ -829,7 +835,9 @@ const makeDaemonCore = async (
    */
   const gitCredentialMetadataFromFormula = (formula, revoked) => {
     if (formula.type !== 'git-credential') {
-      throw new Error(`Expected git-credential formula, got ${q(formula.type)}`);
+      throw new Error(
+        `Expected git-credential formula, got ${q(formula.type)}`,
+      );
     }
     return harden({
       kind: formula.kind,
@@ -854,7 +862,9 @@ const makeDaemonCore = async (
     const state = await readGitCredentialState(number);
     const kind = state.kind;
     if (kind !== formula.kind) {
-      throw new Error('Git credential sealed state kind does not match formula');
+      throw new Error(
+        'Git credential sealed state kind does not match formula',
+      );
     }
     const revoked = state.revoked === true;
     const metadata = gitCredentialMetadataFromFormula(formula, revoked);
@@ -908,7 +918,10 @@ const makeDaemonCore = async (
       },
       async revoke() {
         const state = await readGitRemoteStateFile(formulaNumber);
-        runtimeRevocationFor(gitRemoteRuntimeRevocations, formulaNumber).revoke();
+        runtimeRevocationFor(
+          gitRemoteRuntimeRevocations,
+          formulaNumber,
+        ).revoke();
         await writeGitRemoteState(formulaNumber, {
           revoked: true,
           policy: state.policy,
@@ -2075,7 +2088,9 @@ const makeDaemonCore = async (
    * @param {string} filePath
    */
   const snapshotMountFile = async filePath => {
-    const sha256 = await contentStore.store(filePowers.makeFileReader(filePath));
+    const sha256 = await contentStore.store(
+      filePowers.makeFileReader(filePath),
+    );
     return makeReadableBlob(sha256);
   };
 
@@ -3296,12 +3311,13 @@ const makeDaemonCore = async (
         git,
         remote,
         url,
-        directions,
-        allowedRefs,
+        allowedDirections,
+        fetchRefspecs,
+        pushRefspecs,
+        allowedBranches,
         allowForcePush,
         allowTags,
         allowDelete,
-        allowedProtocols,
         credential,
         credentialId,
       },
@@ -3329,12 +3345,13 @@ const makeDaemonCore = async (
         policy: harden({
           remote,
           url,
-          directions,
-          allowedRefs,
+          allowedDirections,
+          fetchRefspecs,
+          pushRefspecs,
+          allowedBranches,
           allowForcePush,
           allowTags,
           allowDelete,
-          allowedProtocols,
           credential,
           credentialId,
         }),
@@ -3366,12 +3383,13 @@ const makeDaemonCore = async (
         basePolicy: harden({
           remote: remoteFormula.remote,
           url: remoteFormula.url,
-          directions: remoteFormula.directions,
-          allowedRefs: remoteFormula.allowedRefs,
+          allowedDirections: remoteFormula.allowedDirections,
+          fetchRefspecs: remoteFormula.fetchRefspecs,
+          pushRefspecs: remoteFormula.pushRefspecs,
+          allowedBranches: remoteFormula.allowedBranches,
           allowForcePush: remoteFormula.allowForcePush,
           allowTags: remoteFormula.allowTags,
           allowDelete: remoteFormula.allowDelete,
-          allowedProtocols: remoteFormula.allowedProtocols,
           credential: remoteFormula.credential,
           credentialId: remoteFormula.credentialId,
         }),

@@ -19,10 +19,9 @@ import {
 import { makeNativeGitBackend } from './native-git-backend.js';
 import { makeReaderRef } from './reader-ref.js';
 
-/** @import { EndoMount, EndoMountEntry, GitCredentialMetadata, GitCredentialUse, GitPowers, GitRemoteAuditRecord, GitRemotePolicy } from './types.js' */
+/** @import { EndoMount, EndoMountEntry, GitCredentialMetadata, GitCredentialUse, GitPowers, GitRefUpdate, GitRefUpdateResult, GitRemoteAuditRecord, GitRemotePolicy } from './types.js' */
 
 const GIT_OUTPUT_LIMIT = 50_000;
-const DEFAULT_REMOTE_PROTOCOLS = harden(['https']);
 const CREDENTIAL_SECRET_FIELDS = harden([
   'token',
   'password',
@@ -306,7 +305,9 @@ const parseStatusPorcelainV2 = output => {
       if (tag === '2') {
         i += 1;
         if (i >= records.length) {
-          throw new Error(`Missing rename source for git status record ${q(record)}`);
+          throw new Error(
+            `Missing rename source for git status record ${q(record)}`,
+          );
         }
         Object.assign(entry, { renamedFrom: records[i] });
       }
@@ -350,7 +351,6 @@ export const makeGit = ({
     runGit,
     assertNoExecutableRepoConfig,
   } = backend;
-
 
   /**
    * @param {unknown} branchName
@@ -435,7 +435,9 @@ export const makeGit = ({
       parseStatusPorcelainV2(stdout).map(async rawEntry => {
         const entry = await entryFromGitPath(rawEntry.path);
         const liveNode = (await E(worktree).has(entry))
-          ? await E(worktree).lookup(entry).catch(() => undefined)
+          ? await E(worktree)
+              .lookup(entry)
+              .catch(() => undefined)
           : undefined;
         return harden({
           ...rawEntry,
@@ -631,10 +633,7 @@ export const makeGit = ({
         command.push(requireRevision(head, 'head'));
       }
       if (entries !== undefined) {
-        command.push(
-          '--',
-          ...(await pathspecsFromEntries(entries, 'entries')),
-        );
+        command.push('--', ...(await pathspecsFromEntries(entries, 'entries')));
       }
       return runGit(command);
     },
@@ -682,7 +681,11 @@ export const makeGit = ({
     async add(entries) {
       assertWritable();
       await assertNoExecutableRepoConfig();
-      return runGit(['add', '--', ...(await pathspecsFromEntries(entries, 'entries'))]);
+      return runGit([
+        'add',
+        '--',
+        ...(await pathspecsFromEntries(entries, 'entries')),
+      ]);
     },
 
     async restore(entries, options = {}) {
@@ -700,13 +703,7 @@ export const makeGit = ({
     async commit(message) {
       assertWritable();
       const subject = requireNonEmptyString(message, 'message');
-      await runGit([
-        'commit',
-        '--no-verify',
-        '--no-gpg-sign',
-        '-m',
-        subject,
-      ]);
+      await runGit(['commit', '--no-verify', '--no-gpg-sign', '-m', subject]);
       return commitFromHead(subject);
     },
 
@@ -846,10 +843,7 @@ export const makeGit = ({
         command.push('-m', requireNonEmptyString(message, 'message'));
       }
       if (entries !== undefined) {
-        command.push(
-          '--',
-          ...(await pathspecsFromEntries(entries, 'entries')),
-        );
+        command.push('--', ...(await pathspecsFromEntries(entries, 'entries')));
       }
       return runGit(command);
     },
@@ -940,94 +934,311 @@ const requireRemoteToken = (value, name) => {
 harden(requireRemoteToken);
 
 /**
- * @param {string} ref
- * @param {string} allowed
+ * Reject URLs that embed userinfo (`user[:password]@host`). Per
+ * designs/daemon-git-remotes.md § Design Decision 8, this prevents the
+ * inspect()-revealed URL from carrying a secret.
+ *
+ * @param {string} url
  */
-const refMatchesPolicy = (ref, allowed) => {
-  const target = ref.startsWith('+') ? ref.slice(1) : ref;
-  if (allowed.endsWith('*')) {
-    return target.startsWith(allowed.slice(0, -1));
+const assertNoUrlUserinfo = url => {
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    // Non-URL strings (e.g., file paths) cannot carry userinfo.
+    return;
   }
-  if (allowed.endsWith('/')) {
-    return target.startsWith(allowed);
+  if (parsed.username !== '' || parsed.password !== '') {
+    throw new Error('Git remote url must not embed userinfo');
   }
-  return target === allowed;
 };
-harden(refMatchesPolicy);
+harden(assertNoUrlUserinfo);
 
 /**
- * @param {unknown} value
- * @returns {string[]}
+ * A refspec has the form `[+]<src>:<dst>` where either side may be empty
+ * (deletion is empty src) and a leading `+` means force.
+ *
+ * @param {string} refspec
+ * @param {string} fieldName
+ * @returns {{ force: boolean, src: string, dst: string }}
  */
-const remoteProtocolsFromPolicy = value => {
-  if (value === undefined) {
-    return DEFAULT_REMOTE_PROTOCOLS;
+const parseRefspec = (refspec, fieldName) => {
+  if (typeof refspec !== 'string' || refspec.length === 0) {
+    throw new Error(`${fieldName} entry must be a non-empty string`);
   }
-  if (!Array.isArray(value) || value.length === 0) {
-    throw new Error('allowedProtocols must be a non-empty array');
-  }
-  return harden(
-    value.map(protocol => {
-      const name = requireRemoteToken(protocol, 'allowedProtocols entry');
-      if (!/^[a-z][a-z0-9+.-]*$/u.test(name)) {
-        throw new Error(`Invalid remote protocol ${q(name)}`);
-      }
-      return name;
-    }),
-  );
-};
-harden(remoteProtocolsFromPolicy);
-
-/**
- * @param {string} remoteUrl
- * @returns {string}
- */
-const remoteProtocolForUrl = remoteUrl => {
-  if (/^[^@/\s]+@[^:\s]+:.+/u.test(remoteUrl)) {
-    return 'ssh';
-  }
-  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/u.test(remoteUrl)) {
-    return new URL(remoteUrl).protocol.slice(0, -1);
-  }
-  return 'file';
-};
-harden(remoteProtocolForUrl);
-
-/**
- * @param {string} remoteUrl
- * @param {string[]} allowedProtocols
- */
-const assertAllowedRemoteUrl = (remoteUrl, allowedProtocols) => {
-  const protocol = remoteProtocolForUrl(remoteUrl);
-  if (!allowedProtocols.includes(protocol)) {
+  const force = refspec.startsWith('+');
+  const body = force ? refspec.slice(1) : refspec;
+  const colon = body.indexOf(':');
+  if (colon < 0) {
     throw new Error(
-      `Git remote protocol ${q(protocol)} is not allowed; allowed protocols: ${allowedProtocols.join(', ')}`,
+      `${fieldName} entry ${q(refspec)} must be a refspec (src:dst); short names are rejected`,
     );
   }
-  return protocol;
+  const src = body.slice(0, colon);
+  const dst = body.slice(colon + 1);
+  if (dst === '') {
+    throw new Error(
+      `${fieldName} entry ${q(refspec)} must have a non-empty destination`,
+    );
+  }
+  return { force, src, dst };
 };
-harden(assertAllowedRemoteUrl);
+harden(parseRefspec);
 
 /**
  * @param {string} ref
  */
-const isTagRef = ref =>
-  ref.startsWith('refs/tags/') || ref.startsWith('tags/');
-harden(isTagRef);
+const isTagRefPath = ref =>
+  ref === 'refs/tags' ||
+  ref.startsWith('refs/tags/') ||
+  ref.startsWith('refs/tags/*');
+harden(isTagRefPath);
+
+/**
+ * Detect a wildcard refspec side. Wildcards are allowed only as a
+ * suffix `*` under a fixed parent, e.g. `refs/heads/*` or
+ * `refs/heads/agent/*`.
+ *
+ * @param {string} value
+ */
+const refSideHasValidWildcard = value => {
+  if (!value.includes('*')) {
+    return true;
+  }
+  const star = value.indexOf('*');
+  if (star !== value.length - 1) {
+    return false;
+  }
+  const parent = value.slice(0, star);
+  return parent.endsWith('/');
+};
+harden(refSideHasValidWildcard);
+
+/**
+ * @param {string} value
+ */
+const isFullyQualifiedRef = value =>
+  value.startsWith('refs/') && !value.endsWith('/');
+harden(isFullyQualifiedRef);
+
+/**
+ * @param {string} value
+ * @param {string} parent
+ */
+const refIsUnderParent = (value, parent) => {
+  if (value === parent.replace(/\/$/, '')) {
+    return false;
+  }
+  return value === parent || value.startsWith(parent);
+};
+harden(refIsUnderParent);
 
 /**
  * @param {unknown} value
  * @param {string} fieldName
- * @returns {string}
+ * @returns {Array<'fetch' | 'push'>}
  */
-const requireRemoteRef = (value, fieldName) => {
-  const ref = requireRevision(value, fieldName);
-  if (ref.startsWith('+') || ref.includes(':')) {
-    throw new Error(`${fieldName} must be a single ref, not a refspec`);
+const remoteDirectionsFrom = (value, fieldName) => {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new Error(`${fieldName} must be a non-empty array`);
   }
-  return ref;
+  /** @type {Set<'fetch' | 'push'>} */
+  const seen = new Set();
+  for (const direction of value) {
+    const text = requireRemoteToken(direction, `${fieldName} entry`);
+    if (text !== 'fetch' && text !== 'push') {
+      throw new Error(
+        `Unsupported git remote direction ${q(text)}; allowed: fetch, push`,
+      );
+    }
+    seen.add(text);
+  }
+  return harden([...seen]);
 };
-harden(requireRemoteRef);
+harden(remoteDirectionsFrom);
+
+/**
+ * @param {unknown} value
+ * @param {string} fieldName
+ * @returns {string[]}
+ */
+const remoteRefspecsFrom = (value, fieldName) => {
+  if (value === undefined) {
+    return harden([]);
+  }
+  if (!Array.isArray(value)) {
+    throw new Error(`${fieldName} must be an array`);
+  }
+  return harden(
+    value.map(ref => requireRemoteToken(ref, `${fieldName} entry`)),
+  );
+};
+harden(remoteRefspecsFrom);
+
+/**
+ * @param {unknown} value
+ * @param {string} fieldName
+ * @returns {string[] | undefined}
+ */
+const remoteAllowedBranchesFrom = (value, fieldName) => {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!Array.isArray(value)) {
+    throw new Error(`${fieldName} must be an array`);
+  }
+  return harden(
+    value.map(branch => requireRemoteToken(branch, `${fieldName} entry`)),
+  );
+};
+harden(remoteAllowedBranchesFrom);
+
+/**
+ * Run the construction-time validation matrix from
+ * designs/daemon-git-remotes.md § Policy Validation Matrix.
+ *
+ * @param {object} args
+ * @param {string} args.remote
+ * @param {string[]} args.fetchRefspecs
+ * @param {string[]} args.pushRefspecs
+ * @param {string[] | undefined} args.allowedBranches
+ * @param {boolean} args.allowForcePush
+ * @param {boolean} args.allowTags
+ * @param {boolean} args.allowDelete
+ * @param {Array<'fetch' | 'push'>} args.allowedDirections
+ */
+const validateRemotePolicy = ({
+  remote,
+  fetchRefspecs,
+  pushRefspecs,
+  allowedBranches,
+  allowForcePush,
+  allowTags,
+  allowDelete,
+  allowedDirections,
+}) => {
+  const remoteTrackingParent = `refs/remotes/${remote}/`;
+
+  for (const refspec of fetchRefspecs) {
+    const { force, src, dst } = parseRefspec(refspec, 'fetchRefspecs');
+    void force;
+    if (!refSideHasValidWildcard(src) || !refSideHasValidWildcard(dst)) {
+      throw new Error(
+        `fetchRefspecs entry ${q(refspec)} has an invalid wildcard; wildcards must be a trailing '*' under a fixed parent`,
+      );
+    }
+    if (dst === '') {
+      throw new Error(
+        `fetchRefspecs entry ${q(refspec)} must have a non-empty destination`,
+      );
+    }
+    if (
+      !isFullyQualifiedRef(dst) ||
+      !refIsUnderParent(dst, remoteTrackingParent)
+    ) {
+      throw new Error(
+        `fetchRefspecs entry ${q(refspec)} destination must be rooted at ${q(remoteTrackingParent)}`,
+      );
+    }
+    if (src === '') {
+      if (!allowDelete) {
+        throw new Error(
+          `fetchRefspecs entry ${q(refspec)} is a deletion form; set allowDelete: true to permit it`,
+        );
+      }
+    } else if (!isFullyQualifiedRef(src)) {
+      throw new Error(
+        `fetchRefspecs entry ${q(refspec)} source must be fully-qualified (start with 'refs/'); short names are rejected`,
+      );
+    }
+    if (!allowTags && (isTagRefPath(src) || isTagRefPath(dst))) {
+      throw new Error(
+        `fetchRefspecs entry ${q(refspec)} references tags; set allowTags: true to permit it`,
+      );
+    }
+  }
+
+  for (const refspec of pushRefspecs) {
+    const { force, src, dst } = parseRefspec(refspec, 'pushRefspecs');
+    if (!refSideHasValidWildcard(src) || !refSideHasValidWildcard(dst)) {
+      throw new Error(
+        `pushRefspecs entry ${q(refspec)} has an invalid wildcard; wildcards must be a trailing '*' under a fixed parent`,
+      );
+    }
+    if (force && !allowForcePush) {
+      throw new Error(
+        `pushRefspecs entry ${q(refspec)} has '+' force prefix; set allowForcePush: true to permit it`,
+      );
+    }
+    if (src === '') {
+      if (!allowDelete) {
+        throw new Error(
+          `pushRefspecs entry ${q(refspec)} is a deletion form; set allowDelete: true to permit it`,
+        );
+      }
+    } else if (!isFullyQualifiedRef(src)) {
+      throw new Error(
+        `pushRefspecs entry ${q(refspec)} source must be fully-qualified (start with 'refs/'); short names are rejected`,
+      );
+    }
+    if (!isFullyQualifiedRef(dst)) {
+      throw new Error(
+        `pushRefspecs entry ${q(refspec)} destination must be fully-qualified (start with 'refs/')`,
+      );
+    }
+    if (!allowTags && (isTagRefPath(src) || isTagRefPath(dst))) {
+      throw new Error(
+        `pushRefspecs entry ${q(refspec)} references tags; set allowTags: true to permit it`,
+      );
+    }
+  }
+
+  if (allowedBranches !== undefined) {
+    if (pushRefspecs.length > 0) {
+      throw new Error(
+        'GitRemotePolicy must choose one of allowedBranches or pushRefspecs (mutually exclusive)',
+      );
+    }
+    for (const branch of allowedBranches) {
+      if (branch.includes(':')) {
+        throw new Error(
+          `allowedBranches entry ${q(branch)} must be a branch name or refs/heads/<glob>, not a refspec`,
+        );
+      }
+    }
+  }
+
+  if (allowedDirections.includes('push')) {
+    const hasExplicitPushRefspecs = pushRefspecs.length > 0;
+    const hasAllowedBranches =
+      allowedBranches !== undefined && allowedBranches.length > 0;
+    if (!hasExplicitPushRefspecs && !hasAllowedBranches) {
+      throw new Error(
+        "GitRemotePolicy allowedDirections includes 'push' but neither pushRefspecs nor allowedBranches is set; a push-direction remote with no allowed targets is misconfigured",
+      );
+    }
+  }
+};
+harden(validateRemotePolicy);
+
+/**
+ * @param {string[] | undefined} allowedBranches
+ * @returns {string[]}
+ */
+const pushRefspecsFromAllowedBranches = allowedBranches => {
+  if (allowedBranches === undefined || allowedBranches.length === 0) {
+    return [];
+  }
+  return harden(
+    allowedBranches.map(branch => {
+      const fully = branch.startsWith('refs/heads/')
+        ? branch
+        : `refs/heads/${branch}`;
+      return `${fully}:${fully}`;
+    }),
+  );
+};
+harden(pushRefspecsFromAllowedBranches);
 
 /**
  * @param {unknown} value
@@ -1062,74 +1273,67 @@ const validateCredentialPolicy = value => {
 harden(validateCredentialPolicy);
 
 /**
- * @param {unknown} value
- * @param {string} fieldName
- * @returns {Array<'fetch' | 'pull' | 'push'>}
- */
-const remoteDirectionsFrom = (value, fieldName) => {
-  if (!Array.isArray(value) || value.length === 0) {
-    throw new Error(`${fieldName} must be a non-empty array`);
-  }
-  return harden(
-    value.map(direction => {
-      const text = requireRemoteToken(direction, `${fieldName} entry`);
-      if (!['fetch', 'pull', 'push'].includes(text)) {
-        throw new Error(`Unsupported git remote direction ${text}`);
-      }
-      return /** @type {'fetch' | 'pull' | 'push'} */ (text);
-    }),
-  );
-};
-harden(remoteDirectionsFrom);
-
-/**
- * @param {unknown} value
- * @param {string} fieldName
- * @returns {string[] | undefined}
- */
-const remoteRefsFrom = (value, fieldName) => {
-  if (value === undefined) {
-    return undefined;
-  }
-  if (!Array.isArray(value)) {
-    throw new Error(`${fieldName} must be an array`);
-  }
-  return harden(
-    value.map(ref => requireRemoteToken(ref, `${fieldName} entry`)),
-  );
-};
-harden(remoteRefsFrom);
-
-/**
- * @param {unknown} value
- */
-const remoteAllowedProtocolsFrom = value =>
-  value === undefined ? undefined : remoteProtocolsFromPolicy(value);
-harden(remoteAllowedProtocolsFrom);
-
-/**
+ * Apply a single normalize+validate pass and return a fully-formed
+ * GitRemotePolicy. The result is the policy as stored on the formula.
+ *
  * @param {GitRemotePolicy} base
  * @param {Partial<GitRemotePolicy>} overlay
  * @returns {GitRemotePolicy}
  */
 const mergeRemotePolicy = (base, overlay = {}) => {
-  const allowedProtocols = remoteAllowedProtocolsFrom(
-    overlay.allowedProtocols ?? base.allowedProtocols,
+  const remote = requireRemoteToken(overlay.remote ?? base.remote, 'remote');
+  const url = overlay.url ?? base.url;
+  if (url !== undefined) {
+    assertNoUrlUserinfo(`${url}`);
+  }
+  const allowedDirections = remoteDirectionsFrom(
+    overlay.allowedDirections ?? base.allowedDirections,
+    'allowedDirections',
   );
+  const fetchRefspecs = remoteRefspecsFrom(
+    overlay.fetchRefspecs ?? base.fetchRefspecs,
+    'fetchRefspecs',
+  );
+  const pushRefspecs = remoteRefspecsFrom(
+    overlay.pushRefspecs ?? base.pushRefspecs,
+    'pushRefspecs',
+  );
+  const allowedBranches = remoteAllowedBranchesFrom(
+    overlay.allowedBranches !== undefined
+      ? overlay.allowedBranches
+      : base.allowedBranches,
+    'allowedBranches',
+  );
+  const allowForcePush =
+    (overlay.allowForcePush ?? base.allowForcePush) === true;
+  const allowTags = (overlay.allowTags ?? base.allowTags) === true;
+  const allowDelete = (overlay.allowDelete ?? base.allowDelete) === true;
+  const credential = validateCredentialPolicy(
+    overlay.credential ?? base.credential,
+  );
+  const credentialId = overlay.credentialId ?? base.credentialId;
+  validateRemotePolicy({
+    remote,
+    fetchRefspecs,
+    pushRefspecs,
+    allowedBranches,
+    allowForcePush,
+    allowTags,
+    allowDelete,
+    allowedDirections,
+  });
   return harden({
-    ...base,
-    ...overlay,
-    remote: requireRemoteToken(overlay.remote ?? base.remote, 'remote'),
-    directions: remoteDirectionsFrom(
-      overlay.directions ?? base.directions,
-      'directions',
-    ),
-    allowedRefs: remoteRefsFrom(
-      overlay.allowedRefs ?? base.allowedRefs,
-      'allowedRefs',
-    ),
-    ...(allowedProtocols !== undefined && { allowedProtocols }),
-    credential: validateCredentialPolicy(overlay.credential ?? base.credential),
+    remote,
+    ...(url !== undefined && { url }),
+    allowedDirections,
+    fetchRefspecs,
+    pushRefspecs,
+    ...(allowedBranches !== undefined && { allowedBranches }),
+    allowForcePush,
+    allowTags,
+    allowDelete,
+    ...(credential !== undefined && { credential }),
+    ...(credentialId !== undefined && { credentialId }),
   });
 };
 harden(mergeRemotePolicy);
@@ -1172,6 +1376,182 @@ const assertCredentialAudience = (remoteUrl, credential) => {
   }
 };
 harden(assertCredentialAudience);
+
+/**
+ * Parse the output of `git for-each-ref --format '%(refname) %(objectname)'`
+ * into a Map from ref name to OID. Used to take a before/after snapshot
+ * of the remote-tracking refs around a fetch operation; git fetch on
+ * versions < 2.41 does not emit a porcelain ref-update report, so we
+ * derive the structured GitRefUpdate[] from the diff of these snapshots.
+ *
+ * @param {string} stdout
+ * @returns {Map<string, string>}
+ */
+const parseForEachRef = stdout => {
+  /** @type {Map<string, string>} */
+  const refs = new Map();
+  for (const rawLine of stdout.split('\n')) {
+    const line = rawLine.replace(/\r$/, '').trim();
+    if (line === '') continue; // eslint-disable-line no-continue
+    const space = line.indexOf(' ');
+    if (space < 0) continue; // eslint-disable-line no-continue
+    refs.set(line.slice(0, space), line.slice(space + 1));
+  }
+  return refs;
+};
+harden(parseForEachRef);
+
+/**
+ * Diff before/after snapshots and produce GitRefUpdate[] entries.
+ *
+ * @param {Map<string, string>} before
+ * @param {Map<string, string>} after
+ * @returns {GitRefUpdate[]}
+ */
+const diffRefSnapshots = (before, after) => {
+  /** @type {GitRefUpdate[]} */
+  const updates = [];
+  for (const [refname, newOid] of after.entries()) {
+    const oldOid = before.get(refname);
+    if (oldOid === undefined) {
+      updates.push(
+        harden({
+          local: harden({ kind: 'ref', name: refname, oid: newOid }),
+          remote: refname,
+          result: 'created',
+        }),
+      );
+    } else if (oldOid !== newOid) {
+      updates.push(
+        harden({
+          local: harden({ kind: 'ref', name: refname, oid: newOid }),
+          remote: refname,
+          result: 'updated',
+        }),
+      );
+    }
+  }
+  for (const [refname, oldOid] of before.entries()) {
+    if (!after.has(refname)) {
+      updates.push(
+        harden({
+          local: harden({ kind: 'ref', name: refname, oid: oldOid }),
+          remote: refname,
+          result: 'pruned',
+        }),
+      );
+    }
+  }
+  return harden(updates);
+};
+harden(diffRefSnapshots);
+
+/**
+ * Parse a `git push --porcelain` flag character. Push porcelain emits:
+ *
+ *   To <url>
+ *   <flag> <from>:<to> <summary>
+ *   Done
+ *
+ * Flag chars: ' ' (for a successfully pushed fast-forward),
+ * '+' (successful forced update), '-' (deleted ref), '*' (new ref),
+ * '!' (failed/rejected), '=' (up-to-date).
+ *
+ * @param {string} flag
+ * @returns {GitRefUpdateResult}
+ */
+const pushPorcelainFlag = flag => {
+  switch (flag) {
+    case ' ':
+      return 'fast-forward';
+    case '+':
+      return 'forced';
+    case '-':
+      return 'pruned';
+    case '*':
+      return 'created';
+    case '!':
+      return 'rejected';
+    case '=':
+      return 'up-to-date';
+    default:
+      return 'updated';
+  }
+};
+harden(pushPorcelainFlag);
+
+/**
+ * @param {string} rawLine
+ * @returns {GitRefUpdate | undefined}
+ */
+const parsePushPorcelainLine = rawLine => {
+  const line = rawLine.replace(/\r$/, '');
+  if (
+    line === '' ||
+    line.startsWith('#') ||
+    line.startsWith('To ') ||
+    line === 'Done' ||
+    line.length < 4
+  ) {
+    return undefined;
+  }
+  const flag = line[0];
+  // The push porcelain line is tab-delimited: "<flag>\t<from>:<to>\t<summary>"
+  const tabs = line.split('\t');
+  /** @type {string | undefined} */
+  let refPair;
+  if (tabs.length >= 2) {
+    refPair = tabs[1];
+  } else {
+    refPair = line.slice(2).split(' ')[0];
+  }
+  if (refPair === undefined || refPair === '') {
+    return undefined;
+  }
+  const colon = refPair.indexOf(':');
+  const local = colon < 0 ? refPair : refPair.slice(0, colon);
+  const remoteRef = colon < 0 ? '' : refPair.slice(colon + 1);
+  return harden({
+    ...(local !== '' && {
+      local: harden({ kind: 'ref', name: local }),
+    }),
+    remote: remoteRef,
+    result: pushPorcelainFlag(flag),
+  });
+};
+harden(parsePushPorcelainLine);
+
+/**
+ * @param {string} stdout
+ * @returns {GitRefUpdate[]}
+ */
+const parsePushPorcelain = stdout =>
+  harden(
+    stdout
+      .split('\n')
+      .map(parsePushPorcelainLine)
+      .filter(
+        /** @returns {update is GitRefUpdate} */ update => update !== undefined,
+      ),
+  );
+harden(parsePushPorcelain);
+
+/**
+ * Match a refspec entry against a candidate ref, honouring trailing-`*`
+ * wildcards under a fixed parent. Both inputs already exclude any
+ * leading `+` force prefix.
+ *
+ * @param {string} refspecSide
+ * @param {string} candidate
+ */
+const refspecSideMatches = (refspecSide, candidate) => {
+  if (refspecSide.endsWith('*')) {
+    const parent = refspecSide.slice(0, -1);
+    return candidate.startsWith(parent);
+  }
+  return refspecSide === candidate;
+};
+harden(refspecSideMatches);
 
 /**
  * @param {object} args
@@ -1253,43 +1633,78 @@ export const makeGitRemote = ({ repoRoot, gitPowers, policy, state }) => {
   /**
    * @param {GitRemotePolicy} currentPolicy
    * @param {boolean} revoked
-   * @param {'fetch' | 'pull' | 'push'} direction
+   * @param {'fetch' | 'push'} direction
    */
   const assertAllowed = (currentPolicy, revoked, direction) => {
     if (revoked) {
       throw new Error('Git remote has been revoked');
     }
-    if (!new Set(currentPolicy.directions).has(direction)) {
+    if (!new Set(currentPolicy.allowedDirections).has(direction)) {
       throw new Error(`Git remote does not allow ${direction}`);
     }
   };
 
   /**
    * @param {GitRemotePolicy} currentPolicy
-   * @param {string} ref
+   * @returns {string[]} effective push refspec policy
    */
-  const assertAllowedRef = (currentPolicy, ref) => {
-    const { allowedRefs } = currentPolicy;
-    if (
-      allowedRefs !== undefined &&
-      !allowedRefs.some(allowed => refMatchesPolicy(ref, allowed))
-    ) {
-      throw new Error(`Git remote policy does not allow ref ${q(ref)}`);
+  const effectivePushRefspecs = currentPolicy => {
+    if (currentPolicy.pushRefspecs.length > 0) {
+      return currentPolicy.pushRefspecs;
     }
+    return pushRefspecsFromAllowedBranches(currentPolicy.allowedBranches);
   };
 
   /**
    * @param {GitRemotePolicy} currentPolicy
-   * @param {unknown} value
-   * @param {string} fieldName
+   * @param {string} sourceRef
+   * @param {string} destinationRef
+   * @param {boolean} force
    */
-  const pushRefFrom = (currentPolicy, value, fieldName) => {
-    const ref = requireRemoteRef(value, fieldName);
-    if (!currentPolicy.allowTags && isTagRef(ref)) {
+  const assertPushAllowed = (
+    currentPolicy,
+    sourceRef,
+    destinationRef,
+    force,
+  ) => {
+    if (force && !currentPolicy.allowForcePush) {
+      throw new Error('Git remote does not allow force push');
+    }
+    const isDelete = sourceRef === '';
+    if (isDelete && !currentPolicy.allowDelete) {
+      throw new Error('Git remote does not allow deleting refs');
+    }
+    if (!currentPolicy.allowTags && isTagRefPath(destinationRef)) {
       throw new Error('Git remote does not allow tag push');
     }
-    assertAllowedRef(currentPolicy, ref);
-    return ref;
+    const effective = effectivePushRefspecs(currentPolicy);
+    if (effective.length === 0) {
+      throw new Error('Git remote has no allowed push targets');
+    }
+    const match = effective.some(refspec => {
+      const {
+        force: rsForce,
+        src,
+        dst,
+      } = parseRefspec(refspec, 'pushRefspecs');
+      if (rsForce && !force) {
+        // The policy refspec has '+' which means force *is* permitted,
+        // not required; treat it as a permissive match.
+      }
+      if (force && !rsForce) {
+        // Forcing requires either allowForcePush already satisfied above,
+        // or a refspec that explicitly carries '+'. Reject otherwise.
+        return false;
+      }
+      const srcOk = isDelete ? src === '' : refspecSideMatches(src, sourceRef);
+      const dstOk = refspecSideMatches(dst, destinationRef);
+      return srcOk && dstOk;
+    });
+    if (!match) {
+      throw new Error(
+        `Git remote policy does not allow push of ${q(sourceRef)} to ${q(destinationRef)}`,
+      );
+    }
   };
 
   /**
@@ -1300,17 +1715,14 @@ export const makeGitRemote = ({ repoRoot, gitPowers, policy, state }) => {
       currentPolicy.url === undefined
         ? undefined
         : requireRemoteToken(currentPolicy.url, 'url');
-    const allowedProtocols = remoteProtocolsFromPolicy(
-      currentPolicy.allowedProtocols,
-    );
     if (expectedUrl !== undefined) {
-      assertAllowedRemoteUrl(expectedUrl, allowedProtocols);
+      assertNoUrlUserinfo(expectedUrl);
       return harden({ target: expectedUrl, url: expectedUrl });
     }
     const remoteName = requireRemoteToken(currentPolicy.remote, 'remote');
     const { stdout } = await runGitRaw(['remote', 'get-url', remoteName]);
     const configured = stdout.trim();
-    assertAllowedRemoteUrl(configured, allowedProtocols);
+    assertNoUrlUserinfo(configured);
     return harden({ target: remoteName, url: configured });
   };
 
@@ -1332,43 +1744,32 @@ export const makeGitRemote = ({ repoRoot, gitPowers, policy, state }) => {
   /**
    * @param {GitRemotePolicy} currentPolicy
    * @param {'fetch' | 'pull' | 'push'} operation
-   * @param {string[]} refs
-   * @param {string} output
+   * @param {GitRefUpdate[]} updatedRefs
    * @param {GitCredentialUse | undefined} credentialUse
    */
-  const summarizeOperation = async (
+  const recordAudit = async (
     currentPolicy,
     operation,
-    refs,
-    output,
+    updatedRefs,
     credentialUse = undefined,
   ) => {
-    const summary = harden({
-      operation,
-      status: 'completed',
-      remote: currentPolicy.remote,
-      refs: harden(refs),
-      diagnostics: harden({ output }),
-      output,
-    });
     await state?.appendAudit(
       harden({
         timestamp: new Date().toISOString(),
         operation,
         status: 'completed',
         remote: currentPolicy.remote,
-        refs: harden(refs),
+        updatedRefs: harden([...updatedRefs]),
         ...(credentialUse?.label !== undefined && {
           credentialLabel: credentialUse.label,
         }),
       }),
     );
-    return summary;
   };
 
   const help =
     'Bounded Git remote capability for one local Git worktree. ' +
-    'Operations are limited by direction policy and optional ref policy. ' +
+    'Operations are limited by direction policy and refspec policy. ' +
     'Credentials are not exposed through this interface.';
 
   return makeExo('EndoGitRemote', GitRemoteInterface, {
@@ -1376,17 +1777,18 @@ export const makeGitRemote = ({ repoRoot, gitPowers, policy, state }) => {
 
     async inspect() {
       const { policy: currentPolicy, revoked } = await effectivePolicy();
-      const allowedProtocols = remoteProtocolsFromPolicy(
-        currentPolicy.allowedProtocols,
-      );
       const credential =
         currentPolicy.credentialId !== undefined && state !== undefined
           ? await state.getCredentialMetadata(currentPolicy.credentialId)
           : validateCredentialPolicy(currentPolicy.credential);
       return harden({
         ...currentPolicy,
-        directions: harden([...currentPolicy.directions]),
-        allowedProtocols,
+        allowedDirections: harden([...currentPolicy.allowedDirections]),
+        fetchRefspecs: harden([...currentPolicy.fetchRefspecs]),
+        pushRefspecs: harden([...currentPolicy.pushRefspecs]),
+        ...(currentPolicy.allowedBranches !== undefined && {
+          allowedBranches: harden([...currentPolicy.allowedBranches]),
+        }),
         ...(credential !== undefined && { credential }),
         revoked,
       });
@@ -1397,43 +1799,129 @@ export const makeGitRemote = ({ repoRoot, gitPowers, policy, state }) => {
       assertAllowed(currentPolicy, revoked, 'fetch');
       const { target: gitTarget, url } = await remoteTarget(currentPolicy);
       const credentialUse = await credentialUseFor(currentPolicy, url);
-      const { refspecs = [], prune = false } = options;
-      for (const refspec of refspecs) {
-        assertAllowedRef(currentPolicy, refspec);
-      }
-      const output = await runGit(
-        ['fetch', ...(prune ? ['--prune'] : []), gitTarget, ...refspecs],
-        credentialUse,
-      );
-      return summarizeOperation(
-        currentPolicy,
+      const { prune = false, tags = false } = options;
+      // git fetch (>= 2.30) does not have --porcelain (added in 2.41);
+      // derive structured updates from before/after snapshots of the
+      // remote-tracking refs the policy fetches into.
+      const trackingScope = `refs/remotes/${currentPolicy.remote}/`;
+      const { stdout: beforeStdout } = await runGitRaw([
+        'for-each-ref',
+        '--format=%(refname) %(objectname)',
+        trackingScope,
+      ]);
+      const beforeRefs = parseForEachRef(beforeStdout);
+      const fetchArgs = [
         'fetch',
-        refspecs,
-        output,
-        credentialUse,
-      );
+        ...(prune ? ['--prune'] : []),
+        ...(tags ? ['--tags'] : ['--no-tags']),
+        gitTarget,
+        ...currentPolicy.fetchRefspecs,
+      ];
+      await runGitRaw(fetchArgs, credentialUse);
+      const { stdout: afterStdout } = await runGitRaw([
+        'for-each-ref',
+        '--format=%(refname) %(objectname)',
+        trackingScope,
+      ]);
+      const afterRefs = parseForEachRef(afterStdout);
+      const updatedRefs = diffRefSnapshots(beforeRefs, afterRefs);
+      await recordAudit(currentPolicy, 'fetch', updatedRefs, credentialUse);
+      return harden({ updatedRefs });
     },
 
     async pull(options = {}) {
       const { policy: currentPolicy, revoked } = await effectivePolicy();
-      assertAllowed(currentPolicy, revoked, 'pull');
+      assertAllowed(currentPolicy, revoked, 'fetch');
       const { target: gitTarget, url } = await remoteTarget(currentPolicy);
       const credentialUse = await credentialUseFor(currentPolicy, url);
-      const { branch } = options;
-      const command = ['pull', '--ff-only', gitTarget];
-      if (branch !== undefined) {
-        assertAllowedRef(currentPolicy, branch);
-        command.push(branch);
+      const { branch, strategy = 'ff-only' } = options;
+      if (
+        strategy !== 'ff-only' &&
+        strategy !== 'merge' &&
+        strategy !== 'rebase'
+      ) {
+        throw new Error(
+          `Git remote pull strategy ${q(strategy)} is not supported`,
+        );
       }
-      const refs = branch === undefined ? [] : [branch];
-      const output = await runGit(command, credentialUse);
-      return summarizeOperation(
-        currentPolicy,
-        'pull',
-        refs,
-        output,
-        credentialUse,
+      // Phase 1: fetch (snapshot-diff to derive updatedRefs).
+      const trackingScope = `refs/remotes/${currentPolicy.remote}/`;
+      const { stdout: beforeStdout } = await runGitRaw([
+        'for-each-ref',
+        '--format=%(refname) %(objectname)',
+        trackingScope,
+      ]);
+      const beforeRefs = parseForEachRef(beforeStdout);
+      const fetchArgs = [
+        'fetch',
+        '--no-tags',
+        gitTarget,
+        ...currentPolicy.fetchRefspecs,
+      ];
+      await runGitRaw(fetchArgs, credentialUse);
+      const { stdout: afterStdout } = await runGitRaw([
+        'for-each-ref',
+        '--format=%(refname) %(objectname)',
+        trackingScope,
+      ]);
+      const afterRefs = parseForEachRef(afterStdout);
+      const fetchedRefs = diffRefSnapshots(beforeRefs, afterRefs);
+      // Phase 2: integrate locally.
+      /** @type {string} */
+      let strategyFlag;
+      switch (strategy) {
+        case 'ff-only':
+          strategyFlag = '--ff-only';
+          break;
+        case 'merge':
+          strategyFlag = '--no-rebase';
+          break;
+        case 'rebase':
+          strategyFlag = '--rebase';
+          break;
+        default:
+          throw new Error('unreachable');
+      }
+      const pullArgs = ['pull', strategyFlag, gitTarget];
+      if (branch !== undefined) {
+        const branchName =
+          typeof branch === 'string'
+            ? branch
+            : requireRevision(branch, 'branch');
+        pullArgs.push(branchName);
+      }
+      await runGit(pullArgs, credentialUse);
+      // Determine the integration result and HEAD pointer.
+      const { stdout: headOid } = await runGitRaw([
+        'rev-parse',
+        '--verify',
+        'HEAD',
+      ]);
+      const { stdout: headSymbol } = await runGitRaw([
+        'rev-parse',
+        '--abbrev-ref',
+        'HEAD',
+      ]);
+      const headName = headSymbol.trim();
+      const head = harden(
+        headName === 'HEAD'
+          ? { kind: 'commit', name: headOid.trim(), oid: headOid.trim() }
+          : { kind: 'branch', name: headName, oid: headOid.trim() },
       );
+      /** @type {'up-to-date' | 'fast-forward' | 'merge' | 'rebase'} */
+      let integration;
+      if (fetchedRefs.length === 0) {
+        integration = 'up-to-date';
+      } else if (strategy === 'ff-only') {
+        integration = 'fast-forward';
+      } else if (strategy === 'rebase') {
+        integration = 'rebase';
+      } else {
+        integration = 'merge';
+      }
+      const fetchResult = harden({ updatedRefs: fetchedRefs });
+      await recordAudit(currentPolicy, 'pull', fetchedRefs, credentialUse);
+      return harden({ fetch: fetchResult, integration, head });
     },
 
     async push(options = {}) {
@@ -1443,38 +1931,47 @@ export const makeGitRemote = ({ repoRoot, gitPowers, policy, state }) => {
       const credentialUse = await credentialUseFor(currentPolicy, url);
       const {
         source = 'HEAD',
-        target: pushTarget = undefined,
-        forceWithLease = false,
+        destination,
+        force = false,
+        setUpstream = false,
       } = options;
-      if (forceWithLease && !currentPolicy.allowForcePush) {
-        throw new Error('Git remote does not allow force push');
+      if (destination === undefined || destination === '') {
+        throw new Error('push destination is required');
       }
-      if (!currentPolicy.allowDelete && source === '') {
-        throw new Error('Git remote does not allow deleting refs');
+      const sourceRef =
+        source === ''
+          ? ''
+          : typeof source === 'string'
+            ? source
+            : requireRevision(source, 'source');
+      const destinationRef = requireRemoteToken(destination, 'destination');
+      if (sourceRef.includes(':')) {
+        throw new Error('push source must be a single ref, not a refspec');
       }
-      const sourceRef = pushRefFrom(currentPolicy, source, 'source');
-      const targetRef =
-        pushTarget === undefined
-          ? undefined
-          : pushRefFrom(currentPolicy, pushTarget, 'target');
-      const refspec =
-        targetRef === undefined ? sourceRef : `${sourceRef}:${targetRef}`;
-      const output = await runGit(
-        [
-          'push',
-          ...(forceWithLease ? ['--force-with-lease'] : []),
-          gitTarget,
-          refspec,
-        ],
-        credentialUse,
-      );
-      return summarizeOperation(
-        currentPolicy,
+      if (destinationRef.includes(':')) {
+        throw new Error('push destination must be a single ref, not a refspec');
+      }
+      assertPushAllowed(currentPolicy, sourceRef, destinationRef, force);
+      const refspec = `${force ? '+' : ''}${sourceRef}:${destinationRef}`;
+      const pushArgs = [
         'push',
-        [refspec],
-        output,
-        credentialUse,
-      );
+        '--porcelain',
+        ...(setUpstream ? ['--set-upstream'] : []),
+        gitTarget,
+        refspec,
+      ];
+      const { stdout } = await runGitRaw(pushArgs, credentialUse);
+      const updatedRefs = parsePushPorcelain(stdout);
+      // If any ref reports 'rejected', surface as an error since the
+      // structured contract treats post-push non-fast-forward as a failure.
+      const rejected = updatedRefs.find(u => u.result === 'rejected');
+      if (rejected !== undefined) {
+        throw new Error(
+          `git push rejected for ${q(`${rejected.local?.name ?? ''}:${rejected.remote}`)}`,
+        );
+      }
+      await recordAudit(currentPolicy, 'push', updatedRefs, credentialUse);
+      return harden({ updatedRefs });
     },
   });
 };
@@ -1516,40 +2013,49 @@ export const makeGitRemoteController = ({ basePolicy, state }) => {
       revoked: remoteState.revoked,
     });
   };
-  return makeExo(
-    'EndoGitRemoteController',
-    GitRemoteControllerInterface,
-    {
-      help: () => help,
-      inspect,
-      async setAllowedDirections(directions) {
-        await state.updatePolicy({
-          directions: remoteDirectionsFrom(directions, 'directions'),
-        });
-      },
-      async setAllowedRefs(refs) {
-        await state.updatePolicy({
-          allowedRefs: remoteRefsFrom(refs, 'allowedRefs'),
-        });
-      },
-      async setAllowForcePush(flag) {
-        await state.updatePolicy({ allowForcePush: flag === true });
-      },
-      async setAllowTags(flag) {
-        await state.updatePolicy({ allowTags: flag === true });
-      },
-      async setAllowDelete(flag) {
-        await state.updatePolicy({ allowDelete: flag === true });
-      },
-      async revoke() {
-        await state.revoke();
-      },
-      async audit() {
-        const remoteState = await state.read();
-        return harden([...remoteState.audit]);
-      },
+  return makeExo('EndoGitRemoteController', GitRemoteControllerInterface, {
+    help: () => help,
+    inspect,
+    async setAllowedDirections(allowedDirections) {
+      await state.updatePolicy({
+        allowedDirections: remoteDirectionsFrom(
+          allowedDirections,
+          'allowedDirections',
+        ),
+      });
     },
-  );
+    async setFetchRefspecs(refspecs) {
+      await state.updatePolicy({
+        fetchRefspecs: remoteRefspecsFrom(refspecs, 'fetchRefspecs'),
+      });
+    },
+    async setPushRefspecs(refspecs) {
+      await state.updatePolicy({
+        pushRefspecs: remoteRefspecsFrom(refspecs, 'pushRefspecs'),
+      });
+    },
+    async setAllowedBranches(branches) {
+      await state.updatePolicy({
+        allowedBranches: remoteAllowedBranchesFrom(branches, 'allowedBranches'),
+      });
+    },
+    async setAllowForcePush(flag) {
+      await state.updatePolicy({ allowForcePush: flag === true });
+    },
+    async setAllowTags(flag) {
+      await state.updatePolicy({ allowTags: flag === true });
+    },
+    async setAllowDelete(flag) {
+      await state.updatePolicy({ allowDelete: flag === true });
+    },
+    async revoke() {
+      await state.revoke();
+    },
+    async audit() {
+      const remoteState = await state.read();
+      return harden([...remoteState.audit]);
+    },
+  });
 };
 harden(makeGitRemoteController);
 
