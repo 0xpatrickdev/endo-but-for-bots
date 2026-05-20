@@ -1,8 +1,11 @@
 # Endo Design Documents
 
-*Last updated: 2026-05-15 (M½ project-hygiene milestone extracted from M1; endopi raft added)*
+*Last updated: 2026-05-19 (declarative agent-definition spike added)*
 
-*Recently added or revised: [endopi](endopi.md) (added 2026-05-15;
+*Recently added or revised: [declarative-agents](declarative-agents.md)
+(added 2026-05-18; inventory of Lal/Fae/Jaine/Genie agent shapes and
+object-capability `defineAgent` spike),
+[endopi](endopi.md) (added 2026-05-15;
 comparative analysis of the pi agent harness against endo's daemon +
 chat + familiar + cli; sibling of `endoclaw.md`; spins out eight
 gap-closing designs prefixed `endopi-*`),
@@ -67,6 +70,7 @@ PR #151 row-format unblocker; sibling of
 | [daemon-256-bit-identifiers](daemon-256-bit-identifiers.md) | 2026-02-24 | 2026-03-02 | **Complete** |
 | [daemon-agent-network-identity](daemon-agent-network-identity.md) | 2026-03-02 | 2026-03-02 | Not Started |
 | [daemon-agent-tools](daemon-agent-tools.md) | 2026-03-02 | 2026-03-02 | Not Started |
+| [declarative-agents](declarative-agents.md) | 2026-05-18 | 2026-05-19 | Draft |
 | [daemon-commands-as-messages](daemon-commands-as-messages.md) | 2026-03-11 | 2026-03-11 | Not Started |
 | [daemon-capability-bank](daemon-capability-bank.md) | 2026-02-15 | 2026-02-24 | Not Started |
 | [daemon-checkin-checkout](daemon-checkin-checkout.md) | 2026-03-17 | 2026-03-17 | Not Started |
@@ -162,7 +166,7 @@ PR #151 row-format unblocker; sibling of
 | [weblet-next](weblet-next.md) | 2026-03-24 | 2026-03-24 | Reference |
 | [workers-panel](workers-panel.md) | 2026-02-14 | 2026-02-24 | Not Started |
 
-**Totals:** 29 Complete/Implemented, 17 In Progress, 44 Not Started, 16 Proposed, 3 Active, 4 Reference, 2 Deprecated, 1 Draft, 1 Superseded (118 designs)
+**Totals:** 29 Complete/Implemented, 17 In Progress, 44 Not Started, 16 Proposed, 3 Active, 4 Reference, 2 Deprecated, 2 Draft, 1 Superseded (119 designs)
 
 ## Roadmap
 

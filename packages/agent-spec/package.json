@@ -1,0 +1,54 @@
+{
+  "name": "@endo/agent-spec",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Capability-oriented declarations for Endo agent assemblies",
+  "keywords": [
+    "endo",
+    "agent",
+    "capability"
+  ],
+  "author": "Endo contributors",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/endojs/endo.git",
+    "directory": "packages/agent-spec"
+  },
+  "bugs": {
+    "url": "https://github.com/endojs/endo/issues"
+  },
+  "type": "module",
+  "exports": {
+    ".": "./index.js",
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "build": "exit 0",
+    "lint": "yarn lint:eslint",
+    "lint-fix": "yarn lint:eslint --fix",
+    "lint:eslint": "eslint '**/*.js'",
+    "test": "ava"
+  },
+  "dependencies": {
+    "@endo/eventual-send": "workspace:^",
+    "@endo/harden": "workspace:^",
+    "@endo/patterns": "workspace:^"
+  },
+  "devDependencies": {
+    "@endo/init": "workspace:^",
+    "ava": "catalog:dev",
+    "eslint": "catalog:dev"
+  },
+  "eslintConfig": {
+    "extends": [
+      "plugin:@endo/internal"
+    ]
+  },
+  "ava": {
+    "files": [
+      "test/**/*.test.*"
+    ],
+    "timeout": "2m"
+  }
+}

@@ -1417,6 +1417,19 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@endo/agent-spec@workspace:packages/agent-spec":
+  version: 0.0.0-use.local
+  resolution: "@endo/agent-spec@workspace:packages/agent-spec"
+  dependencies:
+    "@endo/eventual-send": "workspace:^"
+    "@endo/harden": "workspace:^"
+    "@endo/init": "workspace:^"
+    "@endo/patterns": "workspace:^"
+    ava: "catalog:dev"
+    eslint: "catalog:dev"
+  languageName: unknown
+  linkType: soft
+
 "@endo/base64@workspace:^, @endo/base64@workspace:packages/base64":
   version: 0.0.0-use.local
   resolution: "@endo/base64@workspace:packages/base64"
