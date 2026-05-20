@@ -1,4 +1,5 @@
 // @ts-check
+/* global globalThis */
 
 import { bytesToText } from '@endo/bytes/to-string.js';
 import { q } from '@endo/errors';
@@ -140,10 +141,7 @@ harden(gitTreeDisplayPath);
  */
 const parseLsTree = output => {
   const entries = [];
-  for (const record of output.split('\0')) {
-    if (record === '') {
-      continue;
-    }
+  for (const record of output.split('\0').filter(Boolean)) {
     const tab = record.indexOf('\t');
     if (tab < 0) {
       throw new Error(`Unexpected git ls-tree record ${q(record)}`);
@@ -347,6 +345,7 @@ export const makeGit = ({ worktree, repoRoot, gitPowers }) => {
   const resolveTreeOid = async (treeOid, segments) => {
     let currentTreeOid = treeOid;
     for (const segment of segments) {
+      // eslint-disable-next-line no-await-in-loop -- each segment depends on the previously resolved tree.
       const entry = await getTreeEntry(currentTreeOid, segment);
       if (entry === undefined) {
         throw new TypeError(`Unknown name: ${JSON.stringify(segment)}`);
@@ -488,7 +487,11 @@ export const makeGit = ({ worktree, repoRoot, gitPowers }) => {
 
     async log(options = {}) {
       const { maxCount = 20, ref } = options;
-      if (!Number.isSafeInteger(maxCount) || maxCount <= 0) {
+      if (
+        typeof maxCount !== 'number' ||
+        !Number.isSafeInteger(maxCount) ||
+        maxCount <= 0
+      ) {
         throw new Error('maxCount must be a positive safe integer');
       }
       const command = [
@@ -771,7 +774,8 @@ export const makeGitRemote = ({ repoRoot, gitPowers, policy }) => {
   const remoteName = requireRemoteToken(policy.remote, 'remote');
   const directions = new Set(policy.directions);
   const allowedRefs = policy.allowedRefs || undefined;
-  let revoked = false;
+  const allowForcePush = policy.allowForcePush === true;
+  const revoked = false;
 
   const getRepoRoot = () => {
     if (verifiedRepoRoot === undefined) {
@@ -916,6 +920,9 @@ export const makeGitRemote = ({ repoRoot, gitPowers, policy }) => {
         target = undefined,
         forceWithLease = false,
       } = options;
+      if (forceWithLease && !allowForcePush) {
+        throw new Error('Git remote does not allow force push');
+      }
       assertAllowedRef(source);
       if (target !== undefined) {
         assertAllowedRef(target);

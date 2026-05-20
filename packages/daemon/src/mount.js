@@ -12,7 +12,7 @@ import {
   MountFileInterface,
   MountInterface,
 } from './interfaces.js';
-import { makeIteratorRef } from './reader-ref.js';
+import { makeReaderRef } from './reader-ref.js';
 
 const mountEntryRecords = new WeakMap();
 
@@ -626,7 +626,7 @@ const makeMountFileExo = (
 
     streamBase64() {
       const reader = filePowers.makeFileReader(filePath);
-      return makeIteratorRef(reader);
+      return makeReaderRef(reader);
     },
 
     async json() {

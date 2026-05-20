@@ -356,17 +356,22 @@ export const makeHostMaker = ({
       const remote =
         options.remote === undefined ? 'origin' : `${options.remote}`;
       const url = options.url === undefined ? undefined : `${options.url}`;
-      const directions = Array.isArray(options.directions)
-        ? options.directions.map(direction => `${direction}`)
+      /** @type {Array<'fetch' | 'pull' | 'push'>} */
+      const directions = [];
+      const optionDirections = Array.isArray(options.directions)
+        ? options.directions
         : ['fetch', 'pull', 'push'];
-      for (const direction of directions) {
+      for (const optionDirection of optionDirections) {
+        const direction = `${optionDirection}`;
         if (!['fetch', 'pull', 'push'].includes(direction)) {
           throw new Error(`Unsupported git remote direction ${direction}`);
         }
+        directions.push(/** @type {'fetch' | 'pull' | 'push'} */ (direction));
       }
       const allowedRefs = Array.isArray(options.allowedRefs)
         ? options.allowedRefs.map(ref => `${ref}`)
         : undefined;
+      const allowForcePush = options.allowForcePush === true;
 
       /** @type {DeferredTasks<GitRemoteDeferredTaskParams>} */
       const tasks = makeDeferredTasks();
@@ -377,7 +382,7 @@ export const makeHostMaker = ({
       const { value } = await formulateGitRemote(
         gitId,
         remote,
-        harden({ url, directions, allowedRefs }),
+        harden({ url, directions, allowedRefs, allowForcePush }),
         tasks,
       );
       return value;
