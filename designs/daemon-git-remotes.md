@@ -3,8 +3,8 @@
 | | |
 |---|---|
 | **Created** | 2026-05-18 |
-| **Updated** | 2026-05-18 |
-| **Author** | Kris Kowal (prompted) |
+| **Updated** | 2026-05-20 |
+| **Author** | 0xPatrick (prompted) |
 | **Status** | Proposed |
 
 ## What is the Problem Being Solved?
@@ -47,6 +47,9 @@ This document defines that companion capability.
 7. Make the composition visible: local `Git`, outbound transport, and
    credentials are separate authority inputs.
 8. Clarify how remote operations relate to repository bootstrap / clone.
+9. Keep remote git object transfer out of CapTP's data plane: CapTP should
+   carry authority, invocation, policy, and summaries, while packfile bytes
+   move over a bounded git transport such as HTTPS.
 
 ## Non-Goals
 
@@ -57,6 +60,7 @@ This document defines that companion capability.
 - Replacing local branch / commit / worktree operations in the base `Git`
   capability.
 - Using mutable `.git/config` as the authority source of record.
+- Tunneling git packfiles through CapTP as the default remote data path.
 
 ## Why This Is Separate from Local `Git`
 
@@ -392,6 +396,70 @@ This belongs in the controller layer, not in the guest-held remote cap.
 - is the most security-sensitive remote operation because it is an
   exfiltration path and an external side effect.
 
+## Remote Data Plane
+
+`GitRemote` should be a CapTP control-plane capability, not a CapTP
+packfile tunnel.
+
+The guest-visible operation is a capability invocation:
+
+```js
+await E(remote).fetch();
+await E(remote).push({
+  source: 'HEAD',
+  destination: 'refs/heads/agent/topic',
+});
+```
+
+That invocation carries authority and policy through CapTP:
+
+- which local repository is paired with the remote;
+- which endpoint the host has approved;
+- which credential may be used without being exposed;
+- which directions and refs are allowed;
+- what summary, audit record, or error is returned to the guest.
+
+The bulk git object exchange should then happen outside CapTP through the
+approved git transport.  For the HTTPS MVP, trusted backend code should run
+the git smart HTTP protocol, either through native git or a future HTTP git
+client, using the controller-owned URL and sealed credential material.  The
+packfiles, deltas, and large object payloads should not be serialized as
+CapTP messages merely because the initiating authority was a CapTP object.
+
+This distinction keeps several boundaries clear:
+
+- CapTP remains the object-capability layer for authorization and durable
+  references.
+- HTTPS remains the first remote data plane because it is already the normal
+  git transport, has inspectable origins, and composes with bearer/basic
+  credential patterns.
+- The daemon can enforce endpoint and ref policy before starting the data
+  transfer, then summarize the result after it completes.
+- Large fetches and pushes avoid per-object CapTP round trips and avoid
+  making the remote protocol depend on CapTP framing.
+
+The backend must still be careful not to smuggle in ambient authority.  A
+native-git HTTPS implementation should provide the endpoint and credential
+through trusted code, suppress ambient credential helpers, and reject any
+call-time URL supplied by the guest.  Moving packfile bytes outside CapTP
+does not mean bypassing policy; it means applying policy before handing the
+bulk transfer to the transport best suited for that data.
+
+### Future Encrypted Transports
+
+HTTPS is the right first target.  It is available today, has clear origin
+policy, and matches the credential patterns already in this design.  SSH
+requires separate design work for host keys, agent forwarding, command
+restriction, and key-use authority.
+
+A future Noise-based transport could be useful if Endo later wants a
+capability-native encrypted channel for peer-to-peer git object exchange or
+for remotes that are not ordinary Git hosting services.  That should remain
+future work until the HTTPS data-plane shape is proven.  The durable design
+requirement is not "always HTTPS"; it is "remote git bulk bytes travel on a
+bounded transport capability, while CapTP remains the control and authority
+plane."
+
 ## Repository Bootstrap and `clone`
 
 `GitRemote` is intentionally bound to an existing local `Git`, so `clone()`
@@ -519,6 +587,11 @@ This preserves the same authority shape as `HttpClient` even when the first
 implementation adapts that authority into a native-git invocation rather
 than issuing requests through the object directly.
 
+The native invocation should also be treated as a bulk data-plane adapter.
+CapTP starts the operation and receives completion metadata; native git and
+HTTPS carry the packfile exchange.  Tests should assert policy behavior and
+observable results, not require packfile bytes to pass through CapTP.
+
 ### Future Backends
 
 Future implementations may use:
@@ -526,6 +599,8 @@ Future implementations may use:
 - a JS git backend over an Endo transport adapter;
 - a dedicated HTTP git smart-protocol client;
 - an SSH transport capability once separately designed.
+- a future Noise-based transport capability for git object exchange, if
+  Endo grows a peer-to-peer git use case that justifies it.
 
 The public `GitRemote` contract should survive those swaps.
 
@@ -543,6 +618,8 @@ The public `GitRemote` contract should survive those swaps.
 - Support HTTPS bearer/basic credential injection through trusted backend
   code.
 - Implement `fetch()` with fixed endpoint and approved refspecs.
+- Keep packfile transfer on the HTTPS/native-git data plane rather than
+  relaying git object bytes through CapTP.
 - Add revocation tests for remote and credential caps.
 
 ### Phase 3: Pull and Local Integration
@@ -555,6 +632,7 @@ The public `GitRemote` contract should survive those swaps.
 
 - Implement branch-limited `push()`.
 - Deny force, tags, and deletes by default.
+- Keep push packfile transfer on the bounded HTTPS/native-git data plane.
 - Add audit entries for outbound ref updates.
 - Add end-to-end tests for publishing `agent/*` branches.
 
@@ -570,6 +648,7 @@ The public `GitRemote` contract should survive those swaps.
 - Design SSH-specific transport and credential capability.
 - Decide whether SSH belongs under a general network/process capability or
   a git-specialized transport cap.
+- Revisit Noise only after HTTPS semantics, policy, and audit are stable.
 - Add mirror / tag / delete profiles only after explicit policy designs.
 
 ## Testing Plan
@@ -597,6 +676,8 @@ The public `GitRemote` contract should survive those swaps.
 - pull fast-forwards;
 - pull rebase path;
 - push creates an allowed review branch;
+- large fetch / push fixtures complete without exposing packfile bytes or
+  remote credentials through the guest-visible CapTP result;
 - restart persistence preserves remote policy without exposing secrets.
 
 ### Hardening Tests
@@ -606,6 +687,8 @@ The public `GitRemote` contract should survive those swaps.
 - guest-provided refspecs cannot widen policy;
 - guest-provided URLs are never accepted by call-time methods;
 - backend never falls back to ambient SSH or shell.
+- remote packfile transport is only started after endpoint, direction, ref,
+  and credential policy checks pass.
 
 ## Relationship to Existing Git Designs
 
@@ -634,6 +717,11 @@ The public `GitRemote` contract should survive those swaps.
    a new physical worktree before a local `Git` capability exists?
 7. Should the HTTPS transport input remain a general `HttpClient`, or should
    git eventually narrow it into a dedicated `GitHttpsTransport` capability?
+8. What observable telemetry should distinguish CapTP control-plane time from
+   remote transport data-plane time for debugging slow fetches and pushes?
+9. What concrete peer-to-peer use case would justify a Noise-based git
+   transport, and how would its endpoint identity bind to repository and
+   credential policy?
 
 ## Design Decisions
 
@@ -647,6 +735,9 @@ The public `GitRemote` contract should survive those swaps.
    they point at.
 5. **Push is bounded by default.**  A practical default permits review-branch
    publication without granting arbitrary external write authority.
+6. **CapTP is the remote control plane.**  Remote git packfiles should move
+   over bounded HTTPS or another explicit git transport, not through CapTP
+   object messages by default.
 
 ## Prompt
 

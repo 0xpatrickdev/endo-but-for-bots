@@ -3,8 +3,8 @@
 | | |
 |---|---|
 | **Created** | 2026-05-18 |
-| **Updated** | 2026-05-18 |
-| **Author** | Kris Kowal (prompted) |
+| **Updated** | 2026-05-20 |
+| **Author** | 0xPatrick (prompted) |
 | **Status** | Proposed |
 
 ## What is the Problem Being Solved?
@@ -41,6 +41,9 @@ This document revises the git design around those facts.
 5. Keep the implementation backend swappable so native git, a JS git
    library, or a future daemon-native backend can share one public
    capability contract.
+6. Preserve room for bulk native-git data paths, such as `git archive`, so
+   large immutable tree reads do not degenerate into one subprocess or one
+   remote object turn per file.
 
 ## Non-Goals
 
@@ -351,6 +354,61 @@ When the VFS namespace exists, a host could compose:
 The guest sees ordinary filesystem trees.  Git remains the provider of the
 immutable revision-backed trees, not a special path syntax inside the VFS.
 
+### Bulk Tree Data Plane
+
+The public read surface should stay `ReadableTree` / `ReadableBlob`, but the
+native backend should not be limited to the smallest possible git primitive
+for every use case.  Lazy browsing can reasonably use commands such as
+`git ls-tree` and `git cat-file` because an agent may only inspect a handful
+of entries.  Whole-tree materialization is different: `storeTree()`,
+`stageTree()`, checkout-like flows, caplet source import, and future VFS
+composition may need hundreds or thousands of files from one commit.
+
+For those bulk paths, a native backend should be allowed to amortize the
+cost of shelling out by streaming a subtree in one operation:
+
+```sh
+git archive --format=tar HASH path/to/thing
+```
+
+or equivalently by resolving the subtree first and archiving that tree-ish.
+Trusted daemon code can then parse the tar stream and feed the content store
+or scratch-mount writer directly.  The important point is that the tar stream
+is a private backend data plane.  The guest still receives object
+capabilities and structured results, not host paths, tar bytes, or raw git
+command authority.
+
+This optimization is especially relevant when:
+
+- importing an immutable commit subtree into content-addressed storage;
+- staging a git tree into a scratch mount;
+- constructing a source archive from a repository subtree;
+- comparing or indexing many files from the same revision;
+- avoiding one CapTP turn, one Exo lookup, or one `git cat-file` invocation
+  per file.
+
+It is less important for one-off interactive reads, where lazy `lookup()` and
+blob reads keep latency low and avoid loading data the agent will not use.
+
+The archive path must obey the same authority and validation rules as the
+rest of the git-tree backend:
+
+- the ref is resolved inside the already-authorized repository;
+- subtree paths are normalized git-tree path segments, not host paths;
+- archive entry names are treated as untrusted input and checked for
+  absolute paths, `..`, NUL bytes, duplicate entries, and unsupported modes;
+- symlink, executable-bit, and directory mode handling is explicit rather
+  than inherited from a host `tar` command;
+- extraction is performed by trusted code into CAS formulas or an authorized
+  scratch mount, never by giving the guest a destination path;
+- archive generation uses argument arrays, not shell interpolation.
+
+Compression is a secondary concern.  `git archive --format=tar` is already
+valuable because it batches traversal and file transfer.  A compressed
+variant may be useful for storage or network hops, but the first optimization
+target is reducing process and object-call overhead while preserving the
+same public capability boundary.
+
 ## Backend Boundary
 
 The public `Git` capability should not depend on a particular implementation
@@ -382,6 +440,12 @@ proves the hardening envelope and local workflow shape:
 This backend uses the host-private physical mount backing, not a path granted
 to the guest.
 
+For immutable tree reads, the native backend may expose both a lazy object
+view and a bulk archive reader internally.  Callers should not observe which
+strategy was used except through performance.  A small `lookup('README.md')`
+can use `cat-file`; a `storeTree()` over the same revision can use a single
+archive stream.
+
 ### Future Backends
 
 A JS implementation such as an `isomorphic-git`-style backend remains a
@@ -395,6 +459,9 @@ Evaluation criteria for any future backend:
 - ability to honor the same confinement and filter/hook restrictions;
 - ability to operate through mount / backend abstractions rather than
   ambient host paths;
+- ability to provide an efficient bulk tree data plane for large immutable
+  reads, whether by native `git archive`, batched object APIs, or direct
+  object-database traversal;
 - fidelity with native git behavior for merges, rebases, stashes, and index
   semantics where those operations are exposed.
 
@@ -497,6 +564,9 @@ Complete the required phases from
 - Implement `tree(ref) -> ReadableTree`.
 - Add tests for browsing blobs and subtrees at specific refs.
 - Verify compatibility with existing checkin / checkout / stage-tree flows.
+- Add a backend-private bulk tree path for large materialization operations,
+  initially using `git archive --format=tar` if the native backend remains
+  the practical implementation.
 - Keep the provider separable so it can later be mounted by the VFS
   compositor.
 
@@ -543,6 +613,9 @@ Complete the required phases from
 - load blobs from historical refs;
 - use git trees as `ReadableTree` inputs to existing snapshot and staging
   flows;
+- materialize a large subtree through the bulk archive path and confirm it
+  produces the same CAS / scratch-mount result as the lazy tree walk;
+- reject malicious or malformed archive entries during trusted extraction;
 - confirm immutability.
 
 ## Migration Strategy
@@ -569,6 +642,9 @@ Complete the required phases from
    underneath the mount?
 5. Which operations, if any, should be valid over a read-only worktree mount
    beyond inspection and immutable tree access?
+6. Should a host-facing `provideGitTree()` or `stageGitTree()` API expose the
+   bulk path explicitly, or should it remain only an optimization behind
+   existing `ReadableTree` consumers?
 
 ## Design Decisions
 
@@ -584,6 +660,9 @@ Complete the required phases from
    backend; the capability contract should survive a backend change.
 5. **No hidden authority expansion.**  Git does not imply network or shell
    access, and a read-only mount does not become writable through git.
+6. **Bulk reads are a backend data plane.**  Large immutable tree operations
+   may use native archive streams internally, but that does not change the
+   guest-visible capability surface.
 
 ## Prompt
 
