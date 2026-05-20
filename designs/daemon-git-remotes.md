@@ -667,8 +667,10 @@ That means:
   TTY;
 - sanitized git environment that drops `GIT_*_HELPER`, `GIT_PROXY_COMMAND`,
   and other credential / process-shell vectors;
-- repo config and credential-helper suppression
-  (`-c credential.helper=` empties the helper list for the invocation);
+- repo config and ambient-credential-helper suppression
+  (`-c credential.helper=` empties the ambient helper list for the
+  invocation; the daemon-shipped `GIT_ASKPASS` above remains the
+  controlled injection path);
 - explicit remote URL supplied from controller state, written into the
   invocation as a positional argument never derived from a guest input;
 - no shell interpolation; argv-array spawn only.
@@ -865,7 +867,8 @@ The public `GitRemote` contract should survive those swaps.
 ### Hardening Tests
 
 - global/system git config ignored;
-- credential helpers disabled;
+- no ambient git credential helpers; only daemon-controlled credential
+  injection (e.g., the daemon-shipped askpass helper) is in scope;
 - guest-provided refspecs cannot widen policy;
 - guest-provided URLs are never accepted by call-time methods;
 - backend never falls back to ambient SSH or shell.
