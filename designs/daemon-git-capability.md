@@ -717,7 +717,18 @@ Complete the required phases from
 - add / restore / commit;
 - branch create / switch / rename / delete;
 - merge, rebase, and stash happy paths plus conflicts;
-- exact behavior after daemon restart.
+- exact behavior after daemon restart;
+- **daemon-restart mid-operation**: kill the daemon during `rebase`
+  (between commits), restart, and confirm `rebase --continue` resumes
+  cleanly from the recorded `.git/rebase-merge` state without orphaning
+  the index;
+- **`.git` replaced under the mount mid-operation**: swap the `.git`
+  directory while a long `merge` is mid-conflict, confirm the next git
+  call rejects the operation with a structured error rather than
+  silently completing against the new repository;
+- **mount-formula identity preserved across restart**: confirm
+  `provideGit()` after restart re-derives the same `Git` cap as before
+  the restart, with the same backing-facet identity check holding.
 
 ### Hardening Tests
 

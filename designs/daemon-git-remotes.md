@@ -721,7 +721,19 @@ The public `GitRemote` contract should survive those swaps.
 - push creates an allowed review branch;
 - large fetch / push fixtures complete without exposing packfile bytes or
   remote credentials through the guest-visible CapTP result;
-- restart persistence preserves remote policy without exposing secrets.
+- restart persistence preserves remote policy without exposing secrets;
+- **revoke()** in-flight: call `GitRemoteController.revoke()` while a
+  `push()` is mid-packfile; the in-flight transfer aborts cleanly and the
+  remote-tracking ref is not advanced past the last-acknowledged commit;
+- **credential rotation mid-operation**: call
+  `GitCredentialController.rotate()` between a `fetch()` and a `push()`
+  on the same `GitRemote`; the `push()` either uses the new credential or
+  fails with a credential-revoked error, never both;
+- **daemon restart mid-fetch**: kill the daemon while `fetch()` is
+  streaming a large packfile, restart, and confirm the partial
+  remote-tracking state is either consistent with the last completed
+  ref-update batch or fully rolled back, not an intermediate per-pack
+  state.
 
 ### Hardening Tests
 
