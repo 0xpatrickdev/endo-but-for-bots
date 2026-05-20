@@ -585,10 +585,12 @@ later adapter or migration is mostly mechanical.
 - [ ] Add `EndoMountEntryInterface`.
 - [ ] Add `entry(path)` to `EndoMount`.
 - [ ] Store normalized relative segments plus mount lineage provenance.
-- [ ] Add `exists()`, `stat()`, and `child()` on entries (value-shaped,
-  no handle-minting).
-- [ ] Handle-minting (`lookup`, `openFile`, `openDirectory`) lives on
-  `EndoMount` and accepts an entry as the path-bearing argument; see
+- [ ] Add `segments()`, `displayPath()`, and `child()` on entries
+  (value-shaped, no observational authority and no handle-minting per
+  Design Decision 3).
+- [ ] Observational queries (`has(entry)`, `stat(entry)`) and
+  handle-minting (`lookup`, `openFile`, `openDirectory`) all live on
+  `EndoMount` and accept an entry as the path-bearing argument; see
   next phase.
 - [ ] Add descriptor provenance tests:
   - [ ] entries from one mount rejected by another mount
@@ -598,8 +600,11 @@ later adapter or migration is mostly mechanical.
 
 ### Phase 3: Add Handle-Oriented Navigation and Metadata
 
-- [ ] Add `openFile`, `openDirectory`, `createFile`, `createDirectory`, and
-  `stat` on `EndoMount`.
+- [ ] Add `openFile`, `openDirectory`, `createFile`, `createDirectory`,
+  `stat`, and the `has(entry)` overload on `EndoMount`.  `stat` and
+  `has` each accept an entry as the path-bearing argument (the
+  no-observational-authority queries that previously lived on the
+  entry).
 - [ ] Add `stat`, `append`, and `snapshot` on `EndoMountFile`.
 - [ ] Keep existing path convenience methods for compatibility.
 - [ ] Update help text and TypeScript declarations together with interface
