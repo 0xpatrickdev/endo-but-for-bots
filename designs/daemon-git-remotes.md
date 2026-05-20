@@ -20,6 +20,17 @@ Endpoint policy is formula-owned in Phase 1; controller-owned once Phase 5 lands
 The guest receives `GitRemote` only.
 Controllers (`GitRemoteController`, `GitCredentialController`) and collection capabilities (`GitRemoteSet`) land in Phase 5 so the first phase stays minimum.
 
+## What You Should Know First
+
+This document assumes you know the following primitives from [daemon-mount-capabilities](daemon-mount-capabilities.md) (doc 1) and [daemon-git-capability](daemon-git-capability.md) (doc 2) in one-line form; the rest of the doc names them without re-introducing them.
+
+- **`EndoMount`** (doc 1) is the daemon's live-mount Exo: confined live access to one physical directory, returns `EndoMountFile` handles, and is structurally compatible with `ReadableTree`.
+- **`EndoMountEntry`** (doc 1) is the mount-scoped value-shaped descriptor for a path that may not currently exist on disk.
+- **`Git`** (doc 2) is the local-git capability derived from an already-authorized `EndoMount`; remote operations compose `Git` with separately granted transport and credential authorities to form a `GitRemote`.
+- **`Git.readOnly()`** (doc 2) is the in-place attenuation that drops mutation methods; `GitRemote` construction from a read-only `Git` is rejected (even `fetch` mutates `.git` object and ref state).
+- **`GitRef`** (doc 2) is the structured ref descriptor (`{ name, kind: 'branch' | 'tag' | 'commit' | 'detached', oid? }`); `GitRemote` accepts refs in this form or as a string.
+- **`HttpClient`** is the Endo HTTP-transport capability shape used as the bounded outbound-network authority input when constructing a remote (see [cli-http-client](cli-http-client.md) for the full controller/client split).
+
 ## What is the Problem Being Solved?
 
 The local-worktree design in [daemon-git-capability](daemon-git-capability.md) deliberately keeps network and credential authority out of the base `Git` capability.

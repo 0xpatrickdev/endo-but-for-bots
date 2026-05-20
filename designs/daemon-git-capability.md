@@ -19,6 +19,16 @@ Path-bearing inputs are `EndoMountEntry` values, not free-form strings.
 The first backend is native git (`NativeGitBackend`) on a pinned `git >= 2.30`, with the hardening envelope (sanitized env, askpass-only authentication, allowlist, repo-local-filter rejection) called out separately from the essential `GitBackend` contract so a future JS backend can implement the essential parts without inheriting native-only methods.
 Structured result shapes for diff / show / merge / rebase / stash arrive in a later phase; the first phase returns those as text so consumers can start integrating against the path-bearing inputs immediately.
 
+## What You Should Know First
+
+This document assumes you know the following primitives from [daemon-mount-capabilities](daemon-mount-capabilities.md) (doc 1) in one-line form; the rest of the doc names them without re-introducing them.
+
+- **`EndoMount`** is the daemon's live-mount Exo: confined live access to one physical directory, returns `EndoMountFile` handles, and is structurally compatible with `ReadableTree`.
+- **`EndoMountFile`** is the live mutable-file handle minted by `EndoMount.lookup()`; it is structurally compatible with `ReadableBlob`.
+- **`EndoMountEntry`** is the mount-scoped value-shaped descriptor for a path that may not currently exist on disk; the `Git` capability consumes entries (not free-form path strings) for its path-bearing methods.
+- **`EndoMountBacking`** is the host-private Exo facet on the mount formula that trusted daemon code uses to reach the physical worktree without leaking the path to guests; `provideGit` uses it to verify a mount is physical.
+- **`ReadableTree` / `ReadableBlob`** are the shared read-surface interfaces in [platform-fs](platform-fs.md); `Git.tree(ref)` returns a `ReadableTree`.
+
 ## What is the Problem Being Solved?
 
 Agents need useful local git workflows without receiving ambient shell authority, raw host paths, or network authority.
