@@ -2601,7 +2601,15 @@ const makeDaemonCore = async (
       if (!isDir) {
         throw new Error(`Mount path is not a directory: ${q(mountPath)}`);
       }
-      return makeMount({ rootPath: mountPath, readOnly, filePowers });
+      return makeMount({
+        rootPath: mountPath,
+        readOnly,
+        filePowers,
+        checkin: async remoteTree => {
+          const { value } = await checkinTree(remoteTree, makeDeferredTasks());
+          return value;
+        },
+      });
     },
     'scratch-mount': async ({ readOnly }, _context, _id, formulaNumber) => {
       const rootPath = filePowers.joinPath(
@@ -2610,7 +2618,15 @@ const makeDaemonCore = async (
         /** @type {string} */ (formulaNumber),
       );
       await filePowers.makePath(rootPath);
-      return makeMount({ rootPath, readOnly, filePowers });
+      return makeMount({
+        rootPath,
+        readOnly,
+        filePowers,
+        checkin: async remoteTree => {
+          const { value } = await checkinTree(remoteTree, makeDeferredTasks());
+          return value;
+        },
+      });
     },
     lookup: ({ hub, path }, context) =>
       makeLookup(

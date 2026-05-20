@@ -8,7 +8,7 @@ import { makeExo } from '@endo/exo';
 
 import { mountHelp, mountFileHelp, makeHelp } from './help-text.js';
 import { MountInterface, MountFileInterface } from './interfaces.js';
-import { makeIteratorRef } from './reader-ref.js';
+import { makeReaderRef } from './reader-ref.js';
 
 /**
  * Validate a single path segment.
@@ -149,12 +149,22 @@ const isConfinedPath = async (candidatePath, confinementRoot, filePowers) => {
 harden(isConfinedPath);
 
 /**
+ * @typedef {(remoteTree: unknown) => Promise<unknown>} CheckinTreeFn
+ *   Walks a `ReadableTree`-shaped remote object, persists it via the daemon's
+ *   content store, and returns a `SnapshotTree` exo (a `ReadableTree` with
+ *   a content-addressed identity).  Threaded in by the formula instantiator
+ *   so a mount can mint snapshots without taking a direct dependency on the
+ *   daemon core.
+ */
+
+/**
  * @typedef {object} MountContext
  * @property {string} currentDir
  * @property {string} confinementRoot
  * @property {boolean} readOnly
  * @property {FilePowers} filePowers
  * @property {string} description
+ * @property {CheckinTreeFn} [checkin]
  */
 
 /**
@@ -182,7 +192,13 @@ const makeMountExo = ctx => {
 
   const help = makeHelp(mountHelp);
 
-  return makeExo('EndoMount', MountInterface, {
+  // Forward reference: snapshot() needs to pass the mount exo to the
+  // checkin walker.  Assign `selfExo` immediately after `makeExo` returns;
+  // the method closures resolve the binding lazily at call time.
+  /** @type {object} */
+  let selfExo;
+
+  const exo = makeExo('EndoMount', MountInterface, {
     help,
 
     async has(...pathSegments) {
@@ -303,9 +319,22 @@ const makeMountExo = ctx => {
     },
 
     async snapshot() {
-      throw new Error('snapshot() is not yet implemented');
+      if (!ctx.checkin) {
+        throw new Error(
+          'snapshot() requires a checkin function bound by the mount formula instantiator',
+        );
+      }
+      // Capture is best-effort point-in-time: concurrent writers during the
+      // traversal produce a valid snapshot, but not necessarily one taken from
+      // a single filesystem instant.  The mount exo and its file exos already
+      // satisfy ReadableTree/ReadableBlob, so the platform checkin walker can
+      // ingest them directly.
+      return ctx.checkin(selfExo);
     },
   });
+
+  selfExo = exo;
+  return exo;
 };
 harden(makeMountExo);
 
@@ -337,8 +366,11 @@ const makeMountFileExo = (filePath, readOnly, filePowers, confinementRoot) => {
     },
 
     streamBase64() {
+      // ReadableBlob.streamBase64 yields base64-encoded chunks; the platform
+      // checkin walker decodes them back into bytes.  makeReaderRef adapts
+      // a raw byte reader into a base64 string iterator.
       const reader = filePowers.makeFileReader(filePath);
-      return makeIteratorRef(reader);
+      return makeReaderRef(reader);
     },
 
     async json() {
@@ -384,9 +416,10 @@ harden(makeMountFileExo);
  * @param {string} opts.rootPath
  * @param {boolean} opts.readOnly
  * @param {FilePowers} opts.filePowers
+ * @param {CheckinTreeFn} [opts.checkin]
  * @returns {object}
  */
-export const makeMount = ({ rootPath, readOnly, filePowers }) => {
+export const makeMount = ({ rootPath, readOnly, filePowers, checkin }) => {
   const prefix = readOnly ? 'Read-only mount' : 'Mount';
   /** @type {MountContext} */
   const ctx = {
@@ -395,6 +428,7 @@ export const makeMount = ({ rootPath, readOnly, filePowers }) => {
     readOnly,
     filePowers,
     description: `${prefix} at ${rootPath}`,
+    checkin,
   };
 
   return makeMountExo(ctx);

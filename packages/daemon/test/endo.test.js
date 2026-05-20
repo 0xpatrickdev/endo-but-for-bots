@@ -4459,6 +4459,108 @@ test('mount file writeText and json', async t => {
   t.is(actualContent, '{"version": 2}');
 });
 
+test('mount snapshot - empty mount produces a ReadableTree', async t => {
+  const { host, config } = await prepareHost(t);
+
+  const mountPath = path.join(config.statePath, '..', 'mount-test-snap-empty');
+  await createMountFixture(mountPath, {});
+
+  await E(host).provideMount(mountPath, 'test-mount-snap-empty');
+  const mount = await E(host).lookup(['test-mount-snap-empty']);
+
+  const snap = await E(mount).snapshot();
+
+  // SnapshotTree shape: list/lookup/sha256.
+  // Use __getMethodNames__ to detect the exo's surface without calling
+  // a method that may not exist, per the project's CapTP introspection
+  // convention.
+  // eslint-disable-next-line no-underscore-dangle
+  const methods = await E(snap).__getMethodNames__();
+  t.true(methods.includes('list'));
+  t.true(methods.includes('lookup'));
+  t.true(methods.includes('sha256'));
+
+  const entries = await E(snap).list();
+  t.deepEqual(entries, []);
+
+  // sha256 is a stable hex string identifying the empty-tree content.
+  const sha = /** @type {string} */ (await E(snap).sha256());
+  t.regex(sha, /^[0-9a-f]+$/);
+});
+
+test('mount snapshot - nested directories and text files round-trip', async t => {
+  const { host, config } = await prepareHost(t);
+
+  const mountPath = path.join(config.statePath, '..', 'mount-test-snap-nested');
+  await createMountFixture(mountPath, {
+    'readme.md': '# project',
+    'src/index.js': 'export default 1',
+    'src/lib/util.js': 'export const x = 2',
+  });
+
+  await E(host).provideMount(mountPath, 'test-mount-snap-nested');
+  const mount = await E(host).lookup(['test-mount-snap-nested']);
+
+  const snap = await E(mount).snapshot();
+
+  // Top-level listing matches the mount fixture.
+  const top = await E(snap).list();
+  t.deepEqual([...top].sort(), ['readme.md', 'src']);
+
+  // Nested listing traverses into a subtree.
+  const srcList = await E(snap).list('src');
+  t.deepEqual([...srcList].sort(), ['index.js', 'lib']);
+
+  // File content is preserved exactly.
+  const readme = await E(snap).lookup('readme.md');
+  t.is(await E(readme).text(), '# project');
+
+  const util = await E(snap).lookup(['src', 'lib', 'util.js']);
+  t.is(await E(util).text(), 'export const x = 2');
+
+  // Snapshotting again yields the same content-addressed identity for
+  // unchanged content, demonstrating determinism.
+  const snap2 = await E(mount).snapshot();
+  t.is(await E(snap).sha256(), await E(snap2).sha256());
+});
+
+test('mount snapshot - read-only mount can snapshot', async t => {
+  const { host, config } = await prepareHost(t);
+
+  const mountPath = path.join(config.statePath, '..', 'mount-test-snap-ro');
+  await createMountFixture(mountPath, {
+    'data.txt': 'frozen content',
+  });
+
+  await E(host).provideMount(mountPath, 'test-mount-snap-ro', {
+    readOnly: true,
+  });
+  const mount = await E(host).lookup(['test-mount-snap-ro']);
+
+  // Snapshot is a read operation, not a mutation; it must succeed on a
+  // read-only mount.
+  const snap = await E(mount).snapshot();
+  const data = await E(snap).lookup('data.txt');
+  t.is(await E(data).text(), 'frozen content');
+});
+
+test('mount snapshot - scratch mount snapshots its current contents', async t => {
+  const { host } = await prepareHost(t);
+
+  await E(host).provideScratchMount('test-mount-snap-scratch');
+  const scratch = await E(host).lookup(['test-mount-snap-scratch']);
+
+  await E(scratch).writeText(['note.txt'], 'first');
+  await E(scratch).writeText(['subdir', 'inner.txt'], 'second');
+
+  const snap = await E(scratch).snapshot();
+  const top = await E(snap).list();
+  t.deepEqual([...top].sort(), ['note.txt', 'subdir']);
+
+  const inner = await E(snap).lookup(['subdir', 'inner.txt']);
+  t.is(await E(inner).text(), 'second');
+});
+
 // symlink confinement tests
 
 /**
