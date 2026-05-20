@@ -1,17 +1,22 @@
 # Endo Design Documents
 
-*Last updated: 2026-05-18 (daemon mount and git capability plans added;
-M½ project-hygiene milestone extracted from M1; endopi raft added)*
+*Last updated: 2026-05-20 (daemon mount and git capability plans revised
+per design-panel review: structured-result-shape migration named,
+GitTreeProvider split off Git, EndoMountBacking pinned to hidden-Exo-facet,
+credential-injection mechanism named, native git pinned to >=2.30,
+restart-mid-operation tests added, open-question debt reduced from 20 to 2)*
 
 *Recently added or revised: [daemon-mount-capabilities](daemon-mount-capabilities.md)
-(added 2026-05-18; concrete completion plan for `EndoMount`, mount-scoped
-entry descriptors, snapshotting, and trusted physical-backing provenance),
-[daemon-git-capability](daemon-git-capability.md) (added 2026-05-18;
-revised git design over `EndoMount`, `EndoMountFile`, and immutable
-git-tree providers),
-[daemon-git-remotes](daemon-git-remotes.md) (added 2026-05-18;
-MVP remote-git companion for fetch, pull, push, bounded HTTPS transport,
-endpoint policy, and non-extractable credentials), [endopi](endopi.md)
+(added 2026-05-18, revised 2026-05-20; concrete completion plan for
+`EndoMount`, mount-scoped entry descriptors as values, snapshotting,
+and trusted physical-backing provenance as a hidden Exo facet),
+[daemon-git-capability](daemon-git-capability.md) (added 2026-05-18,
+revised 2026-05-20; revised git design over `EndoMount`, `EndoMountFile`,
+and `GitTreeProvider` as a sibling capability obtained via `git.trees()`),
+[daemon-git-remotes](daemon-git-remotes.md) (added 2026-05-18, revised
+2026-05-20; MVP remote-git companion for fetch, pull, push, bounded HTTPS
+transport, controller-owned endpoint policy, and non-extractable
+credentials with a `GIT_ASKPASS`-fed-by-anonymous-pipe injection mechanism), [endopi](endopi.md)
 (added 2026-05-15; comparative analysis of the pi agent harness against
 endo's daemon + chat + familiar + cli; sibling of `endoclaw.md`; spins out
 eight gap-closing designs prefixed `endopi-*`),
@@ -81,11 +86,11 @@ PR #151 row-format unblocker; sibling of
 | [daemon-checkin-checkout](daemon-checkin-checkout.md) | 2026-03-17 | 2026-03-17 | Not Started |
 | [daemon-capability-filesystem](daemon-capability-filesystem.md) | 2026-02-15 | 2026-02-24 | Not Started |
 | [daemon-content-store-gc](daemon-content-store-gc.md) | 2026-03-20 | 2026-05-08 | **Complete** |
-| [daemon-git-capability](daemon-git-capability.md) | 2026-05-18 | 2026-05-18 | Proposed |
-| [daemon-git-remotes](daemon-git-remotes.md) | 2026-05-18 | 2026-05-18 | Proposed |
+| [daemon-git-capability](daemon-git-capability.md) | 2026-05-18 | 2026-05-20 | Proposed |
+| [daemon-git-remotes](daemon-git-remotes.md) | 2026-05-18 | 2026-05-20 | Proposed |
 | [daemon-message-streaming](daemon-message-streaming.md) | 2026-03-26 | 2026-03-26 | Draft |
 | [daemon-mount](daemon-mount.md) | 2026-03-20 | 2026-03-20 | In Progress |
-| [daemon-mount-capabilities](daemon-mount-capabilities.md) | 2026-05-18 | 2026-05-18 | Proposed |
+| [daemon-mount-capabilities](daemon-mount-capabilities.md) | 2026-05-18 | 2026-05-20 | Proposed |
 | [filesystem-watchers](filesystem-watchers.md) | 2026-05-07 | 2026-05-07 | Not Started |
 | [platform-fs](platform-fs.md) | 2026-03-18 | 2026-03-18 | In Progress |
 | [daemon-capability-persona](daemon-capability-persona.md) | 2026-02-16 | 2026-02-24 | Not Started |
