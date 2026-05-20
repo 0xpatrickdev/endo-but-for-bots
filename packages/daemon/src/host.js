@@ -2,7 +2,7 @@
 /// <reference types="ses"/>
 
 /** @import { ERef } from '@endo/eventual-send' */
-/** @import { AgentDeferredTaskParams, ChannelDeferredTaskParams, Context, DaemonCore, DeferredTasks, EndoGuest, EndoHost, EnvRecord, EvalDeferredTaskParams, FormulaIdentifier, FormulaNumber, GitDeferredTaskParams, GitRemoteDeferredTaskParams, InvitationDeferredTaskParams, MakeCapletDeferredTaskParams, MakeCapletOptions, MakeDirectoryNode, MakeHostOrGuestOptions, MakeMailbox, MountDeferredTaskParams, Name, NameOrPath, NamePath, NodeNumber, PeerInfo, PetName, ReadableBlobDeferredTaskParams, ReadableTreeDeferredTaskParams, MarshalDeferredTaskParams, ScratchMountDeferredTaskParams, WorkerDeferredTaskParams } from './types.js' */
+/** @import { AgentDeferredTaskParams, ChannelDeferredTaskParams, Context, DaemonCore, DeferredTasks, EndoGuest, EndoHost, EnvRecord, EvalDeferredTaskParams, FormulaIdentifier, FormulaNumber, GitCredentialControllerDeferredTaskParams, GitCredentialDeferredTaskParams, GitDeferredTaskParams, GitRemoteControllerDeferredTaskParams, GitRemoteDeferredTaskParams, InvitationDeferredTaskParams, MakeCapletDeferredTaskParams, MakeCapletOptions, MakeDirectoryNode, MakeHostOrGuestOptions, MakeMailbox, MountDeferredTaskParams, Name, NameOrPath, NamePath, NodeNumber, PeerInfo, PetName, ReadableBlobDeferredTaskParams, ReadableTreeDeferredTaskParams, MarshalDeferredTaskParams, ScratchMountDeferredTaskParams, WorkerDeferredTaskParams } from './types.js' */
 
 import { E } from '@endo/far';
 import { makeExo } from '@endo/exo';
@@ -113,6 +113,9 @@ const normalizeHostOrGuestOptions = opts => {
  * @param {DaemonCore['formulateMount']} args.formulateMount
  * @param {DaemonCore['formulateGit']} args.formulateGit
  * @param {DaemonCore['formulateGitRemote']} args.formulateGitRemote
+ * @param {DaemonCore['formulateGitCredential']} args.formulateGitCredential
+ * @param {DaemonCore['formulateGitRemoteController']} args.formulateGitRemoteController
+ * @param {DaemonCore['formulateGitCredentialController']} args.formulateGitCredentialController
  * @param {DaemonCore['formulateScratchMount']} args.formulateScratchMount
  * @param {DaemonCore['formulateInvitation']} args.formulateInvitation
  * @param {DaemonCore['formulateDirectoryForStore']} args.formulateDirectoryForStore
@@ -150,6 +153,9 @@ export const makeHostMaker = ({
   formulateMount,
   formulateGit,
   formulateGitRemote,
+  formulateGitCredential,
+  formulateGitRemoteController,
+  formulateGitCredentialController,
   formulateScratchMount,
   formulateInvitation,
   formulateDirectoryForStore,
@@ -324,15 +330,23 @@ export const makeHostMaker = ({
     /**
      * Derive a local Git capability from a daemon-minted mount.
      *
-     * @param {NameOrPath} mountName
+     * @param {NameOrPath | unknown} mountRef
      * @param {NameOrPath} petName
      */
-    const provideGit = async (mountName, petName) => {
-      const mountNamePath = namePathFrom(mountName);
-      assertNamePath(mountNamePath);
+    const provideGit = async (mountRef, petName) => {
       const { namePath } = assertPetNamePath(namePathFrom(petName));
 
-      const mount = await E(directory).lookup(mountNamePath);
+      const mountNamePath =
+        typeof mountRef === 'string' || Array.isArray(mountRef)
+          ? namePathFrom(/** @type {NameOrPath} */ (mountRef))
+          : undefined;
+      if (mountNamePath !== undefined) {
+        assertNamePath(mountNamePath);
+      }
+      const mount =
+        mountNamePath === undefined
+          ? mountRef
+          : await E(directory).lookup(mountNamePath);
       const mountId = getIdForRef(mount);
       if (mountId === undefined) {
         throw makeError(X`provideGit: mount is not a daemon-minted mount`);
@@ -344,7 +358,9 @@ export const makeHostMaker = ({
           mountFormula.type === 'scratch-mount') &&
         mountFormula.readOnly
       ) {
-        throw makeError(X`provideGit: mount ${q(mountNamePath)} is read-only`);
+        throw makeError(
+          X`provideGit: mount ${q(mountNamePath ?? '<cap>')} is read-only`,
+        );
       }
 
       // Validate that the mount is one of the top-level physical
@@ -370,17 +386,24 @@ export const makeHostMaker = ({
      */
     const provideGitRemote = async (options, petName) => {
       const { namePath } = assertPetNamePath(namePathFrom(petName));
+      const gitRef = options.git;
       const gitName = options.gitName;
-      if (
-        typeof gitName !== 'string' &&
-        !Array.isArray(gitName)
-      ) {
-        throw new Error('provideGitRemote requires gitName');
+      const hasGitName =
+        typeof gitName === 'string' || Array.isArray(gitName);
+      if (gitRef === undefined && !hasGitName) {
+        throw new Error('provideGitRemote requires git or gitName');
       }
-      const gitNamePath = namePathFrom(/** @type {NameOrPath} */ (gitName));
-      assertNamePath(gitNamePath);
+      const gitNamePath = hasGitName
+        ? namePathFrom(/** @type {NameOrPath} */ (gitName))
+        : undefined;
+      if (gitNamePath !== undefined) {
+        assertNamePath(gitNamePath);
+      }
 
-      const git = await E(directory).lookup(gitNamePath);
+      const git =
+        gitRef === undefined
+          ? await E(directory).lookup(/** @type {NamePath} */ (gitNamePath))
+          : gitRef;
       const gitId = getIdForRef(git);
       if (gitId === undefined) {
         throw makeError(X`provideGitRemote: git is not daemon-minted`);
@@ -414,7 +437,26 @@ export const makeHostMaker = ({
         ? options.allowedProtocols.map(protocol => `${protocol}`)
         : undefined;
       const allowForcePush = options.allowForcePush === true;
-      const credential = sanitizeGitCredentialPolicy(options.credential);
+      const allowTags = options.allowTags === true;
+      const allowDelete = options.allowDelete === true;
+      let credential;
+      let credentialId;
+      if (options.credential !== undefined) {
+        const id = getIdForRef(options.credential);
+        if (id === undefined) {
+          credential = sanitizeGitCredentialPolicy(options.credential);
+        } else {
+          const credentialFormula = await getFormulaForId(id);
+          if (credentialFormula.type !== 'git-credential') {
+            throw makeError(
+              X`provideGitRemote: expected git credential formula, got ${q(
+                credentialFormula.type,
+              )}`,
+            );
+          }
+          credentialId = id;
+        }
+      }
 
       /** @type {DeferredTasks<GitRemoteDeferredTaskParams>} */
       const tasks = makeDeferredTasks();
@@ -431,8 +473,189 @@ export const makeHostMaker = ({
           allowedRefs,
           allowedProtocols,
           allowForcePush,
+          allowTags,
+          allowDelete,
           credential,
+          credentialId,
         }),
+        tasks,
+      );
+      return value;
+    };
+
+    /**
+     * @param {unknown} value
+     * @param {string} fieldName
+     */
+    const requireCredentialText = (value, fieldName) => {
+      if (typeof value !== 'string' || value.length === 0) {
+        throw new Error(`${fieldName} is required`);
+      }
+      if (value.includes('\0') || value.includes('\n') || value.includes('\r')) {
+        throw new Error(`${fieldName} must be a single line`);
+      }
+      return value;
+    };
+
+    /**
+     * @param {NameOrPath} petName
+     * @param {object} options
+     * @param {unknown} options.audience
+     * @param {unknown} options.token
+     * @param {unknown} [options.label]
+     */
+    const provideBearerCredential = async (petName, options) => {
+      const { namePath } = assertPetNamePath(namePathFrom(petName));
+      const audience = requireCredentialText(options.audience, 'audience');
+      const token = requireCredentialText(options.token, 'token');
+      const label =
+        options.label === undefined
+          ? undefined
+          : requireCredentialText(options.label, 'label');
+
+      /** @type {DeferredTasks<GitCredentialDeferredTaskParams>} */
+      const tasks = makeDeferredTasks();
+      tasks.push(identifiers =>
+        E(directory).storeIdentifier(namePath, identifiers.gitCredentialId),
+      );
+
+      const { value } = await formulateGitCredential(
+        'bearer',
+        harden({
+          audience,
+          ...(label !== undefined && { label }),
+        }),
+        token,
+        tasks,
+      );
+      return value;
+    };
+
+    /**
+     * @param {NameOrPath} petName
+     * @param {object} options
+     * @param {unknown} options.audience
+     * @param {unknown} options.username
+     * @param {unknown} options.password
+     * @param {unknown} [options.label]
+     */
+    const provideBasicCredential = async (petName, options) => {
+      const { namePath } = assertPetNamePath(namePathFrom(petName));
+      const audience = requireCredentialText(options.audience, 'audience');
+      const username = requireCredentialText(options.username, 'username');
+      const password = requireCredentialText(options.password, 'password');
+      const label =
+        options.label === undefined
+          ? undefined
+          : requireCredentialText(options.label, 'label');
+
+      /** @type {DeferredTasks<GitCredentialDeferredTaskParams>} */
+      const tasks = makeDeferredTasks();
+      tasks.push(identifiers =>
+        E(directory).storeIdentifier(namePath, identifiers.gitCredentialId),
+      );
+
+      const { value } = await formulateGitCredential(
+        'basic',
+        harden({
+          audience,
+          username,
+          ...(label !== undefined && { label }),
+        }),
+        harden({ username, password }),
+        tasks,
+      );
+      return value;
+    };
+
+    /**
+     * @param {NameOrPath | unknown} remoteRef
+     * @param {NameOrPath} petName
+     */
+    const provideGitRemoteController = async (remoteRef, petName) => {
+      const { namePath } = assertPetNamePath(namePathFrom(petName));
+      const remoteNamePath =
+        typeof remoteRef === 'string' || Array.isArray(remoteRef)
+          ? namePathFrom(/** @type {NameOrPath} */ (remoteRef))
+          : undefined;
+      if (remoteNamePath !== undefined) {
+        assertNamePath(remoteNamePath);
+      }
+      const remote =
+        remoteNamePath === undefined
+          ? remoteRef
+          : await E(directory).lookup(remoteNamePath);
+      const remoteId = getIdForRef(remote);
+      if (remoteId === undefined) {
+        throw makeError(
+          X`provideGitRemoteController: remote is not daemon-minted`,
+        );
+      }
+      const remoteFormula = await getFormulaForId(remoteId);
+      if (remoteFormula.type !== 'git-remote') {
+        throw makeError(
+          X`provideGitRemoteController: expected git-remote formula, got ${q(
+            remoteFormula.type,
+          )}`,
+        );
+      }
+
+      /** @type {DeferredTasks<GitRemoteControllerDeferredTaskParams>} */
+      const tasks = makeDeferredTasks();
+      tasks.push(identifiers =>
+        E(directory).storeIdentifier(
+          namePath,
+          identifiers.gitRemoteControllerId,
+        ),
+      );
+
+      const { value } = await formulateGitRemoteController(remoteId, tasks);
+      return value;
+    };
+
+    /**
+     * @param {NameOrPath | unknown} credentialRef
+     * @param {NameOrPath} petName
+     */
+    const provideGitCredentialController = async (credentialRef, petName) => {
+      const { namePath } = assertPetNamePath(namePathFrom(petName));
+      const credentialNamePath =
+        typeof credentialRef === 'string' || Array.isArray(credentialRef)
+          ? namePathFrom(/** @type {NameOrPath} */ (credentialRef))
+          : undefined;
+      if (credentialNamePath !== undefined) {
+        assertNamePath(credentialNamePath);
+      }
+      const credential =
+        credentialNamePath === undefined
+          ? credentialRef
+          : await E(directory).lookup(credentialNamePath);
+      const credentialId = getIdForRef(credential);
+      if (credentialId === undefined) {
+        throw makeError(
+          X`provideGitCredentialController: credential is not daemon-minted`,
+        );
+      }
+      const credentialFormula = await getFormulaForId(credentialId);
+      if (credentialFormula.type !== 'git-credential') {
+        throw makeError(
+          X`provideGitCredentialController: expected git-credential formula, got ${q(
+            credentialFormula.type,
+          )}`,
+        );
+      }
+
+      /** @type {DeferredTasks<GitCredentialControllerDeferredTaskParams>} */
+      const tasks = makeDeferredTasks();
+      tasks.push(identifiers =>
+        E(directory).storeIdentifier(
+          namePath,
+          identifiers.gitCredentialControllerId,
+        ),
+      );
+
+      const { value } = await formulateGitCredentialController(
+        credentialId,
         tasks,
       );
       return value;
@@ -831,7 +1054,7 @@ export const makeHostMaker = ({
         } else if (looksLikeTree) {
           // Subdirectory — create it then recurse.
           // eslint-disable-next-line no-await-in-loop
-          await E(dst).makeDirectory(subPath);
+          await E(dst).createDirectory(subPath);
           // eslint-disable-next-line no-await-in-loop
           await materializeTree(src, dst, subPath);
         } else {
@@ -1601,6 +1824,10 @@ export const makeHostMaker = ({
       provideMount,
       provideGit,
       provideGitRemote,
+      provideBearerCredential,
+      provideBasicCredential,
+      provideGitRemoteController,
+      provideGitCredentialController,
       provideScratchMount,
       provideHostPath,
       provideGuest,

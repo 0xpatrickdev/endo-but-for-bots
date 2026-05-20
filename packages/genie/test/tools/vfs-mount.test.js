@@ -12,7 +12,7 @@
  * avoids the ~5 s/test daemon-fork overhead.  The fake mirrors the
  * subset of `MountInterface` the adapter actually drives — `has`,
  * `list`, `lookup`, `readText`, `writeText`, `remove`,
- * `makeDirectory` — and exposes `__getMethodNames__()` so the
+ * `createDirectory` — and exposes `__getMethodNames__()` so the
  * adapter's file-vs-directory discriminator (`typeFromMethods`) works
  * the same way it would against a real `makeExo()` Mount.
  *
@@ -137,7 +137,7 @@ const makeFakeMount = (seed = {}) => {
       'readText',
       'writeText',
       'remove',
-      'makeDirectory',
+      'createDirectory',
       'help',
     ],
   });
@@ -274,10 +274,10 @@ const makeFakeMount = (seed = {}) => {
       walk.parent.children.delete(walk.name);
     },
     /** @param {string | string[]} pathArg */
-    makeDirectory: async pathArg => {
+    createDirectory: async pathArg => {
       const segments = toSegments(pathArg);
       if (segments.length === 0) return; // root always exists
-      // Idempotent + recursive (matches Mount.makeDirectory semantics).
+      // Idempotent + recursive (matches Mount.createDirectory semantics).
       const walk = walkToParent(root, segments, true);
       if (!walk) throw new Error('Cannot create directory under non-directory');
       const existing = walk.parent.children.get(walk.name);

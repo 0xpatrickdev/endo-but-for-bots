@@ -23,7 +23,13 @@ import { assertMailboxStoreName, makeMailboxMaker } from './mail.js';
 import { makeGuestMaker } from './guest.js';
 import { makeChannelMaker } from './channel.js';
 import { makeHostMaker } from './host.js';
-import { makeGit, makeGitRemote } from './git.js';
+import {
+  makeGit,
+  makeGitCredential,
+  makeGitCredentialController,
+  makeGitRemote,
+  makeGitRemoteController,
+} from './git.js';
 import { makeRemoteControlProvider } from './remote-control.js';
 import {
   assertName,
@@ -152,35 +158,138 @@ const tarPathSegments = archivePath => {
 };
 
 /**
+ * @param {Uint8Array<ArrayBufferLike>} left
+ * @param {Uint8Array<ArrayBufferLike>} right
+ * @returns {Uint8Array<ArrayBufferLike>}
+ */
+const concatBytes = (left, right) => {
+  if (left.byteLength === 0) {
+    return right;
+  }
+  if (right.byteLength === 0) {
+    return left;
+  }
+  const joined = new Uint8Array(left.byteLength + right.byteLength);
+  joined.set(left, 0);
+  joined.set(right, left.byteLength);
+  return joined;
+};
+
+/**
  * @param {import('@endo/far').ERef<AsyncIterator<string>>} readerRef
  */
-const readAllBase64 = async readerRef => {
-  /** @type {Uint8Array[]} */
-  const chunks = [];
-  let size = 0;
-  for await (const chunk of makeRefReader(readerRef)) {
-    chunks.push(chunk);
-    size += chunk.byteLength;
+const makeTarByteReader = readerRef => {
+  const iterator = makeRefReader(readerRef)[Symbol.asyncIterator]();
+  /** @type {Uint8Array<ArrayBufferLike>} */
+  let buffer = new Uint8Array(0);
+  let done = false;
+
+  const fill = async () => {
+    while (!done && buffer.byteLength === 0) {
+      const result = await iterator.next();
+      if (result.done) {
+        done = true;
+      } else {
+        buffer = concatBytes(buffer, result.value);
+      }
+    }
+  };
+
+  /**
+   * @param {number} size
+   * @param {string} label
+   */
+  const readExactly = async (size, label) => {
+    while (!done && buffer.byteLength < size) {
+      const result = await iterator.next();
+      if (result.done) {
+        done = true;
+      } else {
+        buffer = concatBytes(buffer, result.value);
+      }
+    }
+    if (buffer.byteLength < size) {
+      throw new Error(`Truncated tar ${label}`);
+    }
+    const bytes = buffer.slice(0, size);
+    buffer = buffer.slice(size);
+    return bytes;
+  };
+
+  /**
+   * @param {number} maxSize
+   * @param {string} label
+   */
+  const readAtMost = async (maxSize, label) => {
+    if (maxSize <= 0) {
+      return new Uint8Array(0);
+    }
+    await fill();
+    if (buffer.byteLength === 0) {
+      throw new Error(`Truncated tar ${label}`);
+    }
+    const size = Math.min(maxSize, buffer.byteLength);
+    const bytes = buffer.slice(0, size);
+    buffer = buffer.slice(size);
+    return bytes;
+  };
+
+  /**
+   * @param {number} size
+   * @param {string} label
+   */
+  const discard = async (size, label) => {
+    let remaining = size;
+    while (remaining > 0) {
+      // eslint-disable-next-line no-await-in-loop -- each read advances the tar stream.
+      const chunk = await readAtMost(remaining, label);
+      remaining -= chunk.byteLength;
+    }
+  };
+
+  return harden({ readExactly, readAtMost, discard });
+};
+
+/**
+ * @param {string} archivePath
+ * @param {number} mode
+ */
+const assertRegularTarMode = (archivePath, mode) => {
+  const hasOnlyPermissions = Number.isSafeInteger(mode) && mode >= 0 && mode <= 0o777;
+  const hasExecutableBit =
+    Math.floor(mode / 0o100) % 2 === 1 ||
+    Math.floor(mode / 0o10) % 2 === 1 ||
+    mode % 2 === 1;
+  if (!hasOnlyPermissions || hasExecutableBit) {
+    throw new Error(
+      `Unsupported tar file mode ${mode.toString(8)} for ${q(archivePath)}`,
+    );
   }
-  const bytes = new Uint8Array(size);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.byteLength;
+};
+
+/**
+ * @param {string} archivePath
+ * @param {number} mode
+ */
+const assertDirectoryTarMode = (archivePath, mode) => {
+  if (mode !== 0o755 && mode !== 0o775 && mode !== 0o777) {
+    throw new Error(
+      `Unsupported tar directory mode ${mode.toString(8)} for ${q(archivePath)}`,
+    );
   }
-  return bytes;
 };
 
 /**
  * Store a git archive tar stream into the daemon content store's tree JSON
- * format.  This intentionally accepts only the regular files, directories,
- * and symlinks that native `git archive --format=tar` emits.
+ * format.  This intentionally accepts only regular files and directories.
+ * Symlinks and special entries are rejected until their authority semantics are
+ * designed.
  *
  * @param {import('@endo/far').ERef<AsyncIterator<string>>} readerRef
  * @param {import('@endo/platform/fs/lite/types').SnapshotStore} contentStore
  */
 const checkinTarTree = async (readerRef, contentStore) => {
-  const archive = await readAllBase64(readerRef);
+  const reader = makeTarByteReader(readerRef);
 
   /** @type {TarTreeNode} */
   const root = { type: 'tree', entries: new Map() };
@@ -218,9 +327,9 @@ const checkinTarTree = async (readerRef, contentStore) => {
 
   /**
    * @param {string[]} segments
-   * @param {Uint8Array} bytes
+   * @param {AsyncIterable<Uint8Array>} chunks
    */
-  const putBlob = async (segments, bytes) => {
+  const putBlob = async (segments, chunks) => {
     const name = segments[segments.length - 1];
     const parent = ensureDirectory(segments.slice(0, -1));
     if (parent.entries.has(name)) {
@@ -228,44 +337,58 @@ const checkinTarTree = async (readerRef, contentStore) => {
     }
     parent.entries.set(name, {
       type: 'blob',
-      sha256: await storeBytes(bytes),
+      sha256: await contentStore.store(chunks),
     });
   };
 
-  for (let offset = 0; offset < archive.byteLength; ) {
-    const header = archive.slice(offset, offset + TAR_BLOCK_SIZE);
-    if (header.byteLength < TAR_BLOCK_SIZE) {
-      throw new Error('Truncated tar header');
-    }
+  for (;;) {
+    const header = await reader.readExactly(TAR_BLOCK_SIZE, 'header');
     if (isZeroTarBlock(header)) {
       break;
     }
     const name = tarString(header.slice(0, 100));
+    const mode = tarOctal(header.slice(100, 108));
     const size = tarOctal(header.slice(124, 136));
     const typeFlag = tarString(header.slice(156, 157)) || '0';
-    const linkName = tarString(header.slice(157, 257));
     const prefix = tarString(header.slice(345, 500));
     const archivePath = prefix ? `${prefix}/${name}` : name;
     const segments = tarPathSegments(archivePath);
-    const contentStart = offset + TAR_BLOCK_SIZE;
-    const contentEnd = contentStart + size;
-    if (contentEnd > archive.byteLength) {
-      throw new Error(`Truncated tar content for ${q(archivePath)}`);
-    }
 
     if (typeFlag === '5') {
+      assertDirectoryTarMode(archivePath, mode);
+      if (size !== 0) {
+        throw new Error(`Directory tar entry has content for ${q(archivePath)}`);
+      }
       ensureDirectory(segments);
     } else if (typeFlag === '0' || typeFlag === '\0') {
-      await putBlob(segments, archive.slice(contentStart, contentEnd));
+      assertRegularTarMode(archivePath, mode);
+      await putBlob(
+        segments,
+        (async function* streamFileContent() {
+          let remaining = size;
+          while (remaining > 0) {
+            // eslint-disable-next-line no-await-in-loop -- each read advances this file's content.
+            const chunk = await reader.readAtMost(
+              remaining,
+              `content for ${q(archivePath)}`,
+            );
+            remaining -= chunk.byteLength;
+            yield chunk;
+          }
+        })(),
+      );
     } else if (typeFlag === '2') {
-      await putBlob(segments, bytesFromText(linkName));
+      throw new Error(`Unsupported tar symlink entry for ${q(archivePath)}`);
     } else {
       throw new Error(
         `Unsupported tar entry type ${q(typeFlag)} for ${q(archivePath)}`,
       );
     }
 
-    offset = contentStart + Math.ceil(size / TAR_BLOCK_SIZE) * TAR_BLOCK_SIZE;
+    await reader.discard(
+      (TAR_BLOCK_SIZE - (size % TAR_BLOCK_SIZE)) % TAR_BLOCK_SIZE,
+      `padding for ${q(archivePath)}`,
+    );
   }
 
   /**
@@ -519,6 +642,257 @@ const makeDaemonCore = async (
   } = powers;
   const { randomHex256, generateEd25519Keypair } = cryptoPowers;
   const contentStore = persistencePowers.makeContentStore();
+  /** @type {WeakMap<object, () => Promise<unknown>>} */
+  const archiveTarByGitTree = new WeakMap();
+  /**
+   * @param {object} tree
+   * @param {() => Promise<unknown>} archiveTar
+   */
+  const registerArchiveTree = (tree, archiveTar) => {
+    archiveTarByGitTree.set(tree, archiveTar);
+  };
+  const gitCredentialStateDir = filePowers.joinPath(
+    persistencePowers.statePath,
+    'git-credentials',
+  );
+  const gitRemoteStateDir = filePowers.joinPath(
+    persistencePowers.statePath,
+    'git-remotes',
+  );
+
+  /**
+   * @param {unknown} value
+   * @param {string} fieldName
+   */
+  const requireGitSecretString = (value, fieldName) => {
+    if (typeof value !== 'string' || value.length === 0) {
+      throw new Error(`${fieldName} is required`);
+    }
+    if (value.includes('\0') || value.includes('\n') || value.includes('\r')) {
+      throw new Error(`${fieldName} must be a single line`);
+    }
+    return value;
+  };
+
+  /** @param {string} formulaNumber */
+  const gitCredentialStatePath = formulaNumber =>
+    filePowers.joinPath(gitCredentialStateDir, `${formulaNumber}.json`);
+
+  /** @param {string} formulaNumber */
+  const gitRemoteStatePath = formulaNumber =>
+    filePowers.joinPath(gitRemoteStateDir, `${formulaNumber}.json`);
+
+  /**
+   * @param {string} formulaNumber
+   * @param {Record<string, unknown>} state
+   */
+  const writeGitCredentialState = async (formulaNumber, state) => {
+    await filePowers.makePath(gitCredentialStateDir);
+    await filePowers.writeFileText(
+      gitCredentialStatePath(formulaNumber),
+      JSON.stringify(state),
+    );
+  };
+
+  /** @param {string} formulaNumber */
+  const readGitCredentialState = async formulaNumber => {
+    const text = await filePowers.maybeReadFileText(
+      gitCredentialStatePath(formulaNumber),
+    );
+    if (text === undefined) {
+      throw new Error('Git credential sealed state is missing');
+    }
+    return /** @type {Record<string, unknown>} */ (JSON.parse(text));
+  };
+
+  /**
+   * @param {string} formulaNumber
+   * @param {Record<string, unknown>} state
+   */
+  const writeGitRemoteState = async (formulaNumber, state) => {
+    await filePowers.makePath(gitRemoteStateDir);
+    await filePowers.writeFileText(
+      gitRemoteStatePath(formulaNumber),
+      JSON.stringify(state),
+    );
+  };
+
+  /**
+   * @param {string} formulaNumber
+   * @returns {Promise<{
+   *   revoked: boolean,
+   *   policy: Partial<import('./types.js').GitRemotePolicy>,
+   *   audit: import('./types.js').GitRemoteAuditRecord[],
+   * }>}
+   */
+  const readGitRemoteStateFile = async formulaNumber => {
+    const text = await filePowers.maybeReadFileText(
+      gitRemoteStatePath(formulaNumber),
+    );
+    if (text === undefined) {
+      return harden({ revoked: false, policy: harden({}), audit: harden([]) });
+    }
+    const state = /** @type {{ revoked?: boolean, policy?: Record<string, unknown>, audit?: unknown[] }} */ (
+      JSON.parse(text)
+    );
+    return harden({
+      revoked: state.revoked === true,
+      policy: harden(
+        /** @type {Partial<import('./types.js').GitRemotePolicy>} */ (
+          state.policy ?? {}
+        ),
+      ),
+      audit: harden(
+        /** @type {import('./types.js').GitRemoteAuditRecord[]} */ (
+          Array.isArray(state.audit) ? state.audit : []
+        ),
+      ),
+    });
+  };
+
+  /**
+   * @param {string} formulaNumber
+   * @param {import('./types.js').Formula} formula
+   * @param {unknown} secret
+   */
+  const rotateGitCredential = async (formulaNumber, formula, secret) => {
+    if (formula.type !== 'git-credential') {
+      throw new Error(`Expected git-credential formula, got ${q(formula.type)}`);
+    }
+    if (formula.kind === 'bearer') {
+      const token =
+        typeof secret === 'string'
+          ? secret
+          : /** @type {{ token?: unknown }} */ (secret).token;
+      await writeGitCredentialState(formulaNumber, {
+        kind: 'bearer',
+        token: requireGitSecretString(token, 'token'),
+        revoked: false,
+      });
+      return;
+    }
+    const record = /** @type {{ username?: unknown, password?: unknown }} */ (
+      secret
+    );
+    if (
+      record.username !== undefined &&
+      formula.username !== undefined &&
+      record.username !== formula.username
+    ) {
+      throw new Error('username rotation is not supported');
+    }
+    await writeGitCredentialState(formulaNumber, {
+      kind: 'basic',
+      username: requireGitSecretString(
+        record.username ?? formula.username,
+        'username',
+      ),
+      password: requireGitSecretString(record.password, 'password'),
+      revoked: false,
+    });
+  };
+
+  /**
+   * @param {import('./types.js').Formula} formula
+   * @param {boolean} revoked
+   * @returns {import('./types.js').GitCredentialMetadata}
+   */
+  const gitCredentialMetadataFromFormula = (formula, revoked) => {
+    if (formula.type !== 'git-credential') {
+      throw new Error(`Expected git-credential formula, got ${q(formula.type)}`);
+    }
+    return harden({
+      kind: formula.kind,
+      audience: formula.audience,
+      ...(formula.label !== undefined && { label: formula.label }),
+      ...(formula.kind === 'basic' &&
+        formula.username !== undefined && { username: formula.username }),
+      revoked,
+    });
+  };
+
+  /** @param {FormulaIdentifier} credentialId */
+  const readGitCredentialForId = async credentialId => {
+    const { number } = parseId(credentialId);
+    // eslint-disable-next-line no-use-before-define
+    const formula = await getFormulaForId(credentialId);
+    if (formula.type !== 'git-credential') {
+      throw new Error(
+        `Expected git-credential formula, got ${q(formula.type)}`,
+      );
+    }
+    const state = await readGitCredentialState(number);
+    const kind = state.kind;
+    if (kind !== formula.kind) {
+      throw new Error('Git credential sealed state kind does not match formula');
+    }
+    const revoked = state.revoked === true;
+    const metadata = gitCredentialMetadataFromFormula(formula, revoked);
+    return harden({ formulaNumber: number, formula, state, metadata });
+  };
+
+  /** @param {FormulaIdentifier} credentialId */
+  const getGitCredentialMetadata = async credentialId => {
+    const { metadata } = await readGitCredentialForId(credentialId);
+    return metadata;
+  };
+
+  /** @param {FormulaIdentifier} credentialId */
+  const getGitCredentialUse = async credentialId => {
+    const { formulaNumber, state, metadata } =
+      await readGitCredentialForId(credentialId);
+    if (metadata.revoked) {
+      throw new Error('Git credential has been revoked');
+    }
+    return harden({
+      ...metadata,
+      secretPath: gitCredentialStatePath(formulaNumber),
+      ...(metadata.kind === 'basic' &&
+        state.username !== metadata.username && {
+          username: `${state.username}`,
+        }),
+    });
+  };
+
+  /** @param {string} formulaNumber */
+  const makeGitCredentialReadState = formulaNumber => async () => {
+    const state = await readGitCredentialState(formulaNumber);
+    return harden({ revoked: state.revoked === true });
+  };
+
+  /** @param {string} formulaNumber */
+  const makeGitRemoteState = formulaNumber =>
+    harden({
+      read: () => readGitRemoteStateFile(formulaNumber),
+      async updatePolicy(policy) {
+        const state = await readGitRemoteStateFile(formulaNumber);
+        await writeGitRemoteState(formulaNumber, {
+          revoked: state.revoked,
+          policy: { ...state.policy, ...policy },
+          audit: state.audit,
+        });
+      },
+      async revoke() {
+        const state = await readGitRemoteStateFile(formulaNumber);
+        await writeGitRemoteState(formulaNumber, {
+          revoked: true,
+          policy: state.policy,
+          audit: state.audit,
+        });
+      },
+      async appendAudit(record) {
+        const state = await readGitRemoteStateFile(formulaNumber);
+        await writeGitRemoteState(formulaNumber, {
+          revoked: state.revoked,
+          policy: state.policy,
+          audit: [...state.audit, record].slice(-1000),
+        });
+      },
+      getCredentialUse: id =>
+        getGitCredentialUse(/** @type {FormulaIdentifier} */ (id)),
+      getCredentialMetadata: id =>
+        getGitCredentialMetadata(/** @type {FormulaIdentifier} */ (id)),
+    });
   /** @type {WeakMap<object, ERef<WorkerDaemonFacet>>} */
   const workerDaemonFacets = new WeakMap();
   /** @type {Map<string, (reason?: Error) => Promise<void>>} */
@@ -740,8 +1114,18 @@ const makeDaemonCore = async (
         return [['hub', formula.hub]];
       case 'git':
         return [['mount', formula.mount]];
-      case 'git-remote':
-        return [['git', formula.git]];
+      case 'git-remote': {
+        /** @type {Array<[string, FormulaIdentifier]>} */
+        const deps = [['git', formula.git]];
+        if (formula.credentialId !== undefined) {
+          deps.push(['credential', formula.credentialId]);
+        }
+        return deps;
+      }
+      case 'git-remote-controller':
+        return [['remote', formula.remote]];
+      case 'git-credential-controller':
+        return [['credential', formula.credential]];
       case 'make-unconfined': {
         /** @type {Array<[string, FormulaIdentifier]>} */
         const deps = [
@@ -2856,7 +3240,7 @@ const makeDaemonCore = async (
         await provide(mount, 'mount')
       );
       const repoRoot = getMountHostPath(mount);
-      return makeGit({ worktree, repoRoot, gitPowers });
+      return makeGit({ worktree, repoRoot, gitPowers, registerArchiveTree });
     },
     'git-remote': async (
       {
@@ -2866,15 +3250,23 @@ const makeDaemonCore = async (
         directions,
         allowedRefs,
         allowForcePush,
+        allowTags,
+        allowDelete,
         allowedProtocols,
         credential,
+        credentialId,
       },
       context,
+      _id,
+      formulaNumber,
     ) => {
       if (gitPowers === undefined) {
         throw new Error('Git powers are not available in this daemon');
       }
       context.thisDiesIfThatDies(git);
+      if (credentialId !== undefined) {
+        context.thisDiesIfThatDies(credentialId);
+      }
       const gitFormula = await getFormulaForId(git);
       if (gitFormula.type !== 'git') {
         throw new Error(
@@ -2891,9 +3283,85 @@ const makeDaemonCore = async (
           directions,
           allowedRefs,
           allowForcePush,
+          allowTags,
+          allowDelete,
           allowedProtocols,
           credential,
+          credentialId,
         }),
+        state: makeGitRemoteState(formulaNumber),
+      });
+    },
+    'git-credential': async (formula, _context, _id, formulaNumber) => {
+      const state = await readGitCredentialState(formulaNumber);
+      return makeGitCredential({
+        metadata: gitCredentialMetadataFromFormula(
+          formula,
+          state.revoked === true,
+        ),
+        readState: makeGitCredentialReadState(formulaNumber),
+      });
+    },
+    'git-remote-controller': async ({ remote }, context) => {
+      context.thisDiesIfThatDies(remote);
+      const remoteFormula = await getFormulaForId(remote);
+      if (remoteFormula.type !== 'git-remote') {
+        throw new Error(
+          `Git remote controller requires a git-remote formula, got ${q(
+            remoteFormula.type,
+          )}`,
+        );
+      }
+      const { number: remoteFormulaNumber } = parseId(remote);
+      return makeGitRemoteController({
+        basePolicy: harden({
+          remote: remoteFormula.remote,
+          url: remoteFormula.url,
+          directions: remoteFormula.directions,
+          allowedRefs: remoteFormula.allowedRefs,
+          allowForcePush: remoteFormula.allowForcePush,
+          allowTags: remoteFormula.allowTags,
+          allowDelete: remoteFormula.allowDelete,
+          allowedProtocols: remoteFormula.allowedProtocols,
+          credential: remoteFormula.credential,
+          credentialId: remoteFormula.credentialId,
+        }),
+        state: makeGitRemoteState(remoteFormulaNumber),
+      });
+    },
+    'git-credential-controller': async ({ credential }, context) => {
+      context.thisDiesIfThatDies(credential);
+      const credentialFormula = await getFormulaForId(credential);
+      if (credentialFormula.type !== 'git-credential') {
+        throw new Error(
+          `Git credential controller requires a git-credential formula, got ${q(
+            credentialFormula.type,
+          )}`,
+        );
+      }
+      const { number: credentialFormulaNumber } = parseId(credential);
+      const state = await readGitCredentialState(credentialFormulaNumber);
+      return makeGitCredentialController({
+        metadata: gitCredentialMetadataFromFormula(
+          credentialFormula,
+          state.revoked === true,
+        ),
+        readState: makeGitCredentialReadState(credentialFormulaNumber),
+        rotate: secret =>
+          rotateGitCredential(
+            credentialFormulaNumber,
+            credentialFormula,
+            secret,
+          ),
+        async revoke() {
+          const currentState = await readGitCredentialState(
+            credentialFormulaNumber,
+          );
+          await writeGitCredentialState(credentialFormulaNumber, {
+            ...currentState,
+            revoked: true,
+          });
+        },
       });
     },
     lookup: ({ hub, path }, context) =>
@@ -3740,6 +4208,99 @@ const makeDaemonCore = async (
     );
   };
 
+  /** @type {DaemonCore['formulateGitCredential']} */
+  const formulateGitCredential = async (
+    kind,
+    metadata,
+    secret,
+    deferredTasks,
+  ) => {
+    return /** @type {FormulateResult<import('./types.js').EndoGitCredential>} */ (
+      withFormulaGraphLock(async () => {
+        await null;
+        const formulaNumber = /** @type {FormulaNumber} */ (
+          await randomHex256()
+        );
+        const gitCredentialId = formatId({
+          number: formulaNumber,
+          node: localNodeNumber,
+        });
+
+        await deferredTasks.execute({ gitCredentialId });
+
+        /** @type {import('./types.js').Formula} */
+        const formula = harden({
+          type: /** @type {const} */ ('git-credential'),
+          kind,
+          audience: metadata.audience,
+          ...(metadata.label !== undefined && { label: metadata.label }),
+          ...(kind === 'basic' &&
+            metadata.username !== undefined && {
+              username: metadata.username,
+            }),
+        });
+
+        await rotateGitCredential(formulaNumber, formula, secret);
+        return formulate(formulaNumber, formula);
+      })
+    );
+  };
+
+  /** @type {DaemonCore['formulateGitRemoteController']} */
+  const formulateGitRemoteController = async (remoteId, deferredTasks) => {
+    return /** @type {FormulateResult<import('./types.js').EndoGitRemoteController>} */ (
+      withFormulaGraphLock(async () => {
+        await null;
+        const formulaNumber = /** @type {FormulaNumber} */ (
+          await randomHex256()
+        );
+        const gitRemoteControllerId = formatId({
+          number: formulaNumber,
+          node: localNodeNumber,
+        });
+
+        await deferredTasks.execute({ gitRemoteControllerId });
+
+        /** @type {import('./types.js').Formula} */
+        const formula = harden({
+          type: /** @type {const} */ ('git-remote-controller'),
+          remote: remoteId,
+        });
+
+        return formulate(formulaNumber, formula);
+      })
+    );
+  };
+
+  /** @type {DaemonCore['formulateGitCredentialController']} */
+  const formulateGitCredentialController = async (
+    credentialId,
+    deferredTasks,
+  ) => {
+    return /** @type {FormulateResult<import('./types.js').EndoGitCredentialController>} */ (
+      withFormulaGraphLock(async () => {
+        await null;
+        const formulaNumber = /** @type {FormulaNumber} */ (
+          await randomHex256()
+        );
+        const gitCredentialControllerId = formatId({
+          number: formulaNumber,
+          node: localNodeNumber,
+        });
+
+        await deferredTasks.execute({ gitCredentialControllerId });
+
+        /** @type {import('./types.js').Formula} */
+        const formula = harden({
+          type: /** @type {const} */ ('git-credential-controller'),
+          credential: credentialId,
+        });
+
+        return formulate(formulaNumber, formula);
+      })
+    );
+  };
+
   /** @type {DaemonCore['formulateScratchMount']} */
   const formulateScratchMount = async (readOnly, deferredTasks) => {
     return /** @type {FormulateResult<import('./types.js').EndoMount>} */ (
@@ -3773,17 +4334,19 @@ const makeDaemonCore = async (
       withFormulaGraphLock(async () => {
         await null;
 
-        const archiveTree = /** @type {import('@endo/far').ERef<ArchiveTreeMethods>} */ (
-          remoteTree
-        );
-        const methods =
-          // eslint-disable-next-line no-underscore-dangle
-          await E(archiveTree)
-            .__getMethodNames__()
-            .catch(() => /** @type {string[]} */ ([]));
-        const treeSha256 = methods.includes('archiveTar')
-          ? await checkinTarTree(await E(archiveTree).archiveTar(), contentStore)
-          : (await platformCheckinTree(remoteTree, contentStore)).sha256;
+        const archiveTar =
+          typeof remoteTree === 'object' && remoteTree !== null
+            ? archiveTarByGitTree.get(remoteTree)
+            : undefined;
+        const treeSha256 =
+          archiveTar === undefined
+            ? (await platformCheckinTree(remoteTree, contentStore)).sha256
+            : await checkinTarTree(
+                /** @type {import('@endo/far').ERef<AsyncIterator<string>>} */ (
+                  await archiveTar()
+                ),
+                contentStore,
+              );
 
         const formulaNumber = /** @type {FormulaNumber} */ (
           await randomHex256()
@@ -5658,6 +6221,9 @@ const makeDaemonCore = async (
     formulateMount,
     formulateGit,
     formulateGitRemote,
+    formulateGitCredential,
+    formulateGitRemoteController,
+    formulateGitCredentialController,
     formulateScratchMount,
     formulateInvitation,
     formulateDirectoryForStore,

@@ -7,7 +7,7 @@
  * without a real daemon.
  *
  * The fake exposes the subset of `MountInterface` that `init.js`
- * touches (`has`, `writeText`, `makeDirectory`).  We additionally
+ * touches (`has`, `writeText`, `createDirectory`).  We additionally
  * surface a `readText` helper for assertions; the production
  * `MountInterface` has `readText` too, but `initWorkspaceMount` does
  * not call it, so the fake's surface stays minimal.
@@ -47,7 +47,7 @@ const TEMPLATE_DIR = resolve(moduleDirname, '..', 'workspace_template');
 
 /**
  * Build a hand-rolled `Mount`-shaped fake whose `has`, `writeText`,
- * and `makeDirectory` methods match the daemon's `MountInterface`
+ * and `createDirectory` methods match the daemon's `MountInterface`
  * semantics.  Backed by a nested Map so assertions can walk the
  * resulting tree without needing CapTP.
  */
@@ -134,7 +134,7 @@ const makeMemoryMount = () => {
       parent.children.set(fileName, { type: 'file', content });
     },
     /** @param {string | string[]} pathArg */
-    async makeDirectory(pathArg) {
+    async createDirectory(pathArg) {
       ensureDir(segmentsOf(pathArg));
     },
     /** @param {string | string[]} pathArg */
@@ -272,7 +272,7 @@ test('initWorkspaceMount writes through the Mount surface only', async t => {
 
   const wrapped = harden({
     has: mount.has,
-    makeDirectory: mount.makeDirectory,
+    createDirectory: mount.createDirectory,
     /**
      * @param {string | string[]} pathArg
      * @param {string} content

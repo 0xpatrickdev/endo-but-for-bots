@@ -225,8 +225,8 @@ export const helpTextEntries = harden([
       remove:
         'remove(path) -> Promise<void>\nRemove a file or empty directory.\npath: string | string[] — Name or path segments.',
       move: 'move(from, to) -> Promise<void>\nRename an entry within the mount.\nfrom: string | string[] — Source name or path segments.\nto: string | string[] — Destination name or path segments.',
-      makeDirectory:
-        'makeDirectory(path) -> Promise<void>\nCreate a directory (and missing parents).\npath: string | string[] — Name or path segments.',
+      createDirectory:
+        'createDirectory(path) -> Promise<EndoMount>\nCreate a directory (and missing parents), returning the directory mount.\npath: string | string[] | EndoMountEntry — Name, path segments, or mount entry.',
       readOnly:
         'readOnly() -> EndoMount\nReturns a read-only view of this mount.',
       snapshot:
@@ -244,6 +244,8 @@ export const helpTextEntries = harden([
       json: 'json() -> Promise<any>\nRead and parse the file as JSON.',
       writeText:
         'writeText(content) -> Promise<void>\nWrite a string to the file. Throws if read-only.',
+      append:
+        'append(content) -> Promise<void>\nAppend a string to the file. Throws if read-only.',
       writeBytes:
         'writeBytes(readableRef) -> Promise<void>\nWrite bytes from an async iterator. Throws if read-only.',
       readOnly:

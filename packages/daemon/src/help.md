@@ -705,10 +705,10 @@ Rename an entry within the mount.
 from: string | string[] — Source name or path segments.
 to: string | string[] — Destination name or path segments.
 
-## makeDirectory(path) -> Promise<void>
+## createDirectory(path) -> Promise<EndoMount>
 
-Create a directory (and missing parents).
-path: string | string[] — Name or path segments.
+Create a directory (and missing parents), returning the directory mount.
+path: string | string[] | EndoMountEntry — Name, path segments, or mount entry.
 
 ## readOnly() -> EndoMount
 
@@ -740,6 +740,10 @@ Read and parse the file as JSON.
 ## writeText(content) -> Promise<void>
 
 Write a string to the file. Throws if read-only.
+
+## append(content) -> Promise<void>
+
+Append a string to the file. Throws if read-only.
 
 ## writeBytes(readableRef) -> Promise<void>
 

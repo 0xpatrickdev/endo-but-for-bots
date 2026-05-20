@@ -469,12 +469,6 @@ const makeMountExo = ctx => {
       await filePowers.renamePath(from, to);
     },
 
-    async makeDirectory(pathArg) {
-      await null;
-      assertWritable();
-      await this.self.createDirectory(pathArg); // eslint-disable-line no-invalid-this
-    },
-
     readOnly() {
       if (readOnly) {
         return this.self; // eslint-disable-line no-invalid-this
@@ -503,13 +497,7 @@ harden(makeMountExo);
  * @returns {object}
  */
 const makeMountEntryExo = ctx => {
-  const {
-    entrySegments,
-    confinementRoot,
-    rootId,
-    filePowers,
-    snapshotFile,
-  } = ctx;
+  const { entrySegments, confinementRoot, rootId, filePowers } = ctx;
 
   const resolveEntry = () =>
     resolveSegments(confinementRoot, confinementRoot, entrySegments, filePowers);
@@ -518,11 +506,21 @@ const makeMountEntryExo = ctx => {
 
   return makeExo('EndoMountEntry', MountEntryInterface, {
     help,
-    path() {
+    segments() {
       return harden([...entrySegments]);
     },
     displayPath() {
       return entrySegments.length === 0 ? '.' : entrySegments.join('/');
+    },
+    async exists() {
+      await null;
+      const target = resolveEntry();
+      try {
+        await assertConfined(target, confinementRoot, filePowers);
+        return true;
+      } catch {
+        return false;
+      }
     },
     async stat() {
       await null;
@@ -533,46 +531,6 @@ const makeMountEntryExo = ctx => {
       } catch {
         return undefined;
       }
-    },
-    async lookup() {
-      await null;
-      const target = resolveEntry();
-      await assertConfined(target, confinementRoot, filePowers);
-      if (await filePowers.isDirectory(target)) {
-        return makeMountExo({
-          ...ctx,
-          currentDir: target,
-          currentSegments: entrySegments,
-          description: `Subdirectory ${entrySegments.join('/')}`,
-        });
-      }
-      return makeMountFileExo(
-        target,
-        ctx.readOnly,
-        filePowers,
-        confinementRoot,
-        snapshotFile,
-      );
-    },
-    async openDirectory() {
-      const value = await this.self.lookup(); // eslint-disable-line no-invalid-this
-      const methods =
-        // eslint-disable-next-line no-underscore-dangle
-        await value.__getMethodNames__();
-      if (!methods.includes('list')) {
-        throw new Error(`Path is not a directory: ${q(entrySegments.join('/'))}`);
-      }
-      return value;
-    },
-    async openFile() {
-      const value = await this.self.lookup(); // eslint-disable-line no-invalid-this
-      const methods =
-        // eslint-disable-next-line no-underscore-dangle
-        await value.__getMethodNames__();
-      if (!methods.includes('text')) {
-        throw new Error('Path is a directory');
-      }
-      return value;
     },
     child(name) {
       assertValidSegment(name);
@@ -642,7 +600,7 @@ const makeMountFileExo = (
       await filePowers.writeFileText(filePath, content);
     },
 
-    async appendText(content) {
+    async append(content) {
       await null;
       assertWritable();
       await assertConfined(filePath, confinementRoot, filePowers);

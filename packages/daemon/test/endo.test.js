@@ -4193,7 +4193,7 @@ test('mount external directory - move', async t => {
   t.is(actualRenamed, 'move me');
 });
 
-test('mount external directory - makeDirectory', async t => {
+test('mount external directory - createDirectory', async t => {
   const { host, config } = await prepareHost(t);
 
   const mountPath = path.join(config.statePath, '..', 'mount-test-mkdir');
@@ -4202,7 +4202,7 @@ test('mount external directory - makeDirectory', async t => {
   await E(host).provideMount(mountPath, 'test-mount-mkdir');
   const mount = await E(host).lookup(['test-mount-mkdir']);
 
-  await E(mount).makeDirectory(['sub', 'deep']);
+  await E(mount).createDirectory(['sub', 'deep']);
   t.true(await E(mount).has('sub'));
   t.true(await E(mount).has('sub', 'deep'));
 
@@ -4235,7 +4235,7 @@ test('mount read-only rejects writes', async t => {
   await t.throwsAsync(E(mount).remove(['existing.txt']), {
     message: /read-only/,
   });
-  await t.throwsAsync(E(mount).makeDirectory(['nope']), {
+  await t.throwsAsync(E(mount).createDirectory(['nope']), {
     message: /read-only/,
   });
 
@@ -4382,7 +4382,7 @@ test('provideHostPath rejects a spoof that passes the genie shape gate', async t
   //   - `assertIsMountCap` (in `spawnAgent`'s workspace / rootfs
   //     pet-name branches) is a **shape** gate.  It probes
   //     `__getMethodNames__()` against the subset
-  //     ['readText', 'writeText', 'makeDirectory', 'has', 'list']
+  //     ['readText', 'writeText', 'createDirectory', 'has', 'list']
   //     and produces friendly, agent-named errors when an operator
   //     pet-names something that isn't a Mount.
   //   - `EndoHost.provideHostPath` is the **identity** gate.  It
@@ -4417,7 +4417,7 @@ test('provideHostPath rejects a spoof that passes the genie shape gate', async t
     list: M.call().rest(M.arrayOf(M.string())).returns(M.promise()),
     readText: M.call(M.any()).returns(M.promise()),
     writeText: M.call(M.any(), M.string()).returns(M.promise()),
-    makeDirectory: M.call(M.any()).returns(M.promise()),
+    createDirectory: M.call(M.any()).returns(M.promise()),
   });
   const spoof = makeExo('SpoofMount', SpoofInterface, {
     async has() {
@@ -4432,7 +4432,7 @@ test('provideHostPath rejects a spoof that passes the genie shape gate', async t
     async writeText() {
       await null;
     },
-    async makeDirectory() {
+    async createDirectory() {
       await null;
     },
   });
@@ -4448,7 +4448,7 @@ test('provideHostPath rejects a spoof that passes the genie shape gate', async t
   // is rejected by the identity gate.
   // eslint-disable-next-line no-underscore-dangle
   const methods = await E(spoof).__getMethodNames__();
-  for (const m of ['readText', 'writeText', 'makeDirectory', 'has', 'list']) {
+  for (const m of ['readText', 'writeText', 'createDirectory', 'has', 'list']) {
     t.true(
       methods.includes(m),
       `spoof must advertise ${m} to land in the saboteur-3 attack shape (got: ${methods.join(', ')})`,
@@ -4510,23 +4510,25 @@ test('mount entry descriptors support create, open, stat, and provenance', async
 
   const createdEntry = await E(mount).entry(['src', 'created.txt']);
   t.is(await E(createdEntry).displayPath(), 'src/created.txt');
-  t.deepEqual(await E(createdEntry).path(), ['src', 'created.txt']);
+  t.deepEqual(await E(createdEntry).segments(), ['src', 'created.txt']);
+  t.false(await E(createdEntry).exists());
   t.is(await E(createdEntry).stat(), undefined);
 
   const createdFile = await E(mount).createFile(createdEntry);
   await E(createdFile).writeText('created');
-  await E(createdFile).appendText(' and appended');
+  await E(createdFile).append(' and appended');
   t.is(await E(createdFile).text(), 'created and appended');
+  t.true(await E(createdEntry).exists());
 
   const stat = await E(mount).stat(createdEntry);
-  t.like(stat, { type: 'file', size: 'created and appended'.length });
+  t.like(stat, { kind: 'file', sizeBytes: 'created and appended'.length });
 
   const srcEntry = await E(mount).entry('src');
   const srcDir = await E(mount).openDirectory(srcEntry);
   t.deepEqual(await E(srcDir).list(), ['created.txt', 'existing.txt']);
 
   const childEntry = await E(srcEntry).child('created.txt');
-  const openedFile = await E(childEntry).openFile();
+  const openedFile = await E(mount).openFile(childEntry);
   t.is(await E(openedFile).text(), 'created and appended');
 
   await t.throwsAsync(() => E(otherMount).readText(createdEntry), {
@@ -4572,12 +4574,18 @@ test('provideGit derives local git capability from a mount worktree', async t =>
 
   await E(host).provideMount(repoPath, 'git-worktree');
   const worktree = await E(host).lookup('git-worktree');
-  const gitCap = await E(host).provideGit('git-worktree', 'git-cap');
+  const gitCap = await E(host).provideGit(worktree, 'git-cap');
 
-  t.regex(await E(gitCap).status(), /^## main/u);
+  t.regex(await E(gitCap).statusText(), /^## main/u);
+  t.deepEqual(await E(gitCap).status(), []);
 
   const featureEntry = await E(worktree).entry('feature.txt');
   await E(worktree).writeText(featureEntry, 'feature\n');
+  const untrackedStatus = await E(gitCap).status();
+  t.like(
+    untrackedStatus.find(entry => entry.path === 'feature.txt'),
+    { path: 'feature.txt', index: 'clean', worktree: 'untracked' },
+  );
   await E(gitCap).add([featureEntry]);
   const commit = await E(gitCap).commit('feature work');
   t.like(commit, { subject: 'feature work' });
@@ -4595,7 +4603,147 @@ test('provideGit derives local git capability from a mount worktree', async t =>
   await E(gitCap).stashPush({ message: 'scratch', entries: [featureEntry] });
   t.regex(await E(gitCap).stashList(), /scratch/u);
   await E(gitCap).stashPop();
-  t.regex(await E(gitCap).status(), /M feature\.txt/u);
+  const modifiedStatus = await E(gitCap).status();
+  t.like(
+    modifiedStatus.find(entry => entry.path === 'feature.txt'),
+    { path: 'feature.txt', index: 'clean', worktree: 'modified' },
+  );
+});
+
+test('provideGit structured status covers common entry states', async t => {
+  const { host, config } = await prepareHost(t);
+
+  const repoPath = path.join(config.statePath, '..', 'git-status-repo');
+  await createGitFixture(repoPath);
+  await fs.promises.writeFile(
+    path.join(repoPath, 'tracked.txt'),
+    'tracked\n',
+    'utf-8',
+  );
+  await fs.promises.writeFile(
+    path.join(repoPath, 'deleted.txt'),
+    'delete me\n',
+    'utf-8',
+  );
+  await fs.promises.writeFile(
+    path.join(repoPath, 'rename-source.txt'),
+    'rename me\n',
+    'utf-8',
+  );
+  await fs.promises.writeFile(
+    path.join(repoPath, '.gitignore'),
+    'ignored.log\n',
+    'utf-8',
+  );
+  await git(repoPath, [
+    'add',
+    'tracked.txt',
+    'deleted.txt',
+    'rename-source.txt',
+    '.gitignore',
+  ]);
+  await git(repoPath, ['commit', '-m', 'status fixture']);
+
+  await E(host).provideMount(repoPath, 'git-status-worktree');
+  const worktree = await E(host).lookup('git-status-worktree');
+  const gitCap = await E(host).provideGit(
+    worktree,
+    'git-status-cap',
+  );
+
+  await E(worktree).writeText('tracked.txt', 'tracked\nmodified\n');
+  await E(worktree).writeText('staged-added.txt', 'added\n');
+  await E(worktree).writeText('untracked.txt', 'untracked\n');
+  await E(worktree).writeText('ignored.log', 'ignored\n');
+  await E(worktree).remove('deleted.txt');
+  await git(repoPath, ['mv', 'rename-source.txt', 'renamed.txt']);
+  await E(gitCap).add([await E(worktree).entry('staged-added.txt')]);
+
+  const status = await E(gitCap).status();
+  const byPath = new Map(status.map(entry => [entry.path, entry]));
+
+  t.like(byPath.get('tracked.txt'), {
+    path: 'tracked.txt',
+    index: 'clean',
+    worktree: 'modified',
+  });
+  t.like(byPath.get('staged-added.txt'), {
+    path: 'staged-added.txt',
+    index: 'added',
+    worktree: 'clean',
+  });
+  t.like(byPath.get('deleted.txt'), {
+    path: 'deleted.txt',
+    index: 'clean',
+    worktree: 'deleted',
+  });
+  t.like(byPath.get('renamed.txt'), {
+    path: 'renamed.txt',
+    index: 'renamed',
+    worktree: 'clean',
+    renamedFrom: 'rename-source.txt',
+  });
+  t.like(byPath.get('untracked.txt'), {
+    path: 'untracked.txt',
+    index: 'clean',
+    worktree: 'untracked',
+  });
+  t.like(byPath.get('ignored.log'), {
+    path: 'ignored.log',
+    index: 'clean',
+    worktree: 'ignored',
+  });
+  const addedEntry = byPath.get('staged-added.txt');
+  t.not(addedEntry, undefined);
+  if (addedEntry === undefined) {
+    return;
+  }
+  t.deepEqual(await E(addedEntry.entry).segments(), ['staged-added.txt']);
+  t.truthy(addedEntry.node);
+});
+
+test('provideGit structured status reports conflicted entries', async t => {
+  const { host, config } = await prepareHost(t);
+
+  const repoPath = path.join(config.statePath, '..', 'git-status-conflict-repo');
+  await createGitFixture(repoPath);
+  await fs.promises.writeFile(
+    path.join(repoPath, 'conflict.txt'),
+    'base\n',
+    'utf-8',
+  );
+  await git(repoPath, ['add', 'conflict.txt']);
+  await git(repoPath, ['commit', '-m', 'conflict base']);
+  await git(repoPath, ['switch', '-c', 'left']);
+  await fs.promises.writeFile(
+    path.join(repoPath, 'conflict.txt'),
+    'left\n',
+    'utf-8',
+  );
+  await git(repoPath, ['commit', '-am', 'left side']);
+  await git(repoPath, ['switch', 'main']);
+  await fs.promises.writeFile(
+    path.join(repoPath, 'conflict.txt'),
+    'right\n',
+    'utf-8',
+  );
+  await git(repoPath, ['commit', '-am', 'right side']);
+
+  await E(host).provideMount(repoPath, 'git-status-conflict-worktree');
+  const gitCap = await E(host).provideGit(
+    'git-status-conflict-worktree',
+    'git-status-conflict-cap',
+  );
+
+  await t.throwsAsync(() => E(gitCap).merge('left'), {
+    message: /git merge failed/u,
+  });
+
+  const status = await E(gitCap).status();
+  t.like(
+    status.find(entry => entry.path === 'conflict.txt'),
+    { path: 'conflict.txt', index: 'conflicted', worktree: 'conflicted' },
+  );
 });
 
 test('provideGit enforces mount identity and read-only boundaries', async t => {
@@ -4620,6 +4768,91 @@ test('provideGit enforces mount identity and read-only boundaries', async t => {
   await t.throwsAsync(() => E(host).provideGit('git-readonly', 'git-ro-cap'), {
     message: /read-only/,
   });
+
+  const readOnlyGit = await E(gitCap).readOnly();
+  const readOnlyWorktree = await E(readOnlyGit).worktree();
+  const entry = await E(readOnlyWorktree).entry('readonly.txt');
+  await t.throwsAsync(() => E(readOnlyWorktree).writeText(entry, 'fail'), {
+    message: /read-only/,
+  });
+  await Promise.all(
+    [
+      () => E(readOnlyGit).add([entry]),
+      () => E(readOnlyGit).restore([entry]),
+      () => E(readOnlyGit).commit('nope'),
+      () => E(readOnlyGit).createBranch('nope'),
+      () => E(readOnlyGit).deleteBranch('nope'),
+      () => E(readOnlyGit).renameBranch('main', 'nope'),
+      () => E(readOnlyGit).switch('main'),
+      () => E(readOnlyGit).merge('main'),
+      () => E(readOnlyGit).rebase({ mode: 'abort' }),
+      () => E(readOnlyGit).stashPush(),
+      () => E(readOnlyGit).stashApply(),
+      () => E(readOnlyGit).stashPop(),
+      () => E(readOnlyGit).stashDrop(),
+    ].map(call =>
+      t.throwsAsync(call, {
+        message: /read-only/,
+      }),
+    ),
+  );
+  t.deepEqual(await E(readOnlyGit).status(), []);
+});
+
+test('provideGit fails closed when repository identity changes', async t => {
+  const { host, config } = await prepareHost(t);
+
+  const repoPath = path.join(config.statePath, '..', 'git-identity-repo');
+  await createGitFixture(repoPath);
+
+  await E(host).provideMount(repoPath, 'git-identity-worktree');
+  const gitCap = await E(host).provideGit(
+    'git-identity-worktree',
+    'git-identity-cap',
+  );
+  t.deepEqual(await E(gitCap).status(), []);
+
+  await fs.promises.rm(path.join(repoPath, '.git'), {
+    recursive: true,
+    force: true,
+  });
+  await git(repoPath, ['init', '-b', 'main']);
+  await git(repoPath, ['config', 'user.name', 'Endo Test']);
+  await git(repoPath, ['config', 'user.email', 'endo-test@example.com']);
+
+  await t.throwsAsync(() => E(gitCap).status(), {
+    message: /repository identity changed/,
+  });
+});
+
+test('provideGit re-derives mount backing after restart', async t => {
+  const { cancelled, config, host } = await prepareHost(t);
+
+  const repoPath = path.join(config.statePath, '..', 'git-restart-repo');
+  await createGitFixture(repoPath);
+
+  await E(host).provideMount(repoPath, 'git-restart-worktree');
+  const worktree = await E(host).lookup('git-restart-worktree');
+  // eslint-disable-next-line no-underscore-dangle
+  const mountMethods = await E(worktree).__getMethodNames__();
+  t.false(mountMethods.includes('path'));
+  t.false(mountMethods.includes('hostPath'));
+  await E(host).provideGit(worktree, 'git-restart-cap');
+
+  await restart(config);
+
+  const { host: hostAfterRestart } = await makeHost(config, cancelled);
+  const worktreeAfterRestart = await E(hostAfterRestart).lookup(
+    'git-restart-worktree',
+  );
+  await E(hostAfterRestart).provideGit(
+    worktreeAfterRestart,
+    'git-restart-cap-after',
+  );
+  const gitAfterRestart = await E(hostAfterRestart).lookup(
+    'git-restart-cap-after',
+  );
+  t.deepEqual(await E(gitAfterRestart).status(), []);
 });
 
 test('provideGit tree exposes immutable commit contents', async t => {
@@ -4663,6 +4896,40 @@ test('provideGit tree exposes immutable commit contents', async t => {
   t.is(await E(storedMain).text(), 'export default 1;\n');
 });
 
+test('GitTree archive check-in rejects symlinks', async t => {
+  const { host, config } = await prepareHost(t);
+
+  const repoPath = path.join(config.statePath, '..', 'git-tree-symlink-repo');
+  await createGitFixture(repoPath);
+  await fs.promises.writeFile(
+    path.join(repoPath, 'target.txt'),
+    'target\n',
+    'utf-8',
+  );
+  try {
+    await fs.promises.symlink('target.txt', path.join(repoPath, 'link.txt'));
+  } catch (error) {
+    if (/** @type {NodeJS.ErrnoException} */ (error).code === 'EPERM') {
+      t.pass('symlink creation is not permitted on this platform');
+      return;
+    }
+    throw error;
+  }
+  await git(repoPath, ['add', 'target.txt', 'link.txt']);
+  await git(repoPath, ['commit', '-m', 'add symlink']);
+
+  await E(host).provideMount(repoPath, 'git-tree-symlink-worktree');
+  const gitCap = await E(host).provideGit(
+    'git-tree-symlink-worktree',
+    'git-tree-symlink-cap',
+  );
+  const tree = await E(gitCap).tree('HEAD');
+
+  await t.throwsAsync(() => E(host).storeTree(tree, 'git-tree-symlink-copy'), {
+    message: /Unsupported tar symlink entry/,
+  });
+});
+
 test('provideGitRemote supports bounded local fetch, pull, and push', async t => {
   const { host, config } = await prepareHost(t);
 
@@ -4683,8 +4950,9 @@ test('provideGitRemote supports bounded local fetch, pull, and push', async t =>
   );
   const remote = await E(host).provideGitRemote(
     {
-      gitName: 'git-remote-cap',
+      git: gitCap,
       remote: 'origin',
+      url: barePath,
       directions: ['fetch', 'pull', 'push'],
       allowedProtocols: ['file'],
     },
@@ -4706,6 +4974,12 @@ test('provideGitRemote supports bounded local fetch, pull, and push', async t =>
   await git(peerPath, ['push', 'origin', 'main']);
 
   const fetchResult = await E(remote).fetch({ refspecs: ['main'] });
+  t.like(fetchResult, {
+    operation: 'fetch',
+    status: 'completed',
+    remote: 'origin',
+    refs: ['main'],
+  });
   t.regex(fetchResult.output, /main/u);
   await E(remote).pull({ branch: 'main' });
   t.is(await E(worktree).readText('upstream.txt'), 'from upstream\n');
@@ -4715,10 +4989,29 @@ test('provideGitRemote supports bounded local fetch, pull, and push', async t =>
   await E(gitCap).add([localEntry]);
   await E(gitCap).commit('local work');
   const pushResult = await E(remote).push({ source: 'main', target: 'main' });
+  t.like(pushResult, {
+    operation: 'push',
+    status: 'completed',
+    remote: 'origin',
+    refs: ['main:main'],
+  });
   t.regex(pushResult.output, /main/u);
   await t.throwsAsync(
     () => E(remote).push({ source: 'main', forceWithLease: true }),
     { message: /does not allow force push/ },
+  );
+  await t.throwsAsync(
+    () => E(remote).push({ source: 'main:refs/heads/side' }),
+    { message: /single ref, not a refspec/ },
+  );
+  await git(repoPath, ['tag', 'v1']);
+  await t.throwsAsync(
+    () => E(remote).push({ source: 'refs/tags/v1', target: 'refs/tags/v1' }),
+    { message: /does not allow tag push/ },
+  );
+  await t.throwsAsync(
+    () => E(remote).push({ source: '', target: 'refs/heads/main' }),
+    { message: /does not allow deleting refs/ },
   );
 
   const pushLimited = await E(host).provideGitRemote(
@@ -4843,6 +5136,244 @@ test('provideGitRemote rejects secret credential fields and exposes metadata', a
       audience: 'https://github.com',
     },
   });
+});
+
+test('provideGit credentials keep secrets out of formulas and inspect output', async t => {
+  const { host, config } = await prepareHost(t);
+
+  const repoPath = path.join(
+    config.statePath,
+    '..',
+    'git-remote-sealed-credential-repo',
+  );
+  await createGitFixture(repoPath);
+
+  await E(host).provideMount(repoPath, 'git-sealed-worktree');
+  await E(host).provideGit('git-sealed-worktree', 'git-sealed-cap');
+  const credential = await E(host).provideBearerCredential('example-token', {
+    audience: 'https://example.com',
+    token: 'super-secret-token',
+    label: 'example',
+  });
+
+  t.deepEqual(await E(credential).inspect(), {
+    kind: 'bearer',
+    audience: 'https://example.com',
+    label: 'example',
+    revoked: false,
+  });
+
+  const credentialId = await E(host).identify('example-token');
+  const credentialFormula = readFormulaFromDb(config.statePath, credentialId);
+  t.false(JSON.stringify(credentialFormula).includes('super-secret-token'));
+
+  const remote = await E(host).provideGitRemote(
+    {
+      gitName: 'git-sealed-cap',
+      remote: 'origin',
+      directions: ['fetch'],
+      url: 'https://example.com/repo.git',
+      credential,
+    },
+    'example-remote',
+  );
+
+  const remoteInspect = await E(remote).inspect();
+  t.like(remoteInspect, {
+    credential: {
+      kind: 'bearer',
+      audience: 'https://example.com',
+      label: 'example',
+      revoked: false,
+    },
+  });
+  t.false(JSON.stringify(remoteInspect).includes('super-secret-token'));
+
+  const remoteId = await E(host).identify('example-remote');
+  const remoteFormula = readFormulaFromDb(config.statePath, remoteId);
+  t.false(JSON.stringify(remoteFormula).includes('super-secret-token'));
+});
+
+test('GitCredentialController rotates and revokes credentials after restart', async t => {
+  const { cancelled, config } = await prepareConfig(t);
+
+  let credentialId;
+  {
+    const { host } = await makeHost(config, cancelled);
+    await E(host).provideBearerCredential('restart-token', {
+      audience: 'https://example.com',
+      token: 'initial-token',
+      label: 'restart',
+    });
+    const controller = await E(host).provideGitCredentialController(
+      'restart-token',
+      'restart-token-controller',
+    );
+    await E(controller).rotate('rotated-token');
+    credentialId = await E(host).identify('restart-token');
+  }
+
+  const { number: credentialNumber } = parseId(credentialId);
+  const credentialStatePath = path.join(
+    config.statePath,
+    'git-credentials',
+    `${credentialNumber}.json`,
+  );
+  const rotatedState = JSON.parse(
+    fs.readFileSync(credentialStatePath, 'utf-8'),
+  );
+  t.is(rotatedState.token, 'rotated-token');
+  t.false(
+    JSON.stringify(readFormulaFromDb(config.statePath, credentialId)).includes(
+      'rotated-token',
+    ),
+  );
+
+  await restart(config);
+
+  {
+    const { host } = await makeHost(config, cancelled);
+    const controller = await E(host).lookup('restart-token-controller');
+    t.like(await E(controller).inspect(), {
+      kind: 'bearer',
+      audience: 'https://example.com',
+      label: 'restart',
+      revoked: false,
+    });
+    await E(controller).revoke();
+  }
+
+  await restart(config);
+
+  {
+    const { host } = await makeHost(config, cancelled);
+    const credential = await E(host).lookup('restart-token');
+    t.like(await E(credential).inspect(), { revoked: true });
+  }
+});
+
+test('GitRemote credential revocation is checked before network transfer', async t => {
+  const { cancelled, config } = await prepareConfig(t);
+
+  {
+    const { host } = await makeHost(config, cancelled);
+    const repoPath = path.join(
+      config.statePath,
+      '..',
+      'git-remote-revoked-credential-repo',
+    );
+    await createGitFixture(repoPath);
+
+    await E(host).provideMount(repoPath, 'git-revoked-worktree');
+    await E(host).provideGit('git-revoked-worktree', 'git-revoked-cap');
+    const credential = await E(host).provideBearerCredential('revoked-token', {
+      audience: 'https://example.com',
+      token: 'revoked-secret',
+      label: 'revoked',
+    });
+    await E(host).provideGitRemote(
+      {
+        gitName: 'git-revoked-cap',
+        remote: 'origin',
+        directions: ['fetch'],
+        url: 'https://example.com/repo.git',
+        credential,
+      },
+      'revoked-remote',
+    );
+    const controller = await E(host).provideGitCredentialController(
+      credential,
+      'revoked-token-controller',
+    );
+    await E(controller).revoke();
+  }
+
+  await restart(config);
+
+  {
+    const { host } = await makeHost(config, cancelled);
+    const remote = await E(host).lookup('revoked-remote');
+    await t.throwsAsync(() => E(remote).fetch({ refspecs: ['main'] }), {
+      message: /Git credential has been revoked/u,
+    });
+  }
+});
+
+test('GitRemoteController updates policy, records audit, and revokes after restart', async t => {
+  const { cancelled, config } = await prepareConfig(t);
+  const repoPath = path.join(config.statePath, '..', 'git-remote-control-repo');
+  const barePath = path.join(
+    config.statePath,
+    '..',
+    'git-remote-control-bare.git',
+  );
+  await fs.promises.rm(barePath, { recursive: true, force: true });
+  await createGitFixture(repoPath);
+  await git(repoPath, ['init', '--bare', barePath]);
+
+  {
+    const { host } = await makeHost(config, cancelled);
+    await E(host).provideMount(repoPath, 'git-control-worktree');
+    await E(host).provideGit('git-control-worktree', 'git-control-cap');
+    const remote = await E(host).provideGitRemote(
+      {
+        gitName: 'git-control-cap',
+        remote: 'origin',
+        url: barePath,
+        directions: ['fetch', 'push'],
+        allowedProtocols: ['file'],
+      },
+      'controlled-origin',
+    );
+    const controller = await E(host).provideGitRemoteController(
+      remote,
+      'controlled-origin-controller',
+    );
+
+    await E(remote).push({ source: 'main', target: 'main' });
+    t.like((await E(controller).audit())[0], {
+      operation: 'push',
+      refs: ['main:main'],
+    });
+    await E(controller).setAllowedDirections(['fetch']);
+    await t.throwsAsync(
+      () => E(remote).push({ source: 'main', target: 'main' }),
+      { message: /does not allow push/u },
+    );
+  }
+
+  await restart(config);
+
+  {
+    const { host } = await makeHost(config, cancelled);
+    const remote = await E(host).lookup('controlled-origin');
+    const controller = await E(host).lookup('controlled-origin-controller');
+    t.like(await E(controller).inspect(), {
+      directions: ['fetch'],
+      revoked: false,
+    });
+    t.like((await E(controller).audit())[0], {
+      operation: 'push',
+      refs: ['main:main'],
+    });
+    await t.throwsAsync(
+      () => E(remote).push({ source: 'main', target: 'main' }),
+      { message: /does not allow push/u },
+    );
+    await E(controller).revoke();
+  }
+
+  await restart(config);
+
+  {
+    const { host } = await makeHost(config, cancelled);
+    const remote = await E(host).lookup('controlled-origin');
+    const controller = await E(host).lookup('controlled-origin-controller');
+    t.like(await E(controller).inspect(), { revoked: true });
+    await t.throwsAsync(() => E(remote).fetch({ refspecs: ['main'] }), {
+      message: /Git remote has been revoked/u,
+    });
+  }
 });
 
 // symlink confinement tests

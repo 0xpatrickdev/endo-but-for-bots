@@ -320,8 +320,20 @@ export const HostInterface = M.interface('EndoHost', {
     .optional(M.splitRecord({}, { readOnly: M.boolean() }))
     .returns(M.promise()),
   // Derive a local Git capability from a daemon-minted Mount
-  provideGit: M.call(NameOrPathShape, NameOrPathShape).returns(M.promise()),
+  provideGit: M.call(M.any(), NameOrPathShape).returns(M.promise()),
   provideGitRemote: M.call(M.record(), NameOrPathShape).returns(M.promise()),
+  provideBearerCredential: M.call(NameOrPathShape, M.record()).returns(
+    M.promise(),
+  ),
+  provideBasicCredential: M.call(NameOrPathShape, M.record()).returns(
+    M.promise(),
+  ),
+  provideGitRemoteController: M.call(M.any(), NameOrPathShape).returns(
+    M.promise(),
+  ),
+  provideGitCredentialController: M.call(M.any(), NameOrPathShape).returns(
+    M.promise(),
+  ),
   // Create a daemon-managed scratch mount
   provideScratchMount: M.call(NameOrPathShape)
     .optional(M.splitRecord({}, { readOnly: M.boolean() }))
@@ -530,7 +542,6 @@ export const MountInterface = M.interface('EndoMount', {
   // Mutation
   remove: M.call(PathArgShape).returns(M.promise()),
   move: M.call(PathArgShape, PathArgShape).returns(M.promise()),
-  makeDirectory: M.call(PathArgShape).returns(M.promise()),
   // Attenuation
   readOnly: M.call().returns(M.remotable()),
   // Snapshot
@@ -544,7 +555,7 @@ export const MountFileInterface = M.interface('EndoMountFile', {
   streamBase64: M.call().returns(M.remotable()),
   json: M.call().returns(M.promise()),
   writeText: M.call(M.string()).returns(M.promise()),
-  appendText: M.call(M.string()).returns(M.promise()),
+  append: M.call(M.string()).returns(M.promise()),
   writeBytes: M.call(M.remotable()).returns(M.promise()),
   stat: M.call().returns(M.promise()),
   snapshot: M.call().returns(M.promise()),
@@ -553,12 +564,10 @@ export const MountFileInterface = M.interface('EndoMountFile', {
 });
 
 export const MountEntryInterface = M.interface('EndoMountEntry', {
-  path: M.call().returns(PathSegmentsShape),
+  segments: M.call().returns(PathSegmentsShape),
   displayPath: M.call().returns(M.string()),
+  exists: M.call().returns(M.promise()),
   stat: M.call().returns(M.promise()),
-  lookup: M.call().returns(M.promise()),
-  openDirectory: M.call().returns(M.promise()),
-  openFile: M.call().returns(M.promise()),
   child: M.call(M.string()).returns(MountEntryShape),
   help: M.call().returns(M.string()),
 });
@@ -576,6 +585,7 @@ const GitRefShape = M.splitRecord(
 export const GitInterface = M.interface('EndoGit', {
   worktree: M.call().returns(M.remotable()),
   status: M.call().returns(M.promise()),
+  statusText: M.call().returns(M.promise()),
   diff: M.call()
     .optional(
       M.splitRecord(
@@ -668,6 +678,7 @@ export const GitInterface = M.interface('EndoGit', {
     .optional(M.or(M.string(), GitRefShape))
     .returns(M.promise()),
   tree: M.call(M.or(M.string(), GitRefShape)).returns(M.promise()),
+  readOnly: M.call().returns(M.promise()),
   help: M.call().returns(M.string()),
 });
 
@@ -701,6 +712,39 @@ export const GitRemoteInterface = M.interface('EndoGitRemote', {
     .returns(M.promise()),
   help: M.call().returns(M.string()),
 });
+
+export const GitCredentialInterface = M.interface('EndoGitCredential', {
+  audience: M.call().returns(M.string()),
+  inspect: M.call().returns(M.promise()),
+  help: M.call().returns(M.string()),
+});
+
+export const GitRemoteControllerInterface = M.interface(
+  'EndoGitRemoteController',
+  {
+    inspect: M.call().returns(M.promise()),
+    setAllowedDirections: M.call(
+      M.arrayOf(M.or('fetch', 'pull', 'push')),
+    ).returns(M.promise()),
+    setAllowedRefs: M.call(M.arrayOf(M.string())).returns(M.promise()),
+    setAllowForcePush: M.call(M.boolean()).returns(M.promise()),
+    setAllowTags: M.call(M.boolean()).returns(M.promise()),
+    setAllowDelete: M.call(M.boolean()).returns(M.promise()),
+    revoke: M.call().returns(M.promise()),
+    audit: M.call().returns(M.promise()),
+    help: M.call().returns(M.string()),
+  },
+);
+
+export const GitCredentialControllerInterface = M.interface(
+  'EndoGitCredentialController',
+  {
+    inspect: M.call().returns(M.promise()),
+    rotate: M.call(M.any()).returns(M.promise()),
+    revoke: M.call().returns(M.promise()),
+    help: M.call().returns(M.string()),
+  },
+);
 
 export const ReadableTreeInterface = M.interface('EndoReadableTree', {
   help: M.call().optional(M.string()).returns(M.string()),

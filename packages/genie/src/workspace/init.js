@@ -45,7 +45,7 @@ import harden from '@endo/harden';
  * @typedef {ERef<{
  *   has(...segments: string[]): Promise<boolean>;
  *   writeText(path: string | string[], content: string): Promise<void>;
- *   makeDirectory(path: string | string[]): Promise<void>;
+ *   createDirectory(path: string | string[]): Promise<void>;
  * }>} WorkspaceMountCap
  */
 
@@ -182,7 +182,7 @@ harden(isWorkspace);
  *
  * The Mount's `writeText` automatically creates parent directories
  * (see `packages/daemon/src/mount.js`'s `writeText` → `makePath`),
- * so we only need an explicit `makeDirectory` call when the template
+ * so we only need an explicit `createDirectory` call when the template
  * carries an empty subdirectory.
  *
  * @param {string} src - Source directory (template) on the host fs.
@@ -210,9 +210,9 @@ const copyTreeIntoMount = async (src, mount, destSegments) => {
     const childSegments = harden([...destSegments, entry.name]);
 
     if (entry.isDirectory()) {
-      // Idempotent: makeDirectory bottoms out on `makePath`, which is
+      // Idempotent: createDirectory bottoms out on `makePath`, which is
       // a no-op when the directory already exists.
-      await E(mount).makeDirectory(childSegments);
+      await E(mount).createDirectory(childSegments);
       await copyTreeIntoMount(srcPath, mount, [...childSegments]);
     } else if (!(await E(mount).has(...childSegments))) {
       // Destination missing — read the seed bytes from the host fs

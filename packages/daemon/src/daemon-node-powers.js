@@ -334,6 +334,12 @@ export const makeFilePowers = ({ fs, path: fspath }) => {
   const realPath = async path => fs.promises.realpath(path);
 
   /** @param {string} path */
+  const pathIdentity = async path => {
+    const stat = await fs.promises.stat(path);
+    return `${stat.dev}:${stat.ino}`;
+  };
+
+  /** @param {string} path */
   const isDirectory = async path => {
     try {
       const stat = await fs.promises.stat(path);
@@ -345,14 +351,14 @@ export const makeFilePowers = ({ fs, path: fspath }) => {
 
   /** @param {string} path */
   const statPath = async path => {
-    const stat = await fs.promises.stat(path);
-    const type = /** @type {'directory' | 'file'} */ (
-      stat.isDirectory() ? 'directory' : 'file'
+    const stat = await fs.promises.lstat(path);
+    const kind = /** @type {'directory' | 'file' | 'symlink'} */ (
+      stat.isDirectory() ? 'directory' : stat.isSymbolicLink() ? 'symlink' : 'file'
     );
     return harden({
-      type,
-      size: stat.size,
-      mtimeMs: stat.mtimeMs,
+      kind,
+      sizeBytes: stat.size,
+      modifiedMs: stat.mtimeMs,
     });
   };
 
@@ -383,6 +389,7 @@ export const makeFilePowers = ({ fs, path: fspath }) => {
     removeDirectory,
     renamePath,
     realPath,
+    pathIdentity,
     statPath,
     isDirectory,
     exists,
@@ -392,6 +399,8 @@ export const makeFilePowers = ({ fs, path: fspath }) => {
 const gitNullDevice = process.platform === 'win32' ? 'NUL' : '/dev/null';
 const GIT_TIMEOUT_MS = 60_000;
 const GIT_MAX_BUFFER = 1024 * 1024;
+const MIN_GIT_MAJOR = 2;
+const MIN_GIT_MINOR = 30;
 const GIT_BASE_ARGS = harden([
   '--no-pager',
   '--literal-pathspecs',
@@ -413,6 +422,35 @@ const GIT_BASE_ARGS = harden([
   'tag.gpgSign=false',
 ]);
 const EXECUTABLE_REPO_CONFIG = /^(filter\..*\.(clean|smudge|process)|merge\..*\.driver)$/u;
+
+/**
+ * @param {string} value
+ */
+const shellQuote = value => `'${value.replaceAll("'", "'\\''")}'`;
+harden(shellQuote);
+
+const GIT_CREDENTIAL_HELPER_SOURCE = `\
+const fs = require('fs');
+
+const secretPath = process.argv[2];
+const operation = process.argv[3];
+if (operation !== 'get') {
+  process.exit(0);
+}
+const state = JSON.parse(fs.readFileSync(secretPath, 'utf8'));
+if (state.revoked) {
+  process.exit(1);
+}
+if (state.kind === 'bearer') {
+  process.stdout.write('username=' + (state.username || 'x-access-token') + '\\n');
+  process.stdout.write('password=' + state.token + '\\n\\n');
+} else if (state.kind === 'basic') {
+  process.stdout.write('username=' + state.username + '\\n');
+  process.stdout.write('password=' + state.password + '\\n\\n');
+} else {
+  process.exit(1);
+}
+`;
 
 /**
  * @param {object} opts
@@ -497,31 +535,173 @@ export const makeGitPowers = ({ popen, filePowers }) => {
       );
     });
 
-  /**
-   * @param {string} repoRoot
-   * @param {string[]} args
-   */
-  const runGit = async (repoRoot, args) =>
-    execFileText('git', [...GIT_BASE_ARGS, ...args], {
-      cwd: repoRoot,
-      env: makeGitEnv(repoRoot),
-      timeout: GIT_TIMEOUT_MS,
-      maxBuffer: GIT_MAX_BUFFER,
-    });
+  /** @type {Promise<string> | undefined} */
+  let gitVersionPromise;
+
+  const verifyGitVersion = async () => {
+    if (gitVersionPromise === undefined) {
+      gitVersionPromise = execFileText('git', ['--version'], {
+        env: makeGitEnv(process.cwd()),
+        timeout: GIT_TIMEOUT_MS,
+        maxBuffer: GIT_MAX_BUFFER,
+      }).then(({ stdout }) => {
+        const versionText = stdout.trim();
+        const match = /^git version (\d+)\.(\d+)(?:\.(\d+))?/u.exec(
+          versionText,
+        );
+        if (match === null) {
+          throw new Error(`Unable to parse native git version: ${versionText}`);
+        }
+        const major = Number(match[1]);
+        const minor = Number(match[2]);
+        if (
+          major < MIN_GIT_MAJOR ||
+          (major === MIN_GIT_MAJOR && minor < MIN_GIT_MINOR)
+        ) {
+          throw new Error(
+            `Native git >= ${MIN_GIT_MAJOR}.${MIN_GIT_MINOR} is required, got ${versionText}`,
+          );
+        }
+        return versionText;
+      });
+    }
+    return gitVersionPromise;
+  };
 
   /**
    * @param {string} repoRoot
    * @param {string[]} args
    */
-  const runGitBytes = async (repoRoot, args) =>
-    execFileBytes('git', [...GIT_BASE_ARGS, ...args], {
+  const runGit = async (repoRoot, args) => {
+    await verifyGitVersion();
+    return execFileText('git', [...GIT_BASE_ARGS, ...args], {
       cwd: repoRoot,
       env: makeGitEnv(repoRoot),
       timeout: GIT_TIMEOUT_MS,
       maxBuffer: GIT_MAX_BUFFER,
     });
+  };
+
+  /**
+   * @param {string} repoRoot
+   */
+  const ensureCredentialHelper = async repoRoot => {
+    const helperDir = filePowers.joinPath(repoRoot, '.git-endo-home');
+    await filePowers.makePath(helperDir);
+    const helperPath = filePowers.joinPath(helperDir, 'git-credential-helper.cjs');
+    await filePowers.writeFileText(helperPath, GIT_CREDENTIAL_HELPER_SOURCE);
+    return helperPath;
+  };
+
+  /**
+   * @param {string} repoRoot
+   * @param {string[]} args
+   * @param {import('./types.js').GitCredentialUse} credential
+   */
+  const runGitCredentialed = async (repoRoot, args, credential) => {
+    await verifyGitVersion();
+    const helperPath = await ensureCredentialHelper(repoRoot);
+    const helperCommand = `!${shellQuote(process.execPath)} ${shellQuote(
+      helperPath,
+    )} ${shellQuote(credential.secretPath)}`;
+    return execFileText(
+      'git',
+      [
+        ...GIT_BASE_ARGS,
+        '-c',
+        `credential.helper=${helperCommand}`,
+        ...args,
+      ],
+      {
+        cwd: repoRoot,
+        env: makeGitEnv(repoRoot),
+        timeout: GIT_TIMEOUT_MS,
+        maxBuffer: GIT_MAX_BUFFER,
+      },
+    );
+  };
+
+  /**
+   * @param {string} repoRoot
+   * @param {string[]} args
+   */
+  const runGitBytes = async (repoRoot, args) => {
+    await verifyGitVersion();
+    return execFileBytes('git', [...GIT_BASE_ARGS, ...args], {
+      cwd: repoRoot,
+      env: makeGitEnv(repoRoot),
+      timeout: GIT_TIMEOUT_MS,
+      maxBuffer: GIT_MAX_BUFFER,
+    });
+  };
+
+  /**
+   * @param {string} repoRoot
+   * @param {string[]} args
+   * @returns {Promise<Reader<Uint8Array>>}
+   */
+  const runGitReader = async (repoRoot, args) => {
+    await verifyGitVersion();
+    const child = popen.spawn('git', [...GIT_BASE_ARGS, ...args], {
+      cwd: repoRoot,
+      env: makeGitEnv(repoRoot),
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    assert(child.stdout);
+    assert(child.stderr);
+
+    /** @type {Buffer[]} */
+    const stderrChunks = [];
+    child.stderr.on('data', chunk => {
+      stderrChunks.push(/** @type {Buffer} */ (chunk));
+    });
+
+    /** @type {Promise<void>} */
+    const closed = new Promise((resolve, reject) => {
+      child.on('error', reject);
+      child.on('close', code => {
+        const stderr = Buffer.concat(stderrChunks).toString('utf-8');
+        if (code === 0) {
+          resolve();
+        } else {
+          const error = Error(
+            `git ${args[0]} failed (exit ${code ?? 'unknown'}):\n${stderr.trim()}`,
+          );
+          Object.assign(error, { stderr, code });
+          reject(error);
+        }
+      });
+    });
+
+    const stdoutReader = makeNodeReader(child.stdout);
+    /** @type {Reader<Uint8Array>} */
+    const reader = harden({
+      async next() {
+        const result = await stdoutReader.next();
+        if (result.done) {
+          await closed;
+        }
+        return result;
+      },
+      async return() {
+        child.kill();
+        await stdoutReader.return(undefined);
+        return harden({ done: true, value: undefined });
+      },
+      async throw(error) {
+        child.kill();
+        await stdoutReader.throw(error);
+        throw error;
+      },
+      [Symbol.asyncIterator]() {
+        return reader;
+      },
+    });
+    return reader;
+  };
 
   const getRepositoryRoot = async configuredRoot => {
+    await verifyGitVersion();
     const resolvedRoot = await filePowers.realPath(configuredRoot);
     const { stdout } = await execFileText(
       'git',
@@ -542,6 +722,52 @@ export const makeGitPowers = ({ popen, filePowers }) => {
     return actualRoot;
   };
 
+  const absolutizeGitPath = (repoRoot, candidatePath) => {
+    if (
+      candidatePath.startsWith('/') ||
+      /^[a-zA-Z]:[\\/]/u.test(candidatePath)
+    ) {
+      return candidatePath;
+    }
+    return filePowers.joinPath(repoRoot, candidatePath);
+  };
+
+  const getRepositoryIdentity = async repoRoot => {
+    await verifyGitVersion();
+    const { stdout: gitDirText } = await execFileText(
+      'git',
+      [...GIT_BASE_ARGS, 'rev-parse', '--absolute-git-dir'],
+      {
+        cwd: repoRoot,
+        env: makeGitEnv(repoRoot),
+        timeout: GIT_TIMEOUT_MS,
+        maxBuffer: GIT_MAX_BUFFER,
+      },
+    );
+    const { stdout: commonDirText } = await execFileText(
+      'git',
+      [...GIT_BASE_ARGS, 'rev-parse', '--git-common-dir'],
+      {
+        cwd: repoRoot,
+        env: makeGitEnv(repoRoot),
+        timeout: GIT_TIMEOUT_MS,
+        maxBuffer: GIT_MAX_BUFFER,
+      },
+    );
+    const gitDir = await filePowers.realPath(
+      absolutizeGitPath(repoRoot, gitDirText.trim()),
+    );
+    const commonDir = await filePowers.realPath(
+      absolutizeGitPath(repoRoot, commonDirText.trim()),
+    );
+    return harden({
+      gitDir,
+      commonDir,
+      gitDirIdentity: await filePowers.pathIdentity(gitDir),
+      commonDirIdentity: await filePowers.pathIdentity(commonDir),
+    });
+  };
+
   const assertNoExecutableRepoConfig = async repoRoot => {
     const { stdout } = await runGit(repoRoot, [
       'config',
@@ -560,13 +786,17 @@ export const makeGitPowers = ({ popen, filePowers }) => {
   };
 
   const checkRefFormat = async (repoRoot, branchName) => {
+    await verifyGitVersion();
     await runGit(repoRoot, ['check-ref-format', '--branch', branchName]);
   };
 
   return harden({
     runGit,
     runGitBytes,
+    runGitReader,
+    runGitCredentialed,
     getRepositoryRoot,
+    getRepositoryIdentity,
     assertNoExecutableRepoConfig,
     checkRefFormat,
   });

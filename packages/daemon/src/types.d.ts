@@ -237,8 +237,29 @@ type GitRemoteFormula = {
   directions: Array<'fetch' | 'pull' | 'push'>;
   allowedRefs?: string[];
   allowForcePush?: boolean;
+  allowTags?: boolean;
+  allowDelete?: boolean;
   allowedProtocols?: string[];
   credential?: GitRemoteCredentialPolicy;
+  credentialId?: FormulaIdentifier;
+};
+
+type GitCredentialFormula = {
+  type: 'git-credential';
+  kind: 'bearer' | 'basic';
+  audience: string;
+  label?: string;
+  username?: string;
+};
+
+type GitRemoteControllerFormula = {
+  type: 'git-remote-controller';
+  remote: FormulaIdentifier;
+};
+
+type GitCredentialControllerFormula = {
+  type: 'git-credential-controller';
+  credential: FormulaIdentifier;
 };
 
 export type MountDeferredTaskParams = {
@@ -255,6 +276,18 @@ export type GitDeferredTaskParams = {
 
 export type GitRemoteDeferredTaskParams = {
   gitRemoteId: FormulaIdentifier;
+};
+
+export type GitCredentialDeferredTaskParams = {
+  gitCredentialId: FormulaIdentifier;
+};
+
+export type GitRemoteControllerDeferredTaskParams = {
+  gitRemoteControllerId: FormulaIdentifier;
+};
+
+export type GitCredentialControllerDeferredTaskParams = {
+  gitCredentialControllerId: FormulaIdentifier;
 };
 
 type LookupFormula = {
@@ -438,6 +471,9 @@ export type Formula =
   | ScratchMountFormula
   | GitFormula
   | GitRemoteFormula
+  | GitCredentialFormula
+  | GitRemoteControllerFormula
+  | GitCredentialControllerFormula
   | LookupFormula
   | MakeUnconfinedFormula
   | MakeArchiveFormula
@@ -869,18 +905,16 @@ export interface EndoGitTree extends EndoReadableTree {
 }
 
 export type EndoMountStat = {
-  type: 'file' | 'directory';
-  size: number;
-  mtimeMs: number;
+  kind: 'file' | 'directory' | 'symlink';
+  sizeBytes: number;
+  modifiedMs: number;
 };
 
 export interface EndoMountEntry {
-  path(): string[];
+  segments(): string[];
   displayPath(): string;
+  exists(): Promise<boolean>;
   stat(): Promise<EndoMountStat | undefined>;
-  lookup(): Promise<EndoMount | EndoMountFile>;
-  openDirectory(): Promise<EndoMount>;
-  openFile(): Promise<EndoMountFile>;
   child(name: string): EndoMountEntry;
 }
 
@@ -889,7 +923,7 @@ export interface EndoMountFile {
   streamBase64(): FarRef<Reader<string>>;
   json(): Promise<unknown>;
   writeText(content: string): Promise<void>;
-  appendText(content: string): Promise<void>;
+  append(content: string): Promise<void>;
   writeBytes(readableRef: FarRef<AsyncIterator<Uint8Array>>): Promise<void>;
   stat(): Promise<EndoMountStat>;
   snapshot(): Promise<FarRef<EndoReadable>>;
@@ -925,7 +959,6 @@ export interface EndoMount {
     from: string | string[] | EndoMountEntry,
     to: string | string[] | EndoMountEntry,
   ): Promise<void>;
-  makeDirectory(path: string | string[] | EndoMountEntry): Promise<void>;
   readOnly(): EndoMount;
   snapshot(): Promise<unknown>;
 }
@@ -941,9 +974,36 @@ export type GitCommit = {
   subject: string;
 };
 
+export type GitIndexStatus =
+  | 'clean'
+  | 'added'
+  | 'modified'
+  | 'deleted'
+  | 'renamed'
+  | 'copied'
+  | 'conflicted';
+
+export type GitWorktreeStatus =
+  | 'clean'
+  | 'modified'
+  | 'deleted'
+  | 'untracked'
+  | 'ignored'
+  | 'conflicted';
+
+export type GitStatusEntry = {
+  entry: EndoMountEntry;
+  path: string;
+  index: GitIndexStatus;
+  worktree: GitWorktreeStatus;
+  renamedFrom?: string;
+  node?: EndoMount | EndoMountFile;
+};
+
 export interface EndoGit {
   worktree(): EndoMount;
-  status(): Promise<string>;
+  status(): Promise<GitStatusEntry[]>;
+  statusText(): Promise<string>;
   diff(options?: {
     staged?: boolean;
     base?: string | GitRef;
@@ -995,6 +1055,7 @@ export interface EndoGit {
   stashPop(stash?: string | GitRef): Promise<string>;
   stashDrop(stash?: string | GitRef): Promise<string>;
   tree(ref: string | GitRef): Promise<EndoGitTree>;
+  readOnly(): Promise<EndoGit>;
 }
 
 export type GitRemoteCredentialPolicy = {
@@ -1003,14 +1064,38 @@ export type GitRemoteCredentialPolicy = {
   audience?: string;
 };
 
+export type GitCredentialMetadata = {
+  kind: 'bearer' | 'basic';
+  audience: string;
+  label?: string;
+  username?: string;
+  revoked: boolean;
+};
+
+export type GitCredentialUse = GitCredentialMetadata & {
+  secretPath: string;
+};
+
 export type GitRemotePolicy = {
   remote: string;
   url?: string;
   directions: Array<'fetch' | 'pull' | 'push'>;
   allowedRefs?: string[];
   allowForcePush?: boolean;
+  allowTags?: boolean;
+  allowDelete?: boolean;
   allowedProtocols?: string[];
   credential?: GitRemoteCredentialPolicy;
+  credentialId?: FormulaIdentifier;
+};
+
+export type GitRemoteOperationResult = {
+  operation: 'fetch' | 'pull' | 'push';
+  status: 'completed';
+  remote: string;
+  refs: string[];
+  diagnostics: { output: string };
+  output: string;
 };
 
 export interface EndoGitRemote {
@@ -1018,14 +1103,46 @@ export interface EndoGitRemote {
   fetch(options?: {
     refspecs?: string[];
     prune?: boolean;
-  }): Promise<{ output: string }>;
-  pull(options?: { branch?: string }): Promise<{ output: string }>;
+  }): Promise<GitRemoteOperationResult>;
+  pull(options?: { branch?: string }): Promise<GitRemoteOperationResult>;
   push(options?: {
     source?: string;
     target?: string;
     forceWithLease?: boolean;
-  }): Promise<{ output: string }>;
+  }): Promise<GitRemoteOperationResult>;
 }
+
+export interface EndoGitCredential {
+  audience(): string;
+  inspect(): Promise<GitCredentialMetadata>;
+}
+
+export interface EndoGitRemoteController {
+  inspect(): Promise<GitRemotePolicy & { revoked: boolean }>;
+  setAllowedDirections(directions: Array<'fetch' | 'pull' | 'push'>): Promise<void>;
+  setAllowedRefs(refs: string[]): Promise<void>;
+  setAllowForcePush(flag: boolean): Promise<void>;
+  setAllowTags(flag: boolean): Promise<void>;
+  setAllowDelete(flag: boolean): Promise<void>;
+  revoke(): Promise<void>;
+  audit(): Promise<GitRemoteAuditRecord[]>;
+}
+
+export interface EndoGitCredentialController {
+  inspect(): Promise<GitCredentialMetadata>;
+  rotate(secret: string | { username?: string; password?: string }): Promise<void>;
+  revoke(): Promise<void>;
+}
+
+export type GitRemoteAuditRecord = {
+  timestamp: string;
+  operation: 'fetch' | 'pull' | 'push';
+  status: 'completed';
+  remote: string;
+  refs: string[];
+  credentialLabel?: string;
+};
+
 export interface EndoWorker {}
 
 export type MakeHostOrGuestOptions = {
@@ -1155,20 +1272,46 @@ export interface EndoHost extends EndoAgent {
     opts?: { readOnly?: boolean },
   ): Promise<EndoMount>;
   provideGit(
-    mountName: string | string[],
+    mount: string | string[] | EndoMount,
     petName: string | string[],
   ): Promise<EndoGit>;
   provideGitRemote(
     options: {
-      gitName: string | string[];
+      git?: EndoGit;
+      gitName?: string | string[];
       remote?: string;
       url?: string;
       directions?: Array<'fetch' | 'pull' | 'push'>;
       allowedRefs?: string[];
+      allowedProtocols?: string[];
       allowForcePush?: boolean;
+      allowTags?: boolean;
+      allowDelete?: boolean;
+      credential?: GitRemoteCredentialPolicy | EndoGitCredential;
     },
     petName: string | string[],
   ): Promise<EndoGitRemote>;
+  provideBearerCredential(
+    petName: string | string[],
+    options: { audience: string; token: string; label?: string },
+  ): Promise<EndoGitCredential>;
+  provideBasicCredential(
+    petName: string | string[],
+    options: {
+      audience: string;
+      username: string;
+      password: string;
+      label?: string;
+    },
+  ): Promise<EndoGitCredential>;
+  provideGitRemoteController(
+    remote: string | string[] | EndoGitRemote,
+    petName: string | string[],
+  ): Promise<EndoGitRemoteController>;
+  provideGitCredentialController(
+    credential: string | string[] | EndoGitCredential,
+    petName: string | string[],
+  ): Promise<EndoGitCredentialController>;
   provideScratchMount(petName: string | string[]): Promise<EndoMount>;
   provideHostPath(cap: unknown): Promise<string>;
   provideGuest(
@@ -1445,9 +1588,14 @@ export type FilePowers = {
   removeDirectory: (path: string) => Promise<void>;
   renamePath: (source: string, target: string) => Promise<void>;
   realPath: (path: string) => Promise<string>;
+  pathIdentity: (path: string) => Promise<string>;
   statPath: (
     path: string,
-  ) => Promise<{ type: 'file' | 'directory'; size: number; mtimeMs: number }>;
+  ) => Promise<{
+    kind: 'file' | 'directory' | 'symlink';
+    sizeBytes: number;
+    modifiedMs: number;
+  }>;
   isDirectory: (path: string) => Promise<boolean>;
   exists: (path: string) => Promise<boolean>;
 };
@@ -1461,7 +1609,24 @@ export type GitPowers = {
     repoRoot: string,
     args: string[],
   ) => Promise<{ stdout: Uint8Array; stderr: string }>;
+  runGitReader: (
+    repoRoot: string,
+    args: string[],
+  ) => Promise<Reader<Uint8Array>>;
+  runGitCredentialed: (
+    repoRoot: string,
+    args: string[],
+    credential: GitCredentialUse,
+  ) => Promise<{ stdout: string; stderr: string }>;
   getRepositoryRoot: (configuredRoot: string) => Promise<string>;
+  getRepositoryIdentity: (
+    repoRoot: string,
+  ) => Promise<{
+    gitDir: string;
+    commonDir: string;
+    gitDirIdentity: string;
+    commonDirIdentity: string;
+  }>;
   assertNoExecutableRepoConfig: (repoRoot: string) => Promise<void>;
   checkRefFormat: (repoRoot: string, branchName: string) => Promise<void>;
 };
@@ -1697,7 +1862,10 @@ export type FormulaValueTypes = {
   directory: EndoDirectory;
   mount: EndoMount;
   git: EndoGit;
+  'git-credential': EndoGitCredential;
+  'git-credential-controller': EndoGitCredentialController;
   'git-remote': EndoGitRemote;
+  'git-remote-controller': EndoGitRemoteController;
   network: EndoNetwork;
   peer: EndoGateway;
   'pet-store': PetStore;
@@ -1908,6 +2076,27 @@ export interface DaemonCore {
     policy: Omit<GitRemotePolicy, 'remote'>,
     deferredTasks: DeferredTasks<GitRemoteDeferredTaskParams>,
   ) => FormulateResult<EndoGitRemote>;
+
+  formulateGitCredential: (
+    kind: 'bearer' | 'basic',
+    metadata: {
+      audience: string;
+      label?: string;
+      username?: string;
+    },
+    secret: unknown,
+    deferredTasks: DeferredTasks<GitCredentialDeferredTaskParams>,
+  ) => FormulateResult<EndoGitCredential>;
+
+  formulateGitRemoteController: (
+    remoteId: FormulaIdentifier,
+    deferredTasks: DeferredTasks<GitRemoteControllerDeferredTaskParams>,
+  ) => FormulateResult<EndoGitRemoteController>;
+
+  formulateGitCredentialController: (
+    credentialId: FormulaIdentifier,
+    deferredTasks: DeferredTasks<GitCredentialControllerDeferredTaskParams>,
+  ) => FormulateResult<EndoGitCredentialController>;
 
   formulateScratchMount: (
     readOnly: boolean,
