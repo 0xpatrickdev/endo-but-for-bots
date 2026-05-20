@@ -358,11 +358,13 @@ The third condition preserves the current TOCTOU-resistant confinement check alr
 
 `snapshot()` should become the canonical bridge from live mutable storage to immutable snapshot storage:
 
-```text
-EndoMount.snapshot()
-    -> recursively check in the mount read surface
-    -> persist readable-blob / readable-tree formulas
-    -> return SnapshotTree
+```mermaid
+flowchart TD
+  call["EndoMount.snapshot()"]
+  walk["recursively check in the mount read surface"]
+  persist["persist readable-blob / readable-tree formulas"]
+  result["return SnapshotTree"]
+  call --> walk --> persist --> result
 ```
 
 Implementation should reuse the existing platform checkin machinery rather than reimplementing traversal:
