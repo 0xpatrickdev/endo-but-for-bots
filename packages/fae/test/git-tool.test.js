@@ -11,7 +11,7 @@ import { promisify } from 'util';
 
 import test from 'ava';
 
-import { makeGitTool } from '../src/tool-makers.js';
+import { makeDaemonGitTool, makeGitTool } from '../src/tool-makers.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -128,5 +128,45 @@ test.serial('git tool refuses executable repo-local filters', async t => {
   await t.throwsAsync(
     () => tool.execute({ operation: 'add', paths: ['README.md'] }),
     { message: /repository config can execute commands/u },
+  );
+});
+
+test('daemon git tool converts path strings to mount entries', async t => {
+  /** @type {Array<{ method: string, paths?: string[][] }>} */
+  const calls = [];
+  const worktree = harden({
+    entry(segments) {
+      const frozenSegments = harden([...segments]);
+      return harden({
+        segments: async () => frozenSegments,
+      });
+    },
+  });
+  const gitCap = harden({
+    worktree: async () => worktree,
+    statusText: async () => '## main\n',
+    add: async entries => {
+      calls.push({
+        method: 'add',
+        paths: await Promise.all(
+          entries.map(entry => entry.segments()),
+        ),
+      });
+      return '(no output)';
+    },
+  });
+  const tool = makeDaemonGitTool(gitCap);
+
+  t.is(await tool.execute({ operation: 'status' }), '## main\n');
+  t.is(
+    await tool.execute({ operation: 'add', paths: ['src/main.js'] }),
+    '(no output)',
+  );
+  t.deepEqual(calls, [
+    { method: 'add', paths: [['src', 'main.js']] },
+  ]);
+  await t.throwsAsync(
+    () => tool.execute({ operation: 'add', paths: ['../escape.js'] }),
+    { message: /Invalid repository path/u },
   );
 });

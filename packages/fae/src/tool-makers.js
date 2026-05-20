@@ -1063,6 +1063,298 @@ export const makeGitTool = configuredRoot => {
 harden(makeGitTool);
 
 /**
+ * LLM-facing git adapter backed by daemon Git capabilities. It keeps
+ * the existing Fae git tool's string-path schema at the tool boundary,
+ * but immediately converts path strings into EndoMountEntry values and
+ * delegates to the daemon `Git` cap.
+ *
+ * @param {import('@endo/eventual-send').ERef<object>} git
+ * @returns {FaeTool}
+ */
+export const makeDaemonGitTool = git => {
+  /** @type {ToolSchema} */
+  const toolSchema = makeGitTool('/').schema();
+
+  /** @type {Promise<import('@endo/eventual-send').ERef<object>> | undefined} */
+  let worktreePromise;
+  const getWorktree = () => {
+    if (worktreePromise === undefined) {
+      worktreePromise = E(git).worktree();
+    }
+    return worktreePromise;
+  };
+
+  /**
+   * @param {unknown} candidate
+   * @param {string} fieldName
+   * @returns {string[]}
+   */
+  const repoPathSegments = (candidate, fieldName) => {
+    const relativePath = requireNonEmptyString(candidate, fieldName);
+    if (relativePath.startsWith('/') || relativePath.includes('\0')) {
+      throw new Error(`${fieldName} must contain repository-relative paths`);
+    }
+    if (relativePath === '.') {
+      return harden([]);
+    }
+    const segments = relativePath.split('/');
+    for (const segment of segments) {
+      if (
+        segment === '' ||
+        segment === '.' ||
+        segment === '..' ||
+        segment.includes('\\')
+      ) {
+        throw new Error(`Invalid repository path: ${relativePath}`);
+      }
+    }
+    return harden(segments);
+  };
+
+  /**
+   * @param {unknown} candidates
+   * @param {string} fieldName
+   */
+  const entriesFromPaths = async (candidates, fieldName) => {
+    if (!Array.isArray(candidates) || candidates.length === 0) {
+      throw new Error(`${fieldName} must be a non-empty array`);
+    }
+    const worktree = await getWorktree();
+    return harden(
+      await Promise.all(
+        candidates.map(candidate =>
+          E(worktree).entry(repoPathSegments(candidate, fieldName)),
+        ),
+      ),
+    );
+  };
+
+  /**
+   * @param {unknown} value
+   */
+  const formatResult = value =>
+    value === undefined
+      ? 'undefined'
+      : typeof value === 'string'
+        ? value
+        : JSON.stringify(value, undefined, 2);
+
+  return harden({
+    schema() {
+      return toolSchema;
+    },
+    async execute(args) {
+      const { operation } = /** @type {{ operation?: unknown }} */ (args);
+      switch (operation) {
+        case 'status':
+          return E(git).statusText();
+        case 'diff': {
+          const {
+            staged = false,
+            from,
+            to,
+            paths,
+          } = /** @type {{ staged?: boolean, from?: unknown, to?: unknown, paths?: unknown }} */ (
+            args
+          );
+          const options = {
+            staged,
+            ...(from !== undefined && { base: requireRevision(from, 'from') }),
+            ...(to !== undefined && { head: requireRevision(to, 'to') }),
+            ...(paths !== undefined && {
+              entries: await entriesFromPaths(paths, 'paths'),
+            }),
+          };
+          return E(git).diff(harden(options));
+        }
+        case 'log': {
+          const { maxCount = 20, ref } =
+            /** @type {{ maxCount?: number, ref?: unknown }} */ (args);
+          if (!Number.isSafeInteger(maxCount) || maxCount <= 0) {
+            throw new Error('maxCount must be a positive safe integer');
+          }
+          return E(git).log(
+            harden({
+              maxCount,
+              ...(ref !== undefined && { ref: requireRevision(ref, 'ref') }),
+            }),
+          );
+        }
+        case 'show': {
+          const { ref = 'HEAD' } =
+            /** @type {{ ref?: unknown }} */ (args);
+          return E(git).show(requireRevision(ref, 'ref'));
+        }
+        case 'revParse': {
+          const { ref } = /** @type {{ ref?: unknown }} */ (args);
+          return formatResult(
+            await E(git).revParse(requireRevision(ref, 'ref')),
+          );
+        }
+        case 'add': {
+          const { paths } = /** @type {{ paths?: unknown }} */ (args);
+          return E(git).add(await entriesFromPaths(paths, 'paths'));
+        }
+        case 'restore': {
+          const { paths, staged = false } =
+            /** @type {{ paths?: unknown, staged?: boolean }} */ (args);
+          return E(git).restore(
+            await entriesFromPaths(paths, 'paths'),
+            harden({ staged }),
+          );
+        }
+        case 'commit': {
+          const { message } = /** @type {{ message?: unknown }} */ (args);
+          return formatResult(
+            await E(git).commit(requireNonEmptyString(message, 'message')),
+          );
+        }
+        case 'currentBranch':
+          return formatResult(await E(git).currentBranch());
+        case 'branchList': {
+          const { all = false } =
+            /** @type {{ all?: boolean }} */ (args);
+          return formatResult(await E(git).branches(harden({ all })));
+        }
+        case 'branchCreate': {
+          const { branch, startPoint, switchAfterCreate = false } =
+            /** @type {{ branch?: unknown, startPoint?: unknown, switchAfterCreate?: boolean }} */ (
+              args
+            );
+          return formatResult(
+            await E(git).createBranch(
+              requireNonEmptyString(branch, 'branch'),
+              harden({
+                switchAfterCreate,
+                ...(startPoint !== undefined && {
+                  startPoint: requireRevision(startPoint, 'startPoint'),
+                }),
+              }),
+            ),
+          );
+        }
+        case 'branchDelete': {
+          const { branch, force = false } =
+            /** @type {{ branch?: unknown, force?: boolean }} */ (args);
+          return E(git).deleteBranch(
+            requireNonEmptyString(branch, 'branch'),
+            harden({ force }),
+          );
+        }
+        case 'branchRename': {
+          const { branch, newName } =
+            /** @type {{ branch?: unknown, newName?: unknown }} */ (args);
+          return E(git).renameBranch(
+            requireNonEmptyString(branch, 'branch'),
+            requireNonEmptyString(newName, 'newName'),
+          );
+        }
+        case 'switch': {
+          const {
+            target,
+            create = false,
+            detach = false,
+            startPoint,
+          } = /** @type {{ target?: unknown, create?: boolean, detach?: boolean, startPoint?: unknown }} */ (
+            args
+          );
+          return E(git).switch(
+            requireRevision(target, 'target'),
+            harden({
+              create,
+              detach,
+              ...(startPoint !== undefined && {
+                startPoint: requireRevision(startPoint, 'startPoint'),
+              }),
+            }),
+          );
+        }
+        case 'merge': {
+          const { ref, noFastForward = false } =
+            /** @type {{ ref?: unknown, noFastForward?: boolean }} */ (args);
+          return E(git).merge(
+            requireRevision(ref, 'ref'),
+            harden({ noFastForward }),
+          );
+        }
+        case 'rebase': {
+          const { mode, upstream, branch } =
+            /** @type {{ mode?: unknown, upstream?: unknown, branch?: unknown }} */ (
+              args
+            );
+          return E(git).rebase(
+            harden({
+              mode,
+              ...(upstream !== undefined && {
+                upstream: requireRevision(upstream, 'upstream'),
+              }),
+              ...(branch !== undefined && {
+                branch: requireRevision(branch, 'branch'),
+              }),
+            }),
+          );
+        }
+        case 'stashPush': {
+          const { message, includeUntracked = false, paths } =
+            /** @type {{ message?: unknown, includeUntracked?: boolean, paths?: unknown }} */ (
+              args
+            );
+          return E(git).stashPush(
+            harden({
+              includeUntracked,
+              ...(message !== undefined && {
+                message: requireNonEmptyString(message, 'message'),
+              }),
+              ...(paths !== undefined && {
+                entries: await entriesFromPaths(paths, 'paths'),
+              }),
+            }),
+          );
+        }
+        case 'stashList':
+          return E(git).stashList();
+        case 'stashShow': {
+          const { stash } = /** @type {{ stash?: unknown }} */ (args);
+          return E(git).stashShow(
+            stash === undefined ? undefined : requireRevision(stash, 'stash'),
+          );
+        }
+        case 'stashApply': {
+          const { stash } = /** @type {{ stash?: unknown }} */ (args);
+          return E(git).stashApply(
+            stash === undefined ? undefined : requireRevision(stash, 'stash'),
+          );
+        }
+        case 'stashPop': {
+          const { stash } = /** @type {{ stash?: unknown }} */ (args);
+          return E(git).stashPop(
+            stash === undefined ? undefined : requireRevision(stash, 'stash'),
+          );
+        }
+        case 'stashDrop': {
+          const { stash } = /** @type {{ stash?: unknown }} */ (args);
+          return E(git).stashDrop(
+            stash === undefined ? undefined : requireRevision(stash, 'stash'),
+          );
+        }
+        default:
+          throw new Error(
+            'Unsupported git operation. Allowed: status, diff, log, show, revParse, add, restore, commit, currentBranch, branchList, branchCreate, branchDelete, branchRename, switch, merge, rebase, stashPush, stashList, stashShow, stashApply, stashPop, stashDrop.',
+          );
+      }
+    },
+    help() {
+      return (
+        'Use daemon Git capabilities through LLM-friendly path strings. ' +
+        'Path inputs are converted to EndoMountEntry values before reaching Git. ' +
+        'The tool does not expose raw git commands, host paths, or direct remote configuration.'
+      );
+    },
+  });
+};
+harden(makeDaemonGitTool);
+
+/**
  * @param {import('@endo/eventual-send').ERef<object>} host
  * @returns {FaeTool}
  */
