@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Created** | 2026-03-02 |
-| **Updated** | 2026-03-02 |
+| **Updated** | 2026-05-18 |
 | **Author** | Kris Kowal (prompted) |
 | **Status** | Not Started |
 
@@ -27,6 +27,11 @@ This design bridges the capability system designs
 [daemon-capability-bank](daemon-capability-bank.md)) with the concrete
 tools an AI agent uses for coding assistance. It defines the tool
 interface that Lal and Fae register when granted these capabilities.
+
+> **Revision note (2026-05-18):** The later
+> [daemon-mount-capabilities](daemon-mount-capabilities.md) design refines
+> this sketch: path authority should flow through mount-scoped descriptors
+> on the completed live-mount capability.
 
 ## Design
 
@@ -329,6 +334,8 @@ include capability configuration.
   `Dir` and `File` capabilities used by filesystem tools.
 - [daemon-capability-bank](daemon-capability-bank.md) — capability
   framework and category taxonomy.
+- [daemon-mount-capabilities](daemon-mount-capabilities.md) — concrete
+  completion plan for the live mount capability this sketch now builds on.
 - [daemon-os-sandbox-plugin](daemon-os-sandbox-plugin.md) — OS-level
   process confinement for shell execution.
 - [lal-fae-form-provisioning](lal-fae-form-provisioning.md) — form-based
