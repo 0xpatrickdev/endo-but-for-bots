@@ -736,64 +736,64 @@ The public `GitRemote` contract should survive those swaps.
 
 ### Phase 1: Remote Model (MVA)
 
-- Add `GitRemote` and credential-capability types (`BearerCredential`,
+- [ ] Add `GitRemote` and credential-capability types (`BearerCredential`,
   `BasicCredential`).
-- Add `git-remote` formula type bound to a local `Git`.
-- Add a host method to mint a `GitRemote` with policy baked in at
+- [ ] Add `git-remote` formula type bound to a local `Git`.
+- [ ] Add a host method to mint a `GitRemote` with policy baked in at
   construction (`provideGitRemote({...})`), including fetch-only,
   push-limited, and branch-limited validation.
-- The minimum viable agent flow (fetch + ff-only-pull + branch-limited
+- [ ] The minimum viable agent flow (fetch + ff-only-pull + branch-limited
   push) is exercised end-to-end on this surface, with no controller in
   sight.  Controllers come in Phase 5.
 
 ### Phase 2: HTTPS Credentialed Fetch
 
-- Support HTTPS bearer/basic credential injection through trusted backend
+- [ ] Support HTTPS bearer/basic credential injection through trusted backend
   code.
-- Implement `fetch()` with fixed endpoint and approved refspecs.
-- Keep packfile transfer on the HTTPS/native-git data plane rather than
+- [ ] Implement `fetch()` with fixed endpoint and approved refspecs.
+- [ ] Keep packfile transfer on the HTTPS/native-git data plane rather than
   relaying git object bytes through CapTP.
-- Add revocation tests for remote and credential caps.
+- [ ] Add revocation tests for remote and credential caps.
 
 ### Phase 3: Pull and Local Integration
 
-- Implement `pull()` as `fetch + local Git integration`.
-- Make the default integration mode explicit.
-- Add divergence / conflict tests.
+- [ ] Implement `pull()` as `fetch + local Git integration`.
+- [ ] Make the default integration mode explicit.
+- [ ] Add divergence / conflict tests.
 
 ### Phase 4: Push for MVP
 
-- Implement branch-limited `push()`.
-- Deny force, tags, and deletes by default.
-- Keep push packfile transfer on the bounded HTTPS/native-git data plane.
-- Add audit entries for outbound ref updates.
-- Add end-to-end tests for publishing `agent/*` branches.
+- [ ] Implement branch-limited `push()`.
+- [ ] Deny force, tags, and deletes by default.
+- [ ] Keep push packfile transfer on the bounded HTTPS/native-git data plane.
+- [ ] Add audit entries for outbound ref updates.
+- [ ] Add end-to-end tests for publishing `agent/*` branches.
 
 ### Phase 5: Controllers and Revocation
 
-- Add `GitRemoteController` and `GitCredentialController` for
+- [ ] Add `GitRemoteController` and `GitCredentialController` for
   post-construction policy updates and revocation.
-- Add `GitRemoteSet` if a collection capability is useful (host can also
+- [ ] Add `GitRemoteSet` if a collection capability is useful (host can also
   defer this).
-- Wire `revoke()` against in-flight operations (see *daemon-restart
+- [ ] Wire `revoke()` against in-flight operations (see *daemon-restart
   mid-operation* in the testing plan).
-- The agent-facing surface from Phase 1 does not change; controllers add a
+- [ ] The agent-facing surface from Phase 1 does not change; controllers add a
   parallel host-held authority for ops-team work.
 
 ### Phase 6: Interactive Provisioning
 
-- Add form / CLI flows for creating common remote profiles.
-- Optionally integrate trust-on-first-bind for interactive endpoint approval.
-- Add clear inspection surfaces so users can see which remotes and push
+- [ ] Add form / CLI flows for creating common remote profiles.
+- [ ] Optionally integrate trust-on-first-bind for interactive endpoint approval.
+- [ ] Add clear inspection surfaces so users can see which remotes and push
   targets are granted.
 
 ### Phase 7: Extended Transports
 
-- Design SSH-specific transport and credential capability.
-- Decide whether SSH belongs under a general network/process capability or
+- [ ] Design SSH-specific transport and credential capability.
+- [ ] Decide whether SSH belongs under a general network/process capability or
   a git-specialized transport cap.
-- Revisit Noise only after HTTPS semantics, policy, and audit are stable.
-- Add mirror / tag / delete profiles only after explicit policy designs.
+- [ ] Revisit Noise only after HTTPS semantics, policy, and audit are stable.
+- [ ] Add mirror / tag / delete profiles only after explicit policy designs.
 
 ## Testing Plan
 

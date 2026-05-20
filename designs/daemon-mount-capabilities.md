@@ -549,54 +549,54 @@ later adapter or migration is mostly mechanical.
 
 ### Phase 1: Finish the Existing Contract
 
-- Implement `EndoMount.snapshot()`.
-- Add integration tests for snapshot round-tripping:
-  - live mount -> snapshot tree
-  - nested directories
-  - binary file streaming
-  - symlink confinement behavior
-- Update `daemon-mount.md` status once shipped.
+- [ ] Implement `EndoMount.snapshot()`.
+- [ ] Add integration tests for snapshot round-tripping:
+  - [ ] live mount -> snapshot tree
+  - [ ] nested directories
+  - [ ] binary file streaming
+  - [ ] symlink confinement behavior
+- [ ] Update `daemon-mount.md` status once shipped.
 
 ### Phase 2: Add Entry Descriptors
 
-- Add `EndoMountEntryInterface`.
-- Add `entry(path)` to `EndoMount`.
-- Store normalized relative segments plus mount lineage provenance.
-- Add `exists()`, `stat()`, and `child()` on entries (value-shaped,
+- [ ] Add `EndoMountEntryInterface`.
+- [ ] Add `entry(path)` to `EndoMount`.
+- [ ] Store normalized relative segments plus mount lineage provenance.
+- [ ] Add `exists()`, `stat()`, and `child()` on entries (value-shaped,
   no handle-minting).
-- Handle-minting (`lookup`, `openFile`, `openDirectory`) lives on
+- [ ] Handle-minting (`lookup`, `openFile`, `openDirectory`) lives on
   `EndoMount` and accepts an entry as the path-bearing argument; see
   next phase.
-- Add descriptor provenance tests:
-  - entries from one mount rejected by another mount
-  - read-only entries (via `readOnly()` mount) cannot regain write
+- [ ] Add descriptor provenance tests:
+  - [ ] entries from one mount rejected by another mount
+  - [ ] read-only entries (via `readOnly()` mount) cannot regain write
     authority through handle-minting on a sibling mutable mount
-  - missing entries can round-trip without creating files
+  - [ ] missing entries can round-trip without creating files
 
 ### Phase 3: Add Handle-Oriented Navigation and Metadata
 
-- Add `openFile`, `openDirectory`, `createFile`, `createDirectory`, and
+- [ ] Add `openFile`, `openDirectory`, `createFile`, `createDirectory`, and
   `stat` on `EndoMount`.
-- Add `stat`, `append`, and `snapshot` on `EndoMountFile`.
-- Keep existing path convenience methods for compatibility.
-- Update help text and TypeScript declarations together with interface
+- [ ] Add `stat`, `append`, and `snapshot` on `EndoMountFile`.
+- [ ] Keep existing path convenience methods for compatibility.
+- [ ] Update help text and TypeScript declarations together with interface
   guards.
 
 ### Phase 4: Add Trusted Backing Provenance
 
-- Introduce the host-private physical-backing facet or sealed-grant
+- [ ] Introduce the host-private physical-backing facet or sealed-grant
   mechanism.
-- Ensure public mounts do not expose backing paths.
-- Add tests proving trusted code can correlate a mount with its backing
+- [ ] Ensure public mounts do not expose backing paths.
+- [ ] Add tests proving trusted code can correlate a mount with its backing
   while guest-visible introspection cannot recover that path.
 
 ### Phase 5: Converge with Shared Filesystem Types
 
-- Add adapters or aliases to make `EndoMount` / `EndoMountFile` satisfy the
+- [ ] Add adapters or aliases to make `EndoMount` / `EndoMountFile` satisfy the
   `Directory` / `File` contracts where practical.
-- Decide whether `EndoMount` remains a daemon-specific wrapper around
+- [ ] Decide whether `EndoMount` remains a daemon-specific wrapper around
   `Directory` or becomes a daemon-local specialization.
-- Keep `ReadableTree` / `ReadableBlob` compatibility tests in place during
+- [ ] Keep `ReadableTree` / `ReadableBlob` compatibility tests in place during
   migration.
 
 ## Migration Notes

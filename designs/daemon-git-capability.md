@@ -752,57 +752,57 @@ later be replaced by a thin adapter over the proper `Git` capability.
 Complete the required phases from
 [daemon-mount-capabilities](daemon-mount-capabilities.md):
 
-- `snapshot()`;
-- `EndoMountEntry`;
-- handle-oriented open/create APIs;
-- metadata;
-- host-private physical backing provenance.
+- [ ] `snapshot()`;
+- [ ] `EndoMountEntry`;
+- [ ] handle-oriented open/create APIs;
+- [ ] metadata;
+- [ ] host-private physical backing provenance.
 
 ### Phase 1: Backend Contract and Formula Skeleton
 
-- Add `GitBackend` abstraction.
-- Add `Git` interface guards and types.
-- Add `git` formula type tying a git capability to a mount formula identity.
-- Add host method to derive git from an existing physical worktree mount.
-- Add exact-repository-root verification.
+- [ ] Add `GitBackend` abstraction.
+- [ ] Add `Git` interface guards and types.
+- [ ] Add `git` formula type tying a git capability to a mount formula identity.
+- [ ] Add host method to derive git from an existing physical worktree mount.
+- [ ] Add exact-repository-root verification.
 
 ### Phase 2: Local Inspection Surface
 
-- Implement `worktree`, `status`, `diff`, `log`, `show`, and `revParse`.
-- Convert backend path results into `EndoMountEntry` values minted from the
+- [ ] Implement `worktree`, `status`, `diff`, `log`, `show`, and `revParse`.
+- [ ] Convert backend path results into `EndoMountEntry` values minted from the
   worktree mount.
-- Return structured status entries with optional live nodes when available.
+- [ ] Return structured status entries with optional live nodes when available.
 
 ### Phase 3: Local Mutation Surface
 
-- Implement `add`, `restore`, and `commit`.
-- Implement branch listing / create / delete / rename / switch.
-- Enforce read-only mount rejection on all mutation calls.
-- Port the native hardening checks from the reference implementation into
+- [ ] Implement `add`, `restore`, and `commit`.
+- [ ] Implement branch listing / create / delete / rename / switch.
+- [ ] Enforce read-only mount rejection on all mutation calls.
+- [ ] Port the native hardening checks from the reference implementation into
   backend tests.
 
 ### Phase 4: Integration Workflows
 
-- Implement merge, rebase, and stash operations.
-- Define conflict-state reporting and ensure conflict entries are represented
+- [ ] Implement merge, rebase, and stash operations.
+- [ ] Define conflict-state reporting and ensure conflict entries are represented
   by `EndoMountEntry`, not path strings.
-- Add restart / persistence tests for long-lived git capabilities.
+- [ ] Add restart / persistence tests for long-lived git capabilities.
 
 ### Phase 5: Git-Tree Reads and Read-Only Attenuation
 
-- Implement `Git.tree(ref) -> ReadableTree` directly on the `Git` cap
+- [ ] Implement `Git.tree(ref) -> ReadableTree` directly on the `Git` cap
   (the `GitTreeProvider` shape names the returned read surface).
-- Implement `Git.readOnly()` returning an attenuated `Git`; mutation
+- [ ] Implement `Git.readOnly()` returning an attenuated `Git`; mutation
   methods throw at runtime in this phase and are dropped from the type
   in Phase 7 alongside the structured-result-shape migration.
-- Add tests for browsing blobs and subtrees at specific refs.
-- Add tests for read-only attenuation: every mutation method on a
+- [ ] Add tests for browsing blobs and subtrees at specific refs.
+- [ ] Add tests for read-only attenuation: every mutation method on a
   `readOnly()` cap throws; every read method still works.
-- Verify compatibility with existing checkin / checkout / stage-tree flows.
-- Add a backend-private bulk tree path for large materialization operations,
+- [ ] Verify compatibility with existing checkin / checkout / stage-tree flows.
+- [ ] Add a backend-private bulk tree path for large materialization operations,
   initially using `git archive --format=tar` if the native backend remains
   the practical implementation.
-- Keep the read surface separable enough that, if a build-system or
+- [ ] Keep the read surface separable enough that, if a build-system or
   archiver use case surfaces a need for a tree-only-grant cap, the
   separately-grantable `GitTreeProvider` shape can be added without
   breaking `Git.tree(ref)` consumers (see § Alternatives Considered for
@@ -810,26 +810,26 @@ Complete the required phases from
 
 ### Phase 6: Agent Adapters and Migration
 
-- Replace path-root Fae git provisioning with a thin adapter over granted
+- [ ] Replace path-root Fae git provisioning with a thin adapter over granted
   `Git`.
-- Add Lal / Genie registration over the capability rather than over process
+- [ ] Add Lal / Genie registration over the capability rather than over process
   wrappers.
-- Deprecate direct path-string git tool creation once capability-based
+- [ ] Deprecate direct path-string git tool creation once capability-based
   provisioning exists.
-- Update [daemon-agent-tools](daemon-agent-tools.md) to point at the
+- [ ] Update [daemon-agent-tools](daemon-agent-tools.md) to point at the
   revised model.
 
 ### Phase 7: Structured Result Shapes
 
-- Land the structured shapes named in § Structured Result Shapes
+- [ ] Land the structured shapes named in § Structured Result Shapes
   (`GitDiff`, `GitFileDiff`, `GitDiffHunk`, `GitShow`, `GitConflict`,
   `GitMergeResult`, `GitRebaseResult`, structured `stashList`).
-- Rename the text-returning methods to `*Text` siblings (`diffText`,
+- [ ] Rename the text-returning methods to `*Text` siblings (`diffText`,
   `showText`, `mergeText`, `rebaseText`, `stashListText`,
   `stashShowText`) so display consumers can keep the porcelain output.
-- Drop mutation methods from the type of `readOnly()` cap returns; the
+- [ ] Drop mutation methods from the type of `readOnly()` cap returns; the
   runtime-throws behavior from Phase 5 stays as a defense-in-depth check.
-- Migrate every in-tree consumer of the text methods to the structured
+- [ ] Migrate every in-tree consumer of the text methods to the structured
   shape in the same window; the `*Text` siblings remain available for
   consumers that still need porcelain.
 
