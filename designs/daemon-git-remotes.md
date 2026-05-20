@@ -168,16 +168,13 @@ The URL is formula-owned policy in Phase 1 (baked into the `git-remote` formula 
 
 ```ts
 interface GitRemote {
-  inspect(): Promise<{
-    name: string;
-    url: string;
-    allowedDirections: Array<'fetch' | 'push'>;
-    fetchRefspecs: string[];
-    pushRefspecs: string[];
-    allowForcePush: boolean;
-    allowTags: boolean;
-    allowDelete: boolean;
-  }>;
+  // Return shape mirrors GitRemoteController.inspect()'s sibling form
+  // (`Promise<GitRemotePolicy & { revoked: boolean }>`): GitRemote
+  // exposes the policy plus its own name, but never `revoked` —
+  // revocation state is the controller's domain, not the guest cap's.
+  // `allowedBranches` is normalized into `fetchRefspecs` /
+  // `pushRefspecs` at construction time and is not re-surfaced here.
+  inspect(): Promise<GitRemotePolicy & { name: string }>;
 
   fetch(options?: {
     prune?: boolean;
