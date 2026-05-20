@@ -5008,6 +5008,54 @@ test('provideGit rejects a sub-mount returned by lookup', async t => {
   });
 });
 
+test('provideGitRemote derives a GitRemote from a local Git', async t => {
+  const { host, config } = await prepareHost(t);
+
+  const mountPath = path.join(config.statePath, '..', 'mount-git-remote');
+  await createGitWorktreeFixture(mountPath);
+  await E(host).provideMount(mountPath, 'remote-mount');
+  const mount = await E(host).lookup(['remote-mount']);
+  const git = await E(host).provideGit(mount, 'remote-git');
+
+  // Construct a remote bound to the local Git with a fetch-only policy.
+  const remote = await E(host).provideGitRemote(git, 'origin', {
+    name: 'origin',
+    url: 'https://github.com/example/repo.git',
+    allowedDirections: ['fetch'],
+    fetchRefspecs: ['+refs/heads/*:refs/remotes/origin/*'],
+  });
+  // The remote cap is stored under its pet name.
+  const sameRemote = await E(host).lookup(['origin']);
+  t.is(remote, sameRemote);
+
+  // inspect() reflects the host-supplied policy.
+  const snapshot = await E(remote).inspect();
+  t.is(snapshot.name, 'origin');
+  t.is(snapshot.url, 'https://github.com/example/repo.git');
+  t.deepEqual([...snapshot.allowedDirections], ['fetch']);
+
+  // Phase 1: every transport-using op surfaces NYI; push is blocked
+  // by the direction policy before reaching that point.
+  await t.throwsAsync(E(remote).push({}), {
+    message: /does not permit "push"/,
+  });
+  await t.throwsAsync(E(remote).fetch({}), {
+    message: /not yet implemented/,
+  });
+});
+
+test('provideGitRemote rejects a non-daemon Git cap', async t => {
+  const { host } = await prepareHost(t);
+  const spoof = Far('FakeGit', { worktree: () => Promise.resolve(null) });
+  await t.throwsAsync(
+    E(host).provideGitRemote(spoof, 'origin', {
+      name: 'origin',
+      url: 'https://example/x',
+    }),
+    { message: /daemon-minted Git cap/ },
+  );
+});
+
 test('provideGit rejects a fake / non-daemon-minted mount cap', async t => {
   const { host } = await prepareHost(t);
 

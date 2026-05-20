@@ -2,7 +2,7 @@
 /// <reference types="ses"/>
 
 /** @import { ERef } from '@endo/eventual-send' */
-/** @import { AgentDeferredTaskParams, ChannelDeferredTaskParams, Context, DaemonCore, DeferredTasks, EndoGuest, EndoHost, EnvRecord, EvalDeferredTaskParams, FormulaIdentifier, FormulaNumber, GitDeferredTaskParams, InvitationDeferredTaskParams, MakeCapletDeferredTaskParams, MakeCapletOptions, MakeDirectoryNode, MakeHostOrGuestOptions, MakeMailbox, MountDeferredTaskParams, Name, NameOrPath, NamePath, NodeNumber, PeerInfo, PetName, ReadableBlobDeferredTaskParams, ReadableTreeDeferredTaskParams, MarshalDeferredTaskParams, ScratchMountDeferredTaskParams, WorkerDeferredTaskParams } from './types.js' */
+/** @import { AgentDeferredTaskParams, ChannelDeferredTaskParams, Context, DaemonCore, DeferredTasks, EndoGuest, EndoHost, EnvRecord, EvalDeferredTaskParams, FormulaIdentifier, FormulaNumber, GitDeferredTaskParams, GitRemoteDeferredTaskParams, InvitationDeferredTaskParams, MakeCapletDeferredTaskParams, MakeCapletOptions, MakeDirectoryNode, MakeHostOrGuestOptions, MakeMailbox, MountDeferredTaskParams, Name, NameOrPath, NamePath, NodeNumber, PeerInfo, PetName, ReadableBlobDeferredTaskParams, ReadableTreeDeferredTaskParams, MarshalDeferredTaskParams, ScratchMountDeferredTaskParams, WorkerDeferredTaskParams } from './types.js' */
 
 import { E } from '@endo/far';
 import { makeExo } from '@endo/exo';
@@ -74,6 +74,7 @@ const normalizeHostOrGuestOptions = opts => {
  * @param {DaemonCore['formulateMount']} args.formulateMount
  * @param {DaemonCore['formulateScratchMount']} args.formulateScratchMount
  * @param {DaemonCore['formulateGit']} args.formulateGit
+ * @param {DaemonCore['formulateGitRemote']} args.formulateGitRemote
  * @param {DaemonCore['formulateInvitation']} args.formulateInvitation
  * @param {DaemonCore['formulateDirectoryForStore']} args.formulateDirectoryForStore
  * @param {DaemonCore['getPeerIdForNodeIdentifier']} args.getPeerIdForNodeIdentifier
@@ -110,6 +111,7 @@ export const makeHostMaker = ({
   formulateMount,
   formulateScratchMount,
   formulateGit,
+  formulateGitRemote,
   formulateInvitation,
   formulateDirectoryForStore,
   getPeerIdForNodeIdentifier,
@@ -336,6 +338,82 @@ export const makeHostMaker = ({
       );
 
       const { value } = await formulateScratchMount(readOnly, tasks);
+      return value;
+    };
+
+    /**
+     * Derive a `GitRemote` capability from an existing local `Git`.
+     * The remote endpoint URL and refspec/direction policy are host-
+     * specified at construction; the guest receives only the remote
+     * facet, not the policy controller (which the host keeps via the
+     * companion `getGitRemoteController` accessor below).
+     *
+     * Phase 1: structural composition only.  The remote's fetch/pull/
+     * push methods surface "not yet implemented" until the credentialed
+     * HTTPS transport lands.
+     *
+     * @param {unknown} gitCap - A Git cap returned by `provideGit`.
+     * @param {NameOrPath} petName
+     * @param {object} opts
+     * @param {string} opts.name  Remote name (e.g. 'origin').
+     * @param {string} opts.url   Remote endpoint URL.
+     * @param {Array<'fetch' | 'push'>} [opts.allowedDirections]
+     * @param {string[]} [opts.fetchRefspecs]
+     * @param {string[]} [opts.pushRefspecs]
+     * @param {string[]} [opts.allowedBranches]
+     * @param {boolean} [opts.allowForcePush]
+     * @param {boolean} [opts.allowTags]
+     * @param {boolean} [opts.allowDelete]
+     */
+    const provideGitRemote = async (gitCap, petName, opts) => {
+      const { namePath } = assertPetNamePath(namePathFrom(petName));
+      const gitId = getIdForRef(gitCap);
+      if (gitId === undefined) {
+        throw makeError(
+          X`provideGitRemote: first argument must be a daemon-minted Git cap`,
+        );
+      }
+      if (
+        !opts ||
+        typeof opts !== 'object' ||
+        typeof opts.name !== 'string' ||
+        typeof opts.url !== 'string'
+      ) {
+        throw makeError(
+          X`provideGitRemote: options must include a string name and url`,
+        );
+      }
+      const policy = harden({
+        url: opts.url,
+        allowedDirections: harden([
+          ...(opts.allowedDirections || ['fetch']),
+        ]),
+        fetchRefspecs: harden([...(opts.fetchRefspecs || [])]),
+        pushRefspecs: harden([...(opts.pushRefspecs || [])]),
+        ...(opts.allowedBranches !== undefined
+          ? { allowedBranches: harden([...opts.allowedBranches]) }
+          : {}),
+        ...(opts.allowForcePush !== undefined
+          ? { allowForcePush: opts.allowForcePush }
+          : {}),
+        ...(opts.allowTags !== undefined ? { allowTags: opts.allowTags } : {}),
+        ...(opts.allowDelete !== undefined
+          ? { allowDelete: opts.allowDelete }
+          : {}),
+      });
+
+      /** @type {DeferredTasks<GitRemoteDeferredTaskParams>} */
+      const tasks = makeDeferredTasks();
+      tasks.push(identifiers =>
+        E(directory).storeIdentifier(namePath, identifiers.gitRemoteId),
+      );
+
+      const { value } = await formulateGitRemote(
+        gitId,
+        opts.name,
+        policy,
+        tasks,
+      );
       return value;
     };
 
@@ -1478,6 +1556,7 @@ export const makeHostMaker = ({
       provideMount,
       provideScratchMount,
       provideGit,
+      provideGitRemote,
       provideHostPath,
       provideGuest,
       provideHost,

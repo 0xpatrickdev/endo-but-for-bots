@@ -325,6 +325,12 @@ export const HostInterface = M.interface('EndoHost', {
     .returns(M.promise()),
   // Derive a Git capability from a physical mount
   provideGit: M.call(M.remotable(), NameOrPathShape).returns(M.promise()),
+  // Derive a GitRemote from a local Git plus a host-supplied policy
+  provideGitRemote: M.call(
+    M.remotable(),
+    NameOrPathShape,
+    M.recordOf(M.string(), M.any()),
+  ).returns(M.promise()),
   // Resolve a Mount capability to its host filesystem path. Used by
   // the @endo/sandbox factory (and similar make-unconfined plugins)
   // to translate granted Mount caps into bind-mount source paths.
@@ -572,6 +578,55 @@ export const MountEntryInterface = M.interface('EndoMountEntry', {
 // shape (commit hash, branch name, tag name, HEAD~1, etc. are all
 // valid).
 const RefArgShape = M.or(M.string(), M.recordOf(M.string(), M.any()));
+
+// A direction code is 'fetch' or 'push'.  GitRemote enforces it on
+// every remote-using operation; the controller can narrow / widen it.
+const GitDirectionShape = M.or(
+  M.eq('fetch'),
+  M.eq('push'),
+);
+
+export const GitRemoteInterface = M.interface('GitRemote', {
+  inspect: M.call().returns(M.promise()),
+  fetch: M.call()
+    .optional(M.recordOf(M.string(), M.any()))
+    .returns(M.promise()),
+  pull: M.call()
+    .optional(M.recordOf(M.string(), M.any()))
+    .returns(M.promise()),
+  push: M.call()
+    .optional(M.recordOf(M.string(), M.any()))
+    .returns(M.promise()),
+});
+
+export const GitRemoteControllerInterface = M.interface(
+  'GitRemoteController',
+  {
+    inspect: M.call().returns(M.promise()),
+    setAllowedDirections: M.call(M.arrayOf(GitDirectionShape)).returns(
+      M.promise(),
+    ),
+    setFetchRefspecs: M.call(M.arrayOf(M.string())).returns(M.promise()),
+    setPushRefspecs: M.call(M.arrayOf(M.string())).returns(M.promise()),
+    setAllowedBranches: M.call(M.arrayOf(M.string())).returns(M.promise()),
+    setAllowForcePush: M.call(M.boolean()).returns(M.promise()),
+    setAllowTags: M.call(M.boolean()).returns(M.promise()),
+    setAllowDelete: M.call(M.boolean()).returns(M.promise()),
+    revoke: M.call().returns(M.promise()),
+  },
+);
+
+// Credential interfaces — Phase 1 declares the shapes; Phase 2 lands
+// the concrete bearer/basic credential formulas and a host-private
+// unsealer that the backend uses to bind the credential into native
+// git's authentication channel.
+export const BearerCredentialInterface = M.interface('BearerCredential', {
+  audience: M.call().returns(M.string()),
+});
+
+export const BasicCredentialInterface = M.interface('BasicCredential', {
+  audience: M.call().returns(M.string()),
+});
 
 export const GitInterface = M.interface('Git', {
   // Public worktree authority — the mount cap that this Git was derived

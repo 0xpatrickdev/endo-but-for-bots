@@ -230,6 +230,27 @@ type GitFormula = {
   mountId: FormulaIdentifier;
 };
 
+type GitRemoteFormula = {
+  type: 'git-remote';
+  /** Formula identifier of the local `Git` this remote is bound to. */
+  gitId: FormulaIdentifier;
+  /** Remote name, typically 'origin'. */
+  name: string;
+  /** Host-controlled policy.  Persisted in the formula so it survives
+   *  daemon restarts; the controller updates the in-memory snapshot
+   *  but the formula record is the source of truth for reincarnation. */
+  policy: {
+    url: string;
+    allowedDirections: Array<'fetch' | 'push'>;
+    fetchRefspecs: string[];
+    pushRefspecs: string[];
+    allowedBranches?: string[];
+    allowForcePush?: boolean;
+    allowTags?: boolean;
+    allowDelete?: boolean;
+  };
+};
+
 export type MountDeferredTaskParams = {
   mountId: FormulaIdentifier;
 };
@@ -240,6 +261,12 @@ export type ScratchMountDeferredTaskParams = {
 
 export type GitDeferredTaskParams = {
   gitId: FormulaIdentifier;
+};
+
+export type GitRemoteDeferredTaskParams = {
+  gitRemoteId: FormulaIdentifier;
+  /** Optionally bind the controller cap to a pet name too. */
+  gitRemoteControllerId?: FormulaIdentifier;
 };
 
 type LookupFormula = {
@@ -422,6 +449,7 @@ export type Formula =
   | MountFormula
   | ScratchMountFormula
   | GitFormula
+  | GitRemoteFormula
   | LookupFormula
   | MakeUnconfinedFormula
   | MakeArchiveFormula
@@ -972,6 +1000,21 @@ export interface EndoHost extends EndoAgent {
   provideGit(
     mountCap: unknown,
     petName: string | string[],
+  ): Promise<unknown>;
+  provideGitRemote(
+    gitCap: unknown,
+    petName: string | string[],
+    opts: {
+      name: string;
+      url: string;
+      allowedDirections?: Array<'fetch' | 'push'>;
+      fetchRefspecs?: string[];
+      pushRefspecs?: string[];
+      allowedBranches?: string[];
+      allowForcePush?: boolean;
+      allowTags?: boolean;
+      allowDelete?: boolean;
+    },
   ): Promise<unknown>;
   provideHostPath(cap: unknown): Promise<string>;
   provideGuest(
@@ -1686,6 +1729,13 @@ export interface DaemonCore {
   formulateGit: (
     mountId: FormulaIdentifier,
     deferredTasks: DeferredTasks<GitDeferredTaskParams>,
+  ) => FormulateResult<unknown>;
+
+  formulateGitRemote: (
+    gitId: FormulaIdentifier,
+    name: string,
+    policy: GitRemoteFormula['policy'],
+    deferredTasks: DeferredTasks<GitRemoteDeferredTaskParams>,
   ) => FormulateResult<unknown>;
 
   formulateInvitation: (

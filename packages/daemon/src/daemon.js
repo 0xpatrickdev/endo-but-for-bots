@@ -67,6 +67,7 @@ import {
 import { makeMount, getMountBacking } from './mount.js';
 import { makeGit } from './git.js';
 import { makeNativeGitBackend } from './native-git-backend.js';
+import { makeGitRemote } from './git-remote.js';
 
 // Sorted:
 import {
@@ -2697,6 +2698,19 @@ const makeDaemonCore = async (
       await backend.assertRepositoryRoot();
       return makeGit({ mount, backend });
     },
+    'git-remote': async ({ gitId, name, policy }, context) => {
+      // Bind the remote's lifetime to the local Git's; revoking the
+      // local Git collects the remote (and its controller) too.
+      context.thisDiesIfThatDies(gitId);
+      const git = await provide(gitId);
+      // Phase 1: makeGitRemote returns a { remote, controller } pair.
+      // The formula's value is the remote facet — the controller is
+      // produced as a sibling formula in the host method below so the
+      // two have distinct identifiers and can be stored separately
+      // under distinct pet names.
+      const { remote } = makeGitRemote({ git, name, policy });
+      return remote;
+    },
     lookup: ({ hub, path }, context) =>
       makeLookup(
         hub,
@@ -3478,6 +3492,35 @@ const makeDaemonCore = async (
           type: 'mount',
           path: mountPath,
           readOnly,
+        });
+
+        return formulate(formulaNumber, formula);
+      })
+    );
+  };
+
+  /** @type {DaemonCore['formulateGitRemote']} */
+  const formulateGitRemote = async (gitId, name, policy, deferredTasks) => {
+    return /** @type {FormulateResult<unknown>} */ (
+      withFormulaGraphLock(async () => {
+        await null;
+        const formulaNumber = /** @type {FormulaNumber} */ (
+          await randomHex256()
+        );
+
+        await deferredTasks.execute({
+          gitRemoteId: formatId({
+            number: formulaNumber,
+            node: localNodeNumber,
+          }),
+        });
+
+        /** @type {import('./types.js').GitRemoteFormula} */
+        const formula = harden({
+          type: 'git-remote',
+          gitId,
+          name,
+          policy,
         });
 
         return formulate(formulaNumber, formula);
@@ -5424,6 +5467,7 @@ const makeDaemonCore = async (
     formulateMount,
     formulateScratchMount,
     formulateGit,
+    formulateGitRemote,
     formulateInvitation,
     formulateDirectoryForStore,
     getPeerIdForNodeIdentifier,
