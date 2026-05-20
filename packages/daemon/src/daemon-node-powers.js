@@ -455,11 +455,50 @@ export const makeGitPowers = ({ popen, filePowers }) => {
     });
 
   /**
+   * @param {string} file
+   * @param {string[]} args
+   * @param {object} options
+   * @returns {Promise<{ stdout: Uint8Array, stderr: string }>}
+   */
+  const execFileBytes = (file, args, options) =>
+    new Promise((resolve, reject) => {
+      popen.execFile(
+        file,
+        args,
+        /** @type {any} */ ({ ...options, encoding: 'buffer' }),
+        (error, stdout, stderr) => {
+          const stdoutBytes = new Uint8Array(
+            /** @type {Buffer} */ (stdout),
+          );
+          const stderrText = /** @type {Buffer} */ (stderr).toString('utf-8');
+          if (error) {
+            Object.assign(error, { stdout: stdoutBytes, stderr: stderrText });
+            reject(error);
+          } else {
+            resolve({ stdout: stdoutBytes, stderr: stderrText });
+          }
+        },
+      );
+    });
+
+  /**
    * @param {string} repoRoot
    * @param {string[]} args
    */
   const runGit = async (repoRoot, args) =>
     execFileText('git', [...GIT_BASE_ARGS, ...args], {
+      cwd: repoRoot,
+      env: makeGitEnv(repoRoot),
+      timeout: GIT_TIMEOUT_MS,
+      maxBuffer: GIT_MAX_BUFFER,
+    });
+
+  /**
+   * @param {string} repoRoot
+   * @param {string[]} args
+   */
+  const runGitBytes = async (repoRoot, args) =>
+    execFileBytes('git', [...GIT_BASE_ARGS, ...args], {
       cwd: repoRoot,
       env: makeGitEnv(repoRoot),
       timeout: GIT_TIMEOUT_MS,
@@ -510,6 +549,7 @@ export const makeGitPowers = ({ popen, filePowers }) => {
 
   return harden({
     runGit,
+    runGitBytes,
     getRepositoryRoot,
     assertNoExecutableRepoConfig,
     checkRefFormat,

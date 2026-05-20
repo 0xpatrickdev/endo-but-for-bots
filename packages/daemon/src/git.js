@@ -1,10 +1,18 @@
 // @ts-check
 
+import { bytesToText } from '@endo/bytes/to-string.js';
 import { q } from '@endo/errors';
 import { E } from '@endo/far';
 import { makeExo } from '@endo/exo';
+import { encodeHex } from '@endo/hex';
 
-import { GitInterface, GitRemoteInterface } from './interfaces.js';
+import {
+  BlobInterface,
+  GitInterface,
+  GitRemoteInterface,
+  ReadableTreeInterface,
+} from './interfaces.js';
+import { makeReaderRef } from './reader-ref.js';
 
 /** @import { EndoMount, EndoMountEntry, GitPowers, GitRemotePolicy } from './types.js' */
 
@@ -72,6 +80,100 @@ const makeBranchRef = name => harden({ kind: 'branch', name });
 harden(makeBranchRef);
 
 /**
+ * @param {Uint8Array} bytes
+ * @returns {Promise<string>}
+ */
+const sha256Bytes = async bytes => {
+  const subtle = globalThis.crypto && globalThis.crypto.subtle;
+  if (subtle === undefined) {
+    throw new Error('SHA-256 digest support is not available');
+  }
+  return encodeHex(
+    new Uint8Array(await subtle.digest('SHA-256', bytes.slice())),
+  );
+};
+harden(sha256Bytes);
+
+/**
+ * @param {string} segment
+ */
+const assertGitPathSegment = segment => {
+  if (
+    segment === '' ||
+    segment === '.' ||
+    segment === '..' ||
+    segment.includes('/') ||
+    segment.includes('\0')
+  ) {
+    throw new Error(`Invalid git tree path segment ${q(segment)}`);
+  }
+};
+harden(assertGitPathSegment);
+
+/**
+ * @param {string | string[]} pathArg
+ * @returns {string[]}
+ */
+const gitTreePathFromArg = pathArg => {
+  const segments =
+    typeof pathArg === 'string' ? pathArg.split('/') : [...pathArg];
+  for (const segment of segments) {
+    if (typeof segment !== 'string') {
+      throw new Error('Git tree path segments must be strings');
+    }
+    assertGitPathSegment(segment);
+  }
+  return segments;
+};
+harden(gitTreePathFromArg);
+
+/**
+ * @param {string[]} segments
+ */
+const gitTreeDisplayPath = segments =>
+  segments.length === 0 ? '.' : segments.join('/');
+harden(gitTreeDisplayPath);
+
+/**
+ * @param {string} output
+ * @returns {Array<{ mode: string, type: string, oid: string, name: string }>}
+ */
+const parseLsTree = output => {
+  const entries = [];
+  for (const record of output.split('\0')) {
+    if (record === '') {
+      continue;
+    }
+    const tab = record.indexOf('\t');
+    if (tab < 0) {
+      throw new Error(`Unexpected git ls-tree record ${q(record)}`);
+    }
+    const fields = record.slice(0, tab).split(' ');
+    if (fields.length !== 3) {
+      throw new Error(`Unexpected git ls-tree metadata ${q(record)}`);
+    }
+    const [mode, type, oid] = fields;
+    entries.push(harden({ mode, type, oid, name: record.slice(tab + 1) }));
+  }
+  return harden(entries);
+};
+harden(parseLsTree);
+
+/**
+ * @param {Error & {
+ *   stdout?: string | Uint8Array,
+ *   stderr?: string | Uint8Array,
+ *   code?: number,
+ * }} err
+ * @returns {string}
+ */
+const gitErrorDetail = err => {
+  const detail = err.stderr || err.stdout || err.message || 'unknown error';
+  return typeof detail === 'string' ? detail : bytesToText(detail);
+};
+harden(gitErrorDetail);
+
+/**
  * @param {object} args
  * @param {EndoMount} args.worktree
  * @param {string} args.repoRoot
@@ -102,9 +204,29 @@ export const makeGit = ({ worktree, repoRoot, gitPowers }) => {
         /** @type {Error & { stdout?: string, stderr?: string, code?: number }} */ (
           error
         );
-      const detail = err.stderr || err.stdout || err.message || 'unknown error';
+      const detail = truncateOutput(gitErrorDetail(err).trim());
       throw new Error(
-        `git ${args[0]} failed (exit ${err.code ?? 'unknown'}):\n${truncateOutput(detail.trim())}`,
+        `git ${args[0]} failed (exit ${err.code ?? 'unknown'}):\n${detail}`,
+      );
+    }
+  };
+
+  /**
+   * @param {string[]} args
+   * @returns {Promise<{ stdout: Uint8Array, stderr: string }>}
+   */
+  const runGitBytesRaw = async args => {
+    const root = await getRepoRoot();
+    try {
+      return await gitPowers.runGitBytes(root, args);
+    } catch (error) {
+      const err =
+        /** @type {Error & { stdout?: Uint8Array, stderr?: string, code?: number }} */ (
+          error
+        );
+      const detail = truncateOutput(gitErrorDetail(err).trim());
+      throw new Error(
+        `git ${args[0]} failed (exit ${err.code ?? 'unknown'}):\n${detail}`,
       );
     }
   };
@@ -184,6 +306,146 @@ export const makeGit = ({ worktree, repoRoot, gitPowers }) => {
     return harden({
       oid,
       subject: subject || subjectFallback,
+    });
+  };
+
+  /** @type {Map<string, Promise<Array<{
+   *   mode: string,
+   *   type: string,
+   *   oid: string,
+   *   name: string,
+   * }>>>} */
+  const treeEntriesByOid = new Map();
+
+  /**
+   * @param {string} treeOid
+   */
+  const getTreeEntries = treeOid => {
+    let entriesP = treeEntriesByOid.get(treeOid);
+    if (entriesP === undefined) {
+      entriesP = runGitRaw(['ls-tree', '-z', treeOid]).then(({ stdout }) =>
+        parseLsTree(stdout),
+      );
+      treeEntriesByOid.set(treeOid, entriesP);
+    }
+    return entriesP;
+  };
+
+  /**
+   * @param {string} treeOid
+   * @param {string} name
+   */
+  const getTreeEntry = async (treeOid, name) => {
+    const entries = await getTreeEntries(treeOid);
+    return entries.find(entry => entry.name === name);
+  };
+
+  /**
+   * @param {string} treeOid
+   * @param {string[]} segments
+   */
+  const resolveTreeOid = async (treeOid, segments) => {
+    let currentTreeOid = treeOid;
+    for (const segment of segments) {
+      const entry = await getTreeEntry(currentTreeOid, segment);
+      if (entry === undefined) {
+        throw new TypeError(`Unknown name: ${JSON.stringify(segment)}`);
+      }
+      if (entry.type !== 'tree') {
+        throw new TypeError(
+          `Git tree entry ${JSON.stringify(segment)} is not a tree`,
+        );
+      }
+      currentTreeOid = entry.oid;
+    }
+    return currentTreeOid;
+  };
+
+  /**
+   * @param {string} oid
+   * @param {string[]} displaySegments
+   */
+  const makeGitBlob = async (oid, displaySegments) => {
+    const { stdout: bytes } = await runGitBytesRaw(['cat-file', 'blob', oid]);
+    const sha256 = await sha256Bytes(bytes);
+    const displayPath = gitTreeDisplayPath(displaySegments);
+    return makeExo('EndoGitBlob', BlobInterface, {
+      help: () => `Immutable git blob ${oid} at ${displayPath}`,
+      sha256: () => sha256,
+      streamBase64: () => makeReaderRef([bytes]),
+      text: async () => bytesToText(bytes),
+      json: async () => JSON.parse(bytesToText(bytes)),
+    });
+  };
+
+  /**
+   * @param {string} treeOid
+   * @param {string[]} displaySegments
+   */
+  const makeGitTree = async (treeOid, displaySegments) => {
+    const { stdout: bytes } = await runGitBytesRaw([
+      'cat-file',
+      'tree',
+      treeOid,
+    ]);
+    const sha256 = await sha256Bytes(bytes);
+    const displayPath = gitTreeDisplayPath(displaySegments);
+    const help = () => `Immutable git tree ${treeOid} at ${displayPath}`;
+    return makeExo('EndoGitTree', ReadableTreeInterface, {
+      help,
+      sha256: () => sha256,
+
+      async has(...pathSegments) {
+        for (const segment of pathSegments) {
+          assertGitPathSegment(segment);
+        }
+        if (pathSegments.length === 0) {
+          return true;
+        }
+        try {
+          const [leaf, ...parentsReversed] = [...pathSegments].reverse();
+          const parentSegments = parentsReversed.reverse();
+          const parentTreeOid = await resolveTreeOid(treeOid, parentSegments);
+          return (await getTreeEntry(parentTreeOid, leaf)) !== undefined;
+        } catch {
+          return false;
+        }
+      },
+
+      async list(...pathSegments) {
+        for (const segment of pathSegments) {
+          assertGitPathSegment(segment);
+        }
+        const targetTreeOid = await resolveTreeOid(treeOid, pathSegments);
+        const entries = await getTreeEntries(targetTreeOid);
+        return harden(entries.map(({ name }) => name));
+      },
+
+      async lookup(pathArg) {
+        const segments = gitTreePathFromArg(pathArg);
+        if (segments.length === 0) {
+          throw new TypeError('Unknown name: undefined');
+        }
+        const [leaf, ...parentsReversed] = [...segments].reverse();
+        const parentSegments = parentsReversed.reverse();
+        const parentTreeOid = await resolveTreeOid(treeOid, parentSegments);
+        const entry = await getTreeEntry(parentTreeOid, leaf);
+        if (entry === undefined) {
+          throw new TypeError(`Unknown name: ${JSON.stringify(leaf)}`);
+        }
+        const childDisplaySegments = [...displaySegments, ...segments];
+        if (entry.type === 'tree') {
+          return makeGitTree(entry.oid, childDisplaySegments);
+        }
+        if (entry.type === 'blob') {
+          return makeGitBlob(entry.oid, childDisplaySegments);
+        }
+        throw new TypeError(
+          `Git tree entry ${JSON.stringify(leaf)} has unsupported type ${q(
+            entry.type,
+          )}`,
+        );
+      },
     });
   };
 
@@ -470,11 +732,13 @@ export const makeGit = ({ worktree, repoRoot, gitPowers }) => {
     },
 
     async tree(ref) {
-      await getRepoRoot();
       const treeRef = requireRevision(ref, 'ref');
-      throw new Error(
-        `Git tree provider for ${q(treeRef)} is not implemented yet`,
-      );
+      const { stdout } = await runGitRaw([
+        'rev-parse',
+        '--verify',
+        `${treeRef}^{tree}`,
+      ]);
+      return makeGitTree(stdout.trim(), []);
     },
   });
 };

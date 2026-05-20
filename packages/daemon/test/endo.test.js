@@ -4620,6 +4620,44 @@ test('provideGit enforces mount identity and read-only boundaries', async t => {
   });
 });
 
+test('provideGit tree exposes immutable commit contents', async t => {
+  const { host, config } = await prepareHost(t);
+
+  const repoPath = path.join(config.statePath, '..', 'git-tree-repo');
+  await createGitFixture(repoPath);
+  await fs.promises.mkdir(path.join(repoPath, 'src'));
+  await fs.promises.writeFile(
+    path.join(repoPath, 'src', 'main.js'),
+    'export default 1;\n',
+    'utf-8',
+  );
+  await git(repoPath, ['add', 'src/main.js']);
+  await git(repoPath, ['commit', '-m', 'add source']);
+
+  await E(host).provideMount(repoPath, 'git-tree-worktree');
+  const gitCap = await E(host).provideGit('git-tree-worktree', 'git-tree-cap');
+  const tree = await E(gitCap).tree('HEAD');
+
+  const names = await E(tree).list();
+  t.deepEqual(names, ['README.md', 'src']);
+  const src = await E(tree).lookup('src');
+  t.deepEqual(await E(src).list(), ['main.js']);
+
+  const main = await E(tree).lookup(['src', 'main.js']);
+  t.is(await E(main).text(), 'export default 1;\n');
+  await fs.promises.writeFile(
+    path.join(repoPath, 'src', 'main.js'),
+    'export default 2;\n',
+    'utf-8',
+  );
+  t.is(await E(main).text(), 'export default 1;\n');
+
+  await E(host).storeTree(tree, 'git-tree-snapshot');
+  const storedTree = await E(host).lookup('git-tree-snapshot');
+  const storedMain = await E(storedTree).lookup(['src', 'main.js']);
+  t.is(await E(storedMain).text(), 'export default 1;\n');
+});
+
 test('provideGitRemote supports bounded local fetch, pull, and push', async t => {
   const { host, config } = await prepareHost(t);
 
