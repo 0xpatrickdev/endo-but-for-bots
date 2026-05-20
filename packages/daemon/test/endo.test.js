@@ -4717,6 +4717,29 @@ test('provideGitRemote supports bounded local fetch, pull, and push', async t =>
     { message: /does not allow force push/ },
   );
 
+  const pushLimited = await E(host).provideGitRemote(
+    {
+      gitName: 'git-remote-cap',
+      remote: 'origin',
+      directions: ['push'],
+      allowedRefs: ['main', 'refs/heads/agent/'],
+    },
+    'origin-push-limited',
+  );
+  await t.throwsAsync(
+    () =>
+      E(pushLimited).push({
+        source: 'main',
+        target: 'refs/heads/review/main',
+      }),
+    { message: /does not allow ref/ },
+  );
+  const limitedPushResult = await E(pushLimited).push({
+    source: 'main',
+    target: 'refs/heads/agent/main',
+  });
+  t.regex(limitedPushResult.output, /agent\/main/u);
+
   const fetchOnly = await E(host).provideGitRemote(
     {
       gitName: 'git-remote-cap',
