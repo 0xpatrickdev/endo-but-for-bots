@@ -673,15 +673,35 @@ That means:
   invocation as a positional argument never derived from a guest input;
 - no shell interpolation; argv-array spawn only.
 
-For bearer-token HTTPS remotes, native git also supports `http.extraHeader`.
-Passing the header through `-c "http.extraHeader=Authorization: Bearer ..."`
-leaks the token to `/proc/*/cmdline` (and is the standard reason public
-guides warn against the flag).  The trusted-code form writes the header
-into a per-invocation `GIT_CONFIG_GLOBAL` file (or, more conservatively, a
-per-invocation `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_N`/`GIT_CONFIG_VALUE_N`
-env tuple read from an anonymous pipe), so the secret stays in
-backend-controlled storage and is not visible to other processes on the
-host.
+The safe target for credential injection is: **no secret in argv, in
+process environment, in formula state, in inspect output, in logs, or
+in any persisted or durable temp file.**  The askpass-fed-by-anonymous-pipe
+mechanism above is the only path that meets that bar for the basic
+(username/password) case.
+
+For bearer-token HTTPS remotes, native git also supports
+`http.extraHeader`.  Passing the header through
+`-c "http.extraHeader=Authorization: Bearer ..."` leaks the token to
+`/proc/*/cmdline` (and is the standard reason public guides warn
+against the flag).  Env-variable injection paths fail the bar in the
+other direction (any env-borne secret lands in `/proc/*/environ`,
+which is world-readable on most Linux distros), and config-file
+injection paths fail because a persisted temp file is exactly what the
+bar excludes.  None of those approaches meets the "no secret in env,
+argv, or persisted state" target.
+
+Bearer-token support is therefore **conditional on the
+credential-injection spike** confirming an askpass / anonymous-pipe path
+that keeps the bearer token out of argv, env, and any persisted
+location.  Until the spike completes, the implementation:
+
+- defaults to basic credentials (HTTPS username/password fed through the
+  askpass helper);
+- treats bearer support as gated by the spike's go/no-go;
+- or, where bearer is the only option, uses the askpass mechanism for
+  bearer too (treating the bearer as a password fed through askpass),
+  which keeps the credential on the proven path rather than inventing
+  a parallel injection mechanism.
 
 This preserves the same authority shape as `HttpClient` even when the first
 implementation adapts that authority into a native-git invocation rather
@@ -697,9 +717,12 @@ measure:
    target host's stock `git` (≥ 2.30; see
    [daemon-git-capability](daemon-git-capability.md) for the version pin),
    including under `git`'s recent `setup_credential_helpers` defaults.
-2. Whether the `GIT_CONFIG_COUNT` env-tuple injection path keeps the bearer
-   token out of `/proc/*/environ` and out of any temp-file artifact a
-   panicked git invocation might leave behind.
+2. Whether the askpass-fed-by-anonymous-pipe path can carry a bearer
+   token (treating the bearer as a password fed through askpass) while
+   keeping the token out of argv, `/proc/*/environ`, and any persisted
+   temp-file artifact a panicked git invocation might leave behind.  If
+   not, bearer support stays gated until a mechanism that meets the
+   "no secret in env / argv / temp file" bar is identified.
 3. Whether the daemon-shipped helper binary can be located on macOS in a
    way that survives `git`'s notarization / quarantine attributes for
    packaged installers.
@@ -709,9 +732,14 @@ measure:
    HTTP helpers, etc.).
 
 The spike's deliverable is a one-page note in `designs/` recording which
-mechanism works on which host and any fallback ladder.  The capability
-contract does not change with the spike's outcome; the implementation
-detail does.
+mechanism works on which host and any fallback ladder.  The note must
+include an explicit **"no secret in env / argv / temp file" verification
+step** per credential type tested: a procedure that scrapes
+`/proc/<pid>/environ`, `/proc/<pid>/cmdline`, the helper-bin temp dir,
+and any `GIT_CONFIG_*` file location during and after a representative
+git operation, and confirms the secret is not visible at any of those
+surfaces.  The capability contract does not change with the spike's
+outcome; the implementation detail does.
 
 The native invocation should also be treated as a bulk data-plane adapter.
 CapTP starts the operation and receives completion metadata; native git and
