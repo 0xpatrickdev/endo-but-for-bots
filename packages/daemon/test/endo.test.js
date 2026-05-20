@@ -4906,6 +4906,113 @@ test('mount file - stat / append / snapshot', async t => {
   t.is(await E(ro).text(), 'one\ntwo\nthree\n');
 });
 
+// git capability tests
+
+/**
+ * Initialize a bare-bones repository fixture for git capability tests.
+ * Writes `.git/HEAD` so the worktree-root check passes; no full repo
+ * is needed at Phase 1 since the backend methods all throw "not yet
+ * implemented".
+ *
+ * @param {string} basePath
+ */
+const createGitWorktreeFixture = async basePath => {
+  await fs.promises.rm(basePath, { recursive: true, force: true });
+  await fs.promises.mkdir(path.join(basePath, '.git'), { recursive: true });
+  await fs.promises.writeFile(
+    path.join(basePath, '.git', 'HEAD'),
+    'ref: refs/heads/main\n',
+  );
+  await fs.promises.writeFile(
+    path.join(basePath, 'README.md'),
+    '# fixture\n',
+  );
+};
+
+test('provideGit derives a Git capability from a physical worktree mount', async t => {
+  const { host, config } = await prepareHost(t);
+
+  const mountPath = path.join(config.statePath, '..', 'mount-git-happy');
+  await createGitWorktreeFixture(mountPath);
+  await E(host).provideMount(mountPath, 'git-happy-mount');
+  const mount = await E(host).lookup(['git-happy-mount']);
+
+  // The host method returns the Git cap.  It is also stored under the
+  // given pet name so subsequent lookups resolve to the same value.
+  const git = await E(host).provideGit(mount, 'git-happy');
+  const sameGit = await E(host).lookup(['git-happy']);
+  t.is(git, sameGit);
+
+  // worktree() round-trips the mount cap unchanged.
+  t.is(await E(git).worktree(), mount);
+
+  // Scaffold methods all surface "not yet implemented" through the
+  // stub backend.  Phase 2 lands the native backend.
+  await t.throwsAsync(E(git).status(), { message: /not yet implemented/ });
+});
+
+test('provideGit rejects a mount whose root is not a git worktree', async t => {
+  const { host, config } = await prepareHost(t);
+
+  // A physical mount without a `.git` entry at its root is not a
+  // worktree and must be refused.  No git formula gets created.
+  const mountPath = path.join(config.statePath, '..', 'mount-git-bare');
+  await fs.promises.rm(mountPath, { recursive: true, force: true });
+  await fs.promises.mkdir(mountPath, { recursive: true });
+  await fs.promises.writeFile(
+    path.join(mountPath, 'sentinel.txt'),
+    'no-git',
+  );
+
+  await E(host).provideMount(mountPath, 'git-bare-mount');
+  const mount = await E(host).lookup(['git-bare-mount']);
+
+  await t.throwsAsync(E(host).provideGit(mount, 'git-bare'), {
+    message: /is not a git worktree/,
+  });
+});
+
+test('provideGit rejects a sub-mount returned by lookup', async t => {
+  const { host, config } = await prepareHost(t);
+
+  // Layout: root has .git, but we provide Git over a SUB-mount, not the
+  // worktree root.  Sub-mounts share lineage with their parent but are
+  // ad-hoc exos minted inside lookup() — they don't carry a top-level
+  // formula identifier, so provideGit refuses them at the host-method
+  // boundary, the same pattern provideHostPath uses to reject anything
+  // that isn't a `mount` or `scratch-mount` formula identity.
+  const mountPath = path.join(config.statePath, '..', 'mount-git-sub');
+  await createGitWorktreeFixture(mountPath);
+  await fs.promises.mkdir(path.join(mountPath, 'src'), { recursive: true });
+
+  await E(host).provideMount(mountPath, 'git-sub-mount');
+  const mount = await E(host).lookup(['git-sub-mount']);
+  const subMount = await E(mount).lookup(['src']);
+
+  await t.throwsAsync(E(host).provideGit(subMount, 'git-sub'), {
+    message: /daemon-minted mount/,
+  });
+});
+
+test('provideGit rejects a fake / non-daemon-minted mount cap', async t => {
+  const { host } = await prepareHost(t);
+
+  // A spoofed exo that quacks like a Mount but was minted outside the
+  // daemon must be rejected at the host method boundary, before any
+  // formula is created.
+  const spoof = Far('FakeMount', {
+    has: () => Promise.resolve(true),
+    list: () => Promise.resolve([]),
+    lookup: () => Promise.reject(new Error('spoof')),
+    snapshot: () => Promise.reject(new Error('spoof')),
+    help: () => 'spoof',
+  });
+
+  await t.throwsAsync(E(host).provideGit(spoof, 'git-spoof'), {
+    message: /daemon-minted mount/,
+  });
+});
+
 // symlink confinement tests
 
 /**

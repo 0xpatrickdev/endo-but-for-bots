@@ -2,7 +2,7 @@
 /// <reference types="ses"/>
 
 /** @import { ERef } from '@endo/eventual-send' */
-/** @import { AgentDeferredTaskParams, ChannelDeferredTaskParams, Context, DaemonCore, DeferredTasks, EndoGuest, EndoHost, EnvRecord, EvalDeferredTaskParams, FormulaIdentifier, FormulaNumber, InvitationDeferredTaskParams, MakeCapletDeferredTaskParams, MakeCapletOptions, MakeDirectoryNode, MakeHostOrGuestOptions, MakeMailbox, MountDeferredTaskParams, Name, NameOrPath, NamePath, NodeNumber, PeerInfo, PetName, ReadableBlobDeferredTaskParams, ReadableTreeDeferredTaskParams, MarshalDeferredTaskParams, ScratchMountDeferredTaskParams, WorkerDeferredTaskParams } from './types.js' */
+/** @import { AgentDeferredTaskParams, ChannelDeferredTaskParams, Context, DaemonCore, DeferredTasks, EndoGuest, EndoHost, EnvRecord, EvalDeferredTaskParams, FormulaIdentifier, FormulaNumber, GitDeferredTaskParams, InvitationDeferredTaskParams, MakeCapletDeferredTaskParams, MakeCapletOptions, MakeDirectoryNode, MakeHostOrGuestOptions, MakeMailbox, MountDeferredTaskParams, Name, NameOrPath, NamePath, NodeNumber, PeerInfo, PetName, ReadableBlobDeferredTaskParams, ReadableTreeDeferredTaskParams, MarshalDeferredTaskParams, ScratchMountDeferredTaskParams, WorkerDeferredTaskParams } from './types.js' */
 
 import { E } from '@endo/far';
 import { makeExo } from '@endo/exo';
@@ -73,6 +73,7 @@ const normalizeHostOrGuestOptions = opts => {
  * @param {DaemonCore['checkinTree']} args.checkinTree
  * @param {DaemonCore['formulateMount']} args.formulateMount
  * @param {DaemonCore['formulateScratchMount']} args.formulateScratchMount
+ * @param {DaemonCore['formulateGit']} args.formulateGit
  * @param {DaemonCore['formulateInvitation']} args.formulateInvitation
  * @param {DaemonCore['formulateDirectoryForStore']} args.formulateDirectoryForStore
  * @param {DaemonCore['getPeerIdForNodeIdentifier']} args.getPeerIdForNodeIdentifier
@@ -108,6 +109,7 @@ export const makeHostMaker = ({
   checkinTree,
   formulateMount,
   formulateScratchMount,
+  formulateGit,
   formulateInvitation,
   formulateDirectoryForStore,
   getPeerIdForNodeIdentifier,
@@ -334,6 +336,38 @@ export const makeHostMaker = ({
       );
 
       const { value } = await formulateScratchMount(readOnly, tasks);
+      return value;
+    };
+
+    /**
+     * Derive a Git capability from an existing physical mount.  The mount
+     * cap must have been minted by this daemon via `provideMount` or
+     * `provideScratchMount`; sub-mounts and read-only attenuations are
+     * rejected because the public worktree authority lives on the lineage
+     * root.  The formula instantiator additionally verifies the mount
+     * root contains a `.git` entry before the Git exo is constructed.
+     *
+     * @param {unknown} mountCap - A mount cap returned by `provideMount`.
+     * @param {NameOrPath} petName - The pet name under which to store the
+     *   new Git capability.
+     */
+    const provideGit = async (mountCap, petName) => {
+      const { namePath } = assertPetNamePath(namePathFrom(petName));
+
+      const mountId = getIdForRef(mountCap);
+      if (mountId === undefined) {
+        throw makeError(
+          X`provideGit: first argument must be a daemon-minted mount cap`,
+        );
+      }
+
+      /** @type {DeferredTasks<GitDeferredTaskParams>} */
+      const tasks = makeDeferredTasks();
+      tasks.push(identifiers =>
+        E(directory).storeIdentifier(namePath, identifiers.gitId),
+      );
+
+      const { value } = await formulateGit(mountId, tasks);
       return value;
     };
 
@@ -1443,6 +1477,7 @@ export const makeHostMaker = ({
       storeTree,
       provideMount,
       provideScratchMount,
+      provideGit,
       provideHostPath,
       provideGuest,
       provideHost,

@@ -323,6 +323,8 @@ export const HostInterface = M.interface('EndoHost', {
   provideScratchMount: M.call(NameOrPathShape)
     .optional(M.splitRecord({}, { readOnly: M.boolean() }))
     .returns(M.promise()),
+  // Derive a Git capability from a physical mount
+  provideGit: M.call(M.remotable(), NameOrPathShape).returns(M.promise()),
   // Resolve a Mount capability to its host filesystem path. Used by
   // the @endo/sandbox factory (and similar make-unconfined plugins)
   // to translate granted Mount caps into bind-mount source paths.

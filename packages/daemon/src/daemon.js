@@ -64,7 +64,8 @@ import {
   makeHelp,
   readableTreeHelp,
 } from './help-text.js';
-import { makeMount } from './mount.js';
+import { makeMount, getMountBacking } from './mount.js';
+import { makeGit, makeNotYetImplementedBackend } from './git.js';
 
 // Sorted:
 import {
@@ -2642,6 +2643,53 @@ const makeDaemonCore = async (
         },
       });
     },
+    git: async ({ mountId }, context) => {
+      // Bind this Git capability's lifetime to the mount's; collecting
+      // the mount must collect the git formula too, because every guest
+      // operation on Git resolves through the mount's host-private
+      // backing.
+      context.thisDiesIfThatDies(mountId);
+
+      const mount = await provide(mountId);
+      const backing = getMountBacking(mount);
+      if (!backing) {
+        throw makeError(
+          X`Git formula's mountId ${q(mountId)} does not name a daemon-minted mount`,
+        );
+      }
+      if (backing.kind !== 'physical') {
+        throw makeError(
+          X`Git requires a physical mount, got ${q(backing.kind)}`,
+        );
+      }
+      // The mount must be the lineage's confinement root, not a
+      // sub-mount returned by lookup().  Sub-mounts share lineage with
+      // their parent but point at a subdirectory — granting Git over a
+      // subdirectory would let a guest operate the repo through an
+      // arbitrary subtree, which is not what the design specifies.
+      if (backing.physicalRoot !== backing.currentDir) {
+        throw makeError(
+          X`Git requires the mount root, not a sub-mount; received ${q(backing.currentDir)} under root ${q(backing.physicalRoot)}`,
+        );
+      }
+      // Repository-root check: a worktree always has a `.git` entry at
+      // its root (a directory for a normal clone, a file for linked
+      // worktrees and submodules — `exists` covers both).
+      const gitMetadataPath = filePowers.joinPath(
+        backing.physicalRoot,
+        '.git',
+      );
+      const gitMetadataPresent = await filePowers.exists(gitMetadataPath);
+      if (!gitMetadataPresent) {
+        throw makeError(
+          X`Mount root ${q(backing.physicalRoot)} is not a git worktree (no .git entry at root)`,
+        );
+      }
+      return makeGit({
+        mount,
+        backend: makeNotYetImplementedBackend(),
+      });
+    },
     lookup: ({ hub, path }, context) =>
       makeLookup(
         hub,
@@ -3423,6 +3471,33 @@ const makeDaemonCore = async (
           type: 'mount',
           path: mountPath,
           readOnly,
+        });
+
+        return formulate(formulaNumber, formula);
+      })
+    );
+  };
+
+  /** @type {DaemonCore['formulateGit']} */
+  const formulateGit = async (mountId, deferredTasks) => {
+    return /** @type {FormulateResult<unknown>} */ (
+      withFormulaGraphLock(async () => {
+        await null;
+        const formulaNumber = /** @type {FormulaNumber} */ (
+          await randomHex256()
+        );
+
+        await deferredTasks.execute({
+          gitId: formatId({
+            number: formulaNumber,
+            node: localNodeNumber,
+          }),
+        });
+
+        /** @type {import('./types.js').GitFormula} */
+        const formula = harden({
+          type: 'git',
+          mountId,
         });
 
         return formulate(formulaNumber, formula);
@@ -5341,6 +5416,7 @@ const makeDaemonCore = async (
     checkinTree,
     formulateMount,
     formulateScratchMount,
+    formulateGit,
     formulateInvitation,
     formulateDirectoryForStore,
     getPeerIdForNodeIdentifier,

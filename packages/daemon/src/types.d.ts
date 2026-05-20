@@ -224,12 +224,22 @@ type ScratchMountFormula = {
   readOnly: boolean;
 };
 
+type GitFormula = {
+  type: 'git';
+  /** Formula identifier of the physical mount this Git is bound to. */
+  mountId: FormulaIdentifier;
+};
+
 export type MountDeferredTaskParams = {
   mountId: FormulaIdentifier;
 };
 
 export type ScratchMountDeferredTaskParams = {
   scratchMountId: FormulaIdentifier;
+};
+
+export type GitDeferredTaskParams = {
+  gitId: FormulaIdentifier;
 };
 
 type LookupFormula = {
@@ -411,6 +421,7 @@ export type Formula =
   | ReadableTreeFormula
   | MountFormula
   | ScratchMountFormula
+  | GitFormula
   | LookupFormula
   | MakeUnconfinedFormula
   | MakeArchiveFormula
@@ -958,6 +969,10 @@ export interface EndoHost extends EndoAgent {
     opts?: { readOnly?: boolean },
   ): Promise<unknown>;
   provideScratchMount(petName: string | string[]): Promise<unknown>;
+  provideGit(
+    mountCap: unknown,
+    petName: string | string[],
+  ): Promise<unknown>;
   provideHostPath(cap: unknown): Promise<string>;
   provideGuest(
     petName?: string,
@@ -1666,6 +1681,11 @@ export interface DaemonCore {
   formulateScratchMount: (
     readOnly: boolean,
     deferredTasks: DeferredTasks<ScratchMountDeferredTaskParams>,
+  ) => FormulateResult<unknown>;
+
+  formulateGit: (
+    mountId: FormulaIdentifier,
+    deferredTasks: DeferredTasks<GitDeferredTaskParams>,
   ) => FormulateResult<unknown>;
 
   formulateInvitation: (
