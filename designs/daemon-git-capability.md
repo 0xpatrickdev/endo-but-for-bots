@@ -169,7 +169,7 @@ pretend they can support live worktree mutations.
 
 ## Capability Construction
 
-The preferred host flow is capability-derived.  `provideGit()` takes an
+The host flow is capability-derived.  `provideGit()` takes an
 `EndoMount` capability as its first argument and a pet name as the second:
 
 ```js
@@ -177,21 +177,15 @@ const worktree = await E(host).provideMount('/repo', 'repo-worktree');
 const git = await E(host).provideGit(worktree, 'repo-git');
 ```
 
-A pet-name lookup form is also supported as a convenience:
-
-```js
-const git = await E(host).provideGit('repo-worktree', 'repo-git');
-```
-
-When the first argument is a string, the host resolves it against its own
-name table and treats it as cap-passing of the resolved mount.  The
-cap-passing form is canonical; the pet-name form is sugar over it that
-exists for parity with other `provide*` host methods.
+Cap-passing is the only normative form on `provideGit`.  Pet-name
+lookup is not part of this API: an agent-facing CLI or tool adapter that
+needs to look up a mount by name uses a separate `E(host).lookup(name)`
+capability (or whatever convenience method the harness layer provides)
+to resolve the name to a mount cap *before* calling `provideGit`.
 
 `provideGit()`:
 
-1. accepts the mount capability directly, or resolves a pet name against
-   the host's name table and uses the result;
+1. takes a mount capability;
 2. uses the host-private mount backing grant (see
    [daemon-mount-capabilities](daemon-mount-capabilities.md) § Host-Private
    Physical Backing) to prove the mount is physical;
@@ -911,9 +905,13 @@ real implementation surfaces new ones.
 ## Design Decisions
 
 1. **Git derives from `EndoMount`, by cap-passing.**  `provideGit(mountCap,
-   petName)` is the canonical entry point.  Pet-name lookup is a
-   convenience that resolves to cap-passing; no host API mints local `Git`
-   from a raw path string once the mount model exists.
+   petName)` is the only normative entry point; cap-passing is the only
+   form accepted.  Pet-name lookup is not part of `provideGit` itself:
+   agent-facing CLI / tool adapters that need it use a separate
+   `E(host).lookup` capability (or whatever convenience the harness
+   layer provides) to resolve a name to a mount cap before calling
+   `provideGit`.  No host API mints local `Git` from a raw path string
+   once the mount model exists.
 2. **Entries, not strings, carry path authority.**  Path strings may appear
    at UI boundaries, but git operations consume mount-minted descriptors.
 3. **Live worktree and immutable trees are separate methods, not separate
