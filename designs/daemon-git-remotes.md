@@ -574,18 +574,61 @@ trusted daemon code must verify the controller-owned URL against the granted
 transport authority, then invoke native git only with the approved URL,
 approved refspecs, and sealed credential material.
 
-That likely means:
+That means:
 
-- temporary non-extractable askpass / header injection managed by trusted
-  code;
-- sanitized git environment;
-- repo config and credential-helper suppression;
-- explicit remote URL supplied from controller state;
-- no shell interpolation.
+- a daemon-shipped `GIT_ASKPASS` helper binary, exec'd by `git` and fed the
+  credential through an anonymous pipe whose read-end fd is inherited by
+  the helper (the secret is passed via fd-pointer, never via argv or
+  process env);
+- `GIT_TERMINAL_PROMPT=0` so a missed askpass does not hang waiting for a
+  TTY;
+- sanitized git environment that drops `GIT_*_HELPER`, `GIT_PROXY_COMMAND`,
+  and other credential / process-shell vectors;
+- repo config and credential-helper suppression
+  (`-c credential.helper=` empties the helper list for the invocation);
+- explicit remote URL supplied from controller state, written into the
+  invocation as a positional argument never derived from a guest input;
+- no shell interpolation; argv-array spawn only.
+
+For bearer-token HTTPS remotes, native git also supports `http.extraHeader`.
+Passing the header through `-c "http.extraHeader=Authorization: Bearer ..."`
+leaks the token to `/proc/*/cmdline` (and is the standard reason public
+guides warn against the flag).  The trusted-code form writes the header
+into a per-invocation `GIT_CONFIG_GLOBAL` file (or, more conservatively, a
+per-invocation `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_N`/`GIT_CONFIG_VALUE_N`
+env tuple read from an anonymous pipe), so the secret stays in
+backend-controlled storage and is not visible to other processes on the
+host.
 
 This preserves the same authority shape as `HttpClient` even when the first
 implementation adapts that authority into a native-git invocation rather
 than issuing requests through the object directly.
+
+### Spike: confirm credential-injection portability
+
+Before Phase 2 ships the first credential-bearing remote, run a spike
+across the target host matrix (Linux, macOS, Windows where applicable) to
+measure:
+
+1. Whether the anonymous-pipe-fed `GIT_ASKPASS` helper works on every
+   target host's stock `git` (≥ 2.30; see
+   [daemon-git-capability](daemon-git-capability.md) for the version pin),
+   including under `git`'s recent `setup_credential_helpers` defaults.
+2. Whether the `GIT_CONFIG_COUNT` env-tuple injection path keeps the bearer
+   token out of `/proc/*/environ` and out of any temp-file artifact a
+   panicked git invocation might leave behind.
+3. Whether the daemon-shipped helper binary can be located on macOS in a
+   way that survives `git`'s notarization / quarantine attributes for
+   packaged installers.
+4. Whether `pipe2(O_CLOEXEC)` (Linux) and equivalent (macOS `pipe` +
+   `fcntl(FD_CLOEXEC)`) prevent the credential fd from leaking into
+   sibling subprocesses git may spawn (`git config --show-origin`, smart
+   HTTP helpers, etc.).
+
+The spike's deliverable is a one-page note in `designs/` recording which
+mechanism works on which host and any fallback ladder.  The capability
+contract does not change with the spike's outcome; the implementation
+detail does.
 
 The native invocation should also be treated as a bulk data-plane adapter.
 CapTP starts the operation and receives completion metadata; native git and
