@@ -30,6 +30,7 @@ import {
   makeReaderRef,
   makeRefIterator,
 } from '../index.js';
+import { checkinTarTree } from '../src/daemon.js';
 import {
   makeCryptoPowers,
   makeGitPowers,
@@ -3972,6 +3973,134 @@ const createGitFixture = async repoPath => {
   await git(repoPath, ['add', 'README.md']);
   await git(repoPath, ['commit', '-m', 'initial']);
 };
+
+const textEncoder = new TextEncoder();
+const tarTerminator = new Uint8Array(512);
+
+/** @param {Uint8Array[]} arrays */
+const concatByteArrays = arrays => {
+  const size = arrays.reduce((sum, array) => sum + array.byteLength, 0);
+  const joined = new Uint8Array(size);
+  let offset = 0;
+  for (const array of arrays) {
+    joined.set(array, offset);
+    offset += array.byteLength;
+  }
+  return joined;
+};
+
+/**
+ * @param {Uint8Array} block
+ * @param {number} offset
+ * @param {number} size
+ * @param {string} text
+ */
+const writeTarText = (block, offset, size, text) => {
+  const bytes = textEncoder.encode(text);
+  if (bytes.byteLength > size) {
+    throw new Error(`tar field is too long: ${text}`);
+  }
+  block.set(bytes, offset);
+};
+
+/**
+ * @param {Uint8Array} block
+ * @param {number} offset
+ * @param {number} size
+ * @param {number} value
+ */
+const writeTarOctal = (block, offset, size, value) => {
+  const text = value.toString(8).padStart(size - 1, '0');
+  writeTarText(block, offset, size, text);
+};
+
+const makeTarEntry = ({
+  name,
+  mode = 0o644,
+  type = '0',
+  content = '',
+}) => {
+  const header = new Uint8Array(512);
+  const contentBytes =
+    typeof content === 'string' ? textEncoder.encode(content) : content;
+  writeTarText(header, 0, 100, name);
+  writeTarOctal(header, 100, 8, mode);
+  writeTarOctal(header, 124, 12, contentBytes.byteLength);
+  writeTarText(header, 156, 1, type);
+  const padding = new Uint8Array(
+    (512 - (contentBytes.byteLength % 512)) % 512,
+  );
+  return concatByteArrays([header, contentBytes, padding]);
+};
+
+const makeTarArchive = entries =>
+  concatByteArrays([...entries, tarTerminator]);
+
+const makeTarContentStore = () => {
+  let nextStore = 0;
+  return harden({
+    async store() {
+      const sha = `sha-${nextStore}`;
+      nextStore += 1;
+      return sha;
+    },
+  });
+};
+
+test('checkinTarTree rejects duplicate archive paths', async t => {
+  await t.throwsAsync(
+    () =>
+      checkinTarTree(
+        makeReaderRef([
+          makeTarArchive([
+            makeTarEntry({ name: 'dup.txt' }),
+            makeTarEntry({ name: 'dup.txt' }),
+          ]),
+        ]),
+        makeTarContentStore(),
+      ),
+    { message: /Duplicate tar entry path "dup\.txt"/u },
+  );
+});
+
+test('checkinTarTree rejects traversal archive paths', async t => {
+  await t.throwsAsync(
+    () =>
+      checkinTarTree(
+        makeReaderRef([
+          makeTarArchive([makeTarEntry({ name: '../escape.txt' })]),
+        ]),
+        makeTarContentStore(),
+      ),
+    { message: /Invalid tar entry path segment "\.\."/u },
+  );
+});
+
+test('checkinTarTree rejects unsupported archive modes', async t => {
+  await t.throwsAsync(
+    () =>
+      checkinTarTree(
+        makeReaderRef([
+          makeTarArchive([makeTarEntry({ name: 'run.sh', mode: 0o755 })]),
+        ]),
+        makeTarContentStore(),
+      ),
+    { message: /Unsupported tar file mode 755/u },
+  );
+});
+
+test('checkinTarTree rejects unsupported archive entry types', async t => {
+  await t.throwsAsync(
+    () =>
+      checkinTarTree(
+        makeReaderRef([
+          makeTarArchive([makeTarEntry({ name: 'device', type: '3' })]),
+        ]),
+        makeTarContentStore(),
+      ),
+    { message: /Unsupported tar entry type "3"/u },
+  );
+});
 
 test('Git powers kill an in-flight native git process when cancelled', async t => {
   const { promise: cancelled, resolve: cancel } = makePromiseKit();

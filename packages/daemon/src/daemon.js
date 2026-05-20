@@ -288,7 +288,7 @@ const assertDirectoryTarMode = (archivePath, mode) => {
  * @param {import('@endo/far').ERef<AsyncIterator<string>>} readerRef
  * @param {import('@endo/platform/fs/lite/types').SnapshotStore} contentStore
  */
-const checkinTarTree = async (readerRef, contentStore) => {
+export const checkinTarTree = async (readerRef, contentStore) => {
   const reader = makeTarByteReader(readerRef);
 
   /** @type {TarTreeNode} */
