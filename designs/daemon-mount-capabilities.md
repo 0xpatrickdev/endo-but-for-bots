@@ -664,11 +664,3 @@ its associated phase.
    alternative "callers carry their own presentation string"; treating
    presentation as a property of the capability keeps the rendering
    consistent across consumers.
-
-## Prompt
-
-> Finish the concrete `EndoMount` capability so it can serve as the live,
-> handle-first filesystem basis for future agent tools and for a revised git
-> capability.  Preserve today's useful read compatibility, add the missing
-> snapshot bridge, and introduce mount-scoped descriptors for paths that do
-> not currently have live file handles.

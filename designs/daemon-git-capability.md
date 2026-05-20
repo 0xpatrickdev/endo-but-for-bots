@@ -936,12 +936,3 @@ real implementation surfaces new ones.
     Tree Data Plane), but that does not change the guest-visible
     capability surface; no `stageGitTree()` style guest API exposes the
     bulk path in v1.
-
-## Prompt
-
-> Revise the git capability design so it follows Endo filesystem
-> conventions: base live worktree authority on `EndoMount` /
-> `EndoMountFile`, use mount-scoped descriptors instead of free-form path
-> strings, keep native git as an implementation detail, and expose commit
-> trees through the same read-only filesystem vocabulary as the rest of the
-> platform.

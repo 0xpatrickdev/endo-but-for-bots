@@ -935,10 +935,3 @@ deliverable.
     consumer can distinguish CapTP control-plane time from remote
     transport data-plane time without needing daemon-side
     instrumentation.
-
-## Prompt
-
-> Add the remote half of the git story as an MVP-relevant companion to local
-> `Git`: agents need fetch, pull, and push, but these should compose explicit
-> network, endpoint-policy, and non-extractable credential capabilities
-> rather than inheriting ambient host git authority.
