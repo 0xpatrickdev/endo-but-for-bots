@@ -5343,6 +5343,7 @@ test('provideGitRemote supports bounded local fetch, pull, and push', async t =>
       }),
     { message: /does not allow push of/ },
   );
+  await git(repoPath, ['branch', 'agent/main', 'main']);
   const limitedPushResult = await E(pushLimited).push({
     source: 'refs/heads/agent/main',
     destination: 'refs/heads/agent/main',

@@ -1866,6 +1866,16 @@ export const makeGitRemote = ({ repoRoot, gitPowers, policy, state }) => {
       ]);
       const afterRefs = parseForEachRef(afterStdout);
       const fetchedRefs = diffRefSnapshots(beforeRefs, afterRefs);
+      // Capture HEAD before Phase 2 so we can detect whether the local
+      // integration actually moved the working branch. fetchedRefs only
+      // describes what the explicit fetch step pulled in; if a prior
+      // call already updated the tracking ref, fetchedRefs is empty even
+      // when the subsequent integration is a real fast-forward.
+      const { stdout: headOidBefore } = await runGitRaw([
+        'rev-parse',
+        '--verify',
+        'HEAD',
+      ]);
       // Phase 2: integrate locally.
       /** @type {string} */
       let strategyFlag;
@@ -1910,7 +1920,7 @@ export const makeGitRemote = ({ repoRoot, gitPowers, policy, state }) => {
       );
       /** @type {'up-to-date' | 'fast-forward' | 'merge' | 'rebase'} */
       let integration;
-      if (fetchedRefs.length === 0) {
+      if (headOidBefore.trim() === headOid.trim()) {
         integration = 'up-to-date';
       } else if (strategy === 'ff-only') {
         integration = 'fast-forward';
