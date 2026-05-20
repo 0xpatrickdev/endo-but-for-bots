@@ -649,12 +649,17 @@ The public `GitRemote` contract should survive those swaps.
 
 ## Implementation Plan
 
-### Phase 1: Remote Model and Controllers
+### Phase 1: Remote Model (MVA)
 
-- Add `GitRemote`, `GitRemoteController`, and credential-capability types.
+- Add `GitRemote` and credential-capability types (`BearerCredential`,
+  `BasicCredential`).
 - Add `git-remote` formula type bound to a local `Git`.
-- Add host methods to create, inspect, and revoke remotes.
-- Add fetch-only and push-limited policy validation.
+- Add a host method to mint a `GitRemote` with policy baked in at
+  construction (`provideGitRemote({...})`), including fetch-only,
+  push-limited, and branch-limited validation.
+- The minimum viable agent flow (fetch + ff-only-pull + branch-limited
+  push) is exercised end-to-end on this surface, with no controller in
+  sight.  Controllers come in Phase 5.
 
 ### Phase 2: HTTPS Credentialed Fetch
 
@@ -679,14 +684,25 @@ The public `GitRemote` contract should survive those swaps.
 - Add audit entries for outbound ref updates.
 - Add end-to-end tests for publishing `agent/*` branches.
 
-### Phase 5: Interactive Provisioning
+### Phase 5: Controllers and Revocation
+
+- Add `GitRemoteController` and `GitCredentialController` for
+  post-construction policy updates and revocation.
+- Add `GitRemoteSet` if a collection capability is useful (host can also
+  defer this).
+- Wire `revoke()` against in-flight operations (see *daemon-restart
+  mid-operation* in the testing plan).
+- The agent-facing surface from Phase 1 does not change; controllers add a
+  parallel host-held authority for ops-team work.
+
+### Phase 6: Interactive Provisioning
 
 - Add form / CLI flows for creating common remote profiles.
 - Optionally integrate trust-on-first-bind for interactive endpoint approval.
 - Add clear inspection surfaces so users can see which remotes and push
   targets are granted.
 
-### Phase 6: Extended Transports
+### Phase 7: Extended Transports
 
 - Design SSH-specific transport and credential capability.
 - Decide whether SSH belongs under a general network/process capability or
