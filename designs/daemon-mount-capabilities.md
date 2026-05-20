@@ -307,6 +307,60 @@ The implementation can model an entry as `{ mountGrant, normalizedSegments }`
 inside an Exo (or as a passable record under SES `harden`), with
 `mountGrant` checked by identity when another capability accepts the entry.
 
+#### Alternative Considered: Entries as Mini-Capabilities
+
+An earlier shape put `lookup()`, `openFile()`, and `openDirectory()` on
+the entry itself:
+
+```ts
+// Considered and rejected:
+interface EndoMountEntry {
+  // ...value-shaped members...
+  lookup(): Promise<EndoMount | EndoMountFile>;
+  openDirectory(): Promise<EndoMount>;
+  openFile(): Promise<EndoMountFile>;
+}
+```
+
+That shape made entries mini-capabilities that minted handles on
+themselves, ergonomic per call site (`await E(entry).openFile()` rather
+than `await E(mount).openFile(entry)`).
+
+Rejected for these reasons:
+
+- **Diffuses authority across many handles.**  Every entry holding a
+  reference to its own mount-handle-minting authority means the mount's
+  effective surface is everywhere a passed-around entry lives.  The mount
+  becomes the sum of its issued entries plus itself; revoking or
+  attenuating the mount has to chase down the entries too.
+- **Harder to reason about authority lineage.**  When a handle is minted
+  via `entry.openFile()`, the lineage is `mount → entry → handle`; the
+  entry might be from a `readOnly()` view, or it might predate a mount
+  attenuation, and the resulting handle's authority is the *minimum* of
+  all three layers.  When the same mint goes through the mount
+  (`mount.openFile(entry)`), the mount's current state is the
+  single-point authority.
+- **Concentrates authority where the panel-flagged ocap-discipline says
+  it should be.**  The same reasoning the maintainer applied to MF1
+  (`provideGit` should accept a cap, not a pet name that triggers a
+  name-table lookup) applies here: handle-minting is the mount's
+  authority, exercised by the mount.  Entries are values you pass to
+  the mount; they don't carry authority of their own.
+- **Matches the existing `EndoMount.readOnly()` attenuation idiom.**
+  A `readOnly()` mount minting handles via `mount.openFile(entry)` is
+  trivially attenuated.  A `readOnly()` mount returning entries that
+  carry their own openFile would have to attenuate every issued entry
+  too, or fail to attenuate at all.
+
+The trade-off is a small ergonomic loss (`mount.openFile(entry)` is one
+extra noun per call vs. `entry.openFile()`) for a substantial
+authority-reasoning gain.  If a real use case surfaces where the value
+shape is awkward enough to warrant revisiting, the implementation can
+add handle-minting methods back to entries as a sugar layer over the
+mount's authority; that addition would not break the
+mount-is-authority discipline as long as the entries continue to
+delegate to the mount rather than holding minting authority directly.
+
 ### `EndoMount.lookup()` semantics on missing nodes
 
 `EndoMount.lookup(entry)` returns a live handle for an existing node and
