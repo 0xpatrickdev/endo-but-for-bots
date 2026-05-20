@@ -250,27 +250,47 @@ interface EndoMountEntry {
   exists(): Promise<boolean>;
   stat(): Promise<EndoMountStat | undefined>;
 
-  // Convert to live handles when the node exists.
-  lookup(): Promise<EndoMount | EndoMountFile>;
-  openDirectory(): Promise<EndoMount>;
-  openFile(): Promise<EndoMountFile>;
-
   // Narrow to a child entry without granting access outside the mount.
   child(name: string): EndoMountEntry;
 }
 ```
 
-An `EndoMountEntry` is a logical mount-relative identity:
+An `EndoMountEntry` is a **value**, not a handle.  It carries:
 
-- It can represent a missing path.
-- It cannot be fabricated by the caller for a different mount.
-- It does not claim inode stability.
-- It can carry enough relative presentation data for user interfaces and
+- mount-lineage provenance (so another mount rejects it on identity);
+- normalized relative segments;
+- enough presentation data for status reports;
+- pure existence and metadata queries.
+
+It does **not** mint live handles.  Handle-minting lives on `EndoMount`
+and accepts an entry as the path-bearing argument (`mount.openFile(entry)`,
+`mount.openDirectory(entry)`, `mount.lookup(entry)`).  This keeps the
+entry shape value-shaped — a deeply read-only value an agent can pass
+around freely — and concentrates the handle-minting authority on the
+mount where it can be revoked or attenuated as a unit.
+
+An entry:
+
+- can represent a missing path;
+- cannot be fabricated by the caller for a different mount;
+- does not claim inode stability;
+- can carry enough relative presentation data for user interfaces and
   status reports without leaking host absolute paths.
 
 The implementation can model an entry as `{ mountGrant, normalizedSegments }`
-inside an Exo, with `mountGrant` checked by identity when another capability
-accepts the entry.
+inside an Exo (or as a passable record under SES `harden`), with
+`mountGrant` checked by identity when another capability accepts the entry.
+
+### `EndoMount.lookup()` semantics on missing nodes
+
+`EndoMount.lookup(entry)` returns a live handle for an existing node and
+**throws** `EndoMountMissingError` for a missing one.  Callers that want
+to test before opening use `entry.exists()` first; the `entry.exists() →
+mount.lookup(entry)` pattern is the recommended idiom.  No `maybeLookup`
+sibling exists in v1; if usage warrants one later, it can be added without
+contract breakage.  The throw-on-missing default matches `openFile` /
+`openDirectory` and is consistent with the existing `lookup(path)`
+behavior that exists today.
 
 ### `EndoMountStat`
 
@@ -443,11 +463,15 @@ later adapter or migration is mostly mechanical.
 - Add `EndoMountEntryInterface`.
 - Add `entry(path)` to `EndoMount`.
 - Store normalized relative segments plus mount lineage provenance.
-- Add `exists()`, `stat()`, `lookup()`, `openFile()`, and
-  `openDirectory()` on entries.
+- Add `exists()`, `stat()`, and `child()` on entries (value-shaped,
+  no handle-minting).
+- Handle-minting (`lookup`, `openFile`, `openDirectory`) lives on
+  `EndoMount` and accepts an entry as the path-bearing argument; see
+  next phase.
 - Add descriptor provenance tests:
   - entries from one mount rejected by another mount
-  - read-only entries cannot regain write authority
+  - read-only entries (via `readOnly()` mount) cannot regain write
+    authority through handle-minting on a sibling mutable mount
   - missing entries can round-trip without creating files
 
 ### Phase 3: Add Handle-Oriented Navigation and Metadata
