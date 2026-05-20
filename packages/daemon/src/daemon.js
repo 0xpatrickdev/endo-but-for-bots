@@ -2609,6 +2609,13 @@ const makeDaemonCore = async (
           const { value } = await checkinTree(remoteTree, makeDeferredTasks());
           return value;
         },
+        checkinBlob: async readerRef => {
+          const { value } = await formulateReadableBlob(
+            readerRef,
+            makeDeferredTasks(),
+          );
+          return value;
+        },
       });
     },
     'scratch-mount': async ({ readOnly }, _context, _id, formulaNumber) => {
@@ -2624,6 +2631,13 @@ const makeDaemonCore = async (
         filePowers,
         checkin: async remoteTree => {
           const { value } = await checkinTree(remoteTree, makeDeferredTasks());
+          return value;
+        },
+        checkinBlob: async readerRef => {
+          const { value } = await formulateReadableBlob(
+            readerRef,
+            makeDeferredTasks(),
+          );
           return value;
         },
       });

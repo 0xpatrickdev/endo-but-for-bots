@@ -4,6 +4,7 @@
 /** @import { FilePowers } from './types.js' */
 
 import { q } from '@endo/errors';
+import { E } from '@endo/eventual-send';
 import { makeExo } from '@endo/exo';
 
 import { mountHelp, mountFileHelp, makeHelp } from './help-text.js';
@@ -162,6 +163,13 @@ harden(isConfinedPath);
  */
 
 /**
+ * @typedef {(readerRef: unknown) => Promise<unknown>} CheckinBlobFn
+ *   Persists a single base64-stream `readerRef` (the same shape
+ *   `streamBase64()` returns) into the daemon's content store and returns
+ *   a `SnapshotBlob` exo.  Threaded in alongside `CheckinTreeFn`.
+ */
+
+/**
  * Provenance maps for mount-scoped entry descriptors.  An entry minted by
  * one mount lineage carries a private sentinel that consumers can probe to
  * verify it was minted by an authorized mount.  Phase 2 records the keys;
@@ -218,6 +226,7 @@ harden(assertDescriptorSegment);
  * @property {FilePowers} filePowers
  * @property {string} description
  * @property {CheckinTreeFn} [checkin]
+ * @property {CheckinBlobFn} [checkinBlob]
  * @property {object} [lineage]  Sentinel shared across a mount lineage
  *   (root mount + its lookup-derived sub-mounts + its readOnly attenuations).
  */
@@ -248,6 +257,37 @@ const makeMountExo = ctx => {
    */
   const resolve = segments =>
     resolveSegments(currentDir, confinementRoot, segments, filePowers);
+
+  /**
+   * Normalize the path-bearing argument shared by every method that
+   * names a node.  Accepts a string, an array of segments, or an
+   * `EndoMountEntry` minted by this lineage; rejects entries from
+   * other lineages so a cap from one mount cannot leak into another.
+   *
+   * @param {unknown} pathOrEntry
+   * @returns {Promise<string[]>}
+   */
+  const pathOrEntryToSegments = async pathOrEntry => {
+    if (typeof pathOrEntry === 'string') {
+      return [pathOrEntry];
+    }
+    if (Array.isArray(pathOrEntry)) {
+      return [...pathOrEntry];
+    }
+    const otherLineage = entryLineageKey.get(/** @type {object} */ (pathOrEntry));
+    if (otherLineage === undefined) {
+      throw new Error(
+        'pathArg must be a string, array of strings, or EndoMountEntry minted by this daemon',
+      );
+    }
+    if (otherLineage !== lineage) {
+      throw new Error(
+        'EndoMountEntry was minted by a different mount lineage and cannot be used here',
+      );
+    }
+    const segs = await E(/** @type {object} */ (pathOrEntry)).segments();
+    return [...segs];
+  };
 
   const help = makeHelp(mountHelp);
 
@@ -290,8 +330,7 @@ const makeMountExo = ctx => {
     },
 
     async lookup(pathArg) {
-      await null;
-      const segments = typeof pathArg === 'string' ? [pathArg] : pathArg;
+      const segments = await pathOrEntryToSegments(pathArg);
       const target = resolve(segments);
       await assertConfined(target, confinementRoot, filePowers);
 
@@ -305,20 +344,24 @@ const makeMountExo = ctx => {
         });
       }
 
-      return makeMountFileExo(target, readOnly, filePowers, confinementRoot);
+      return makeMountFileExo({
+        filePath: target,
+        readOnly,
+        filePowers,
+        confinementRoot,
+        checkinBlob: ctx.checkinBlob,
+      });
     },
 
     async readText(pathArg) {
-      await null;
-      const segments = typeof pathArg === 'string' ? [pathArg] : pathArg;
+      const segments = await pathOrEntryToSegments(pathArg);
       const target = resolve(segments);
       await assertConfined(target, confinementRoot, filePowers);
       return filePowers.readFileText(target);
     },
 
     async maybeReadText(pathArg) {
-      await null;
-      const segments = typeof pathArg === 'string' ? [pathArg] : pathArg;
+      const segments = await pathOrEntryToSegments(pathArg);
       const target = resolve(segments);
       try {
         await assertConfined(target, confinementRoot, filePowers);
@@ -329,9 +372,8 @@ const makeMountExo = ctx => {
     },
 
     async writeText(pathArg, content) {
-      await null;
       assertWritable();
-      const segments = typeof pathArg === 'string' ? [pathArg] : pathArg;
+      const segments = await pathOrEntryToSegments(pathArg);
       const target = resolve(segments);
       await assertConfinedOrAncestor(target, confinementRoot, filePowers);
       const parent = filePowers.joinPath(target, '..');
@@ -340,31 +382,115 @@ const makeMountExo = ctx => {
     },
 
     async remove(pathArg) {
-      await null;
       assertWritable();
-      const segments = typeof pathArg === 'string' ? [pathArg] : pathArg;
+      const segments = await pathOrEntryToSegments(pathArg);
       const target = resolve(segments);
       await assertConfined(target, confinementRoot, filePowers);
       await filePowers.removePath(target);
     },
 
     async move(fromArg, toArg) {
-      await null;
       assertWritable();
-      const from = resolve(typeof fromArg === 'string' ? [fromArg] : fromArg);
-      const to = resolve(typeof toArg === 'string' ? [toArg] : toArg);
+      const fromSegs = await pathOrEntryToSegments(fromArg);
+      const toSegs = await pathOrEntryToSegments(toArg);
+      const from = resolve(fromSegs);
+      const to = resolve(toSegs);
       await assertConfined(from, confinementRoot, filePowers);
       await assertConfinedOrAncestor(to, confinementRoot, filePowers);
       await filePowers.renamePath(from, to);
     },
 
     async makeDirectory(pathArg) {
-      await null;
       assertWritable();
-      const segments = typeof pathArg === 'string' ? [pathArg] : pathArg;
+      const segments = await pathOrEntryToSegments(pathArg);
       const target = resolve(segments);
       await assertConfinedOrAncestor(target, confinementRoot, filePowers);
       await filePowers.makePath(target);
+    },
+
+    async openFile(pathArg) {
+      const segments = await pathOrEntryToSegments(pathArg);
+      const target = resolve(segments);
+      await assertConfined(target, confinementRoot, filePowers);
+      const isDir = await filePowers.isDirectory(target);
+      if (isDir) {
+        throw new Error(
+          `Path ${q(segments.join('/'))} is a directory; use openDirectory()`,
+        );
+      }
+      return makeMountFileExo({
+        filePath: target,
+        readOnly,
+        filePowers,
+        confinementRoot,
+        checkinBlob: ctx.checkinBlob,
+      });
+    },
+
+    async openDirectory(pathArg) {
+      const segments = await pathOrEntryToSegments(pathArg);
+      const target = resolve(segments);
+      await assertConfined(target, confinementRoot, filePowers);
+      const isDir = await filePowers.isDirectory(target);
+      if (!isDir) {
+        throw new Error(
+          `Path ${q(segments.join('/'))} is not a directory; use openFile()`,
+        );
+      }
+      return makeMountExo({
+        ...ctx,
+        currentDir: target,
+        description: `Subdirectory of ${description}`,
+        lineage,
+      });
+    },
+
+    async createFile(pathArg) {
+      assertWritable();
+      const segments = await pathOrEntryToSegments(pathArg);
+      const target = resolve(segments);
+      await assertConfinedOrAncestor(target, confinementRoot, filePowers);
+      const parent = filePowers.joinPath(target, '..');
+      await filePowers.makePath(parent);
+      const present = await filePowers.exists(target);
+      if (!present) {
+        // Idempotent create-or-open: an absent path becomes an empty file
+        // so callers can immediately write through the returned handle.
+        await filePowers.writeFileText(target, '');
+      }
+      return makeMountFileExo({
+        filePath: target,
+        readOnly,
+        filePowers,
+        confinementRoot,
+        checkinBlob: ctx.checkinBlob,
+      });
+    },
+
+    async createDirectory(pathArg) {
+      assertWritable();
+      const segments = await pathOrEntryToSegments(pathArg);
+      const target = resolve(segments);
+      await assertConfinedOrAncestor(target, confinementRoot, filePowers);
+      await filePowers.makePath(target);
+      return makeMountExo({
+        ...ctx,
+        currentDir: target,
+        description: `Subdirectory of ${description}`,
+        lineage,
+      });
+    },
+
+    async stat(pathArg) {
+      const segments = await pathOrEntryToSegments(pathArg);
+      const target = resolve(segments);
+      const present = await filePowers.exists(target);
+      if (!present) {
+        return undefined;
+      }
+      await assertConfined(target, confinementRoot, filePowers);
+      const isDir = await filePowers.isDirectory(target);
+      return harden({ kind: isDir ? 'directory' : 'file' });
     },
 
     entry(pathArg) {
@@ -383,6 +509,7 @@ const makeMountExo = ctx => {
         currentDir,
         filePowers,
         checkin: ctx.checkin,
+        checkinBlob: ctx.checkinBlob,
         lineage,
       });
     },
@@ -433,6 +560,7 @@ harden(makeMountExo);
  * @param {string} args.currentDir  The minting mount's effective root.
  * @param {FilePowers} args.filePowers
  * @param {CheckinTreeFn} [args.checkin]
+ * @param {CheckinBlobFn} [args.checkinBlob]
  * @param {object} args.lineage
  * @returns {object}
  */
@@ -443,6 +571,7 @@ const makeMountEntryExo = ({
   currentDir,
   filePowers,
   checkin,
+  checkinBlob,
   lineage,
 }) => {
   // Resolve the entry's physical path once; subsequent operations confine
@@ -495,10 +624,17 @@ const makeMountEntryExo = ({
           filePowers,
           description: `Mount at ${displayPath}`,
           checkin,
+          checkinBlob,
           lineage,
         });
       }
-      return makeMountFileExo(resolved, readOnly, filePowers, confinementRoot);
+      return makeMountFileExo({
+        filePath: resolved,
+        readOnly,
+        filePowers,
+        confinementRoot,
+        checkinBlob,
+      });
     },
 
     async openFile() {
@@ -512,7 +648,13 @@ const makeMountEntryExo = ({
       }
       // The entry's read-only bit propagates to the minted file handle so
       // an entry from a readOnly() mount cannot be used to write.
-      return makeMountFileExo(resolved, readOnly, filePowers, confinementRoot);
+      return makeMountFileExo({
+        filePath: resolved,
+        readOnly,
+        filePowers,
+        confinementRoot,
+        checkinBlob,
+      });
     },
 
     async openDirectory() {
@@ -531,6 +673,7 @@ const makeMountEntryExo = ({
         filePowers,
         description: `Mount at ${displayPath}`,
         checkin,
+        checkinBlob,
         lineage,
       });
     },
@@ -544,6 +687,7 @@ const makeMountEntryExo = ({
         currentDir,
         filePowers,
         checkin,
+        checkinBlob,
         lineage,
       });
     },
@@ -557,13 +701,21 @@ harden(makeMountEntryExo);
 /**
  * Create a transient file exo for a file within a mount.
  *
- * @param {string} filePath
- * @param {boolean} readOnly
- * @param {FilePowers} filePowers
- * @param {string} confinementRoot
+ * @param {object} args
+ * @param {string} args.filePath
+ * @param {boolean} args.readOnly
+ * @param {FilePowers} args.filePowers
+ * @param {string} args.confinementRoot
+ * @param {CheckinBlobFn} [args.checkinBlob]
  * @returns {object}
  */
-const makeMountFileExo = (filePath, readOnly, filePowers, confinementRoot) => {
+const makeMountFileExo = ({
+  filePath,
+  readOnly,
+  filePowers,
+  confinementRoot,
+  checkinBlob,
+}) => {
   const assertWritable = () => {
     if (readOnly) {
       throw new Error('Mount is read-only');
@@ -618,8 +770,42 @@ const makeMountFileExo = (filePath, readOnly, filePowers, confinementRoot) => {
       await writer.return(undefined);
     },
 
+    async append(content) {
+      await null;
+      assertWritable();
+      await assertConfined(filePath, confinementRoot, filePowers);
+      // filePowers does not yet expose an append primitive; read-then-write
+      // keeps the operation portable across the Node and XS-bus backends.
+      const existing = await filePowers.readFileText(filePath);
+      await filePowers.writeFileText(filePath, existing + content);
+    },
+
+    async stat() {
+      await null;
+      await assertConfined(filePath, confinementRoot, filePowers);
+      const isDir = await filePowers.isDirectory(filePath);
+      return harden({ kind: isDir ? 'directory' : 'file' });
+    },
+
+    async snapshot() {
+      if (!checkinBlob) {
+        throw new Error(
+          'snapshot() requires a checkinBlob function bound by the mount formula instantiator',
+        );
+      }
+      await assertConfined(filePath, confinementRoot, filePowers);
+      const reader = filePowers.makeFileReader(filePath);
+      return checkinBlob(makeReaderRef(reader));
+    },
+
     readOnly() {
-      return makeMountFileExo(filePath, true, filePowers, confinementRoot);
+      return makeMountFileExo({
+        filePath,
+        readOnly: true,
+        filePowers,
+        confinementRoot,
+        checkinBlob,
+      });
     },
   });
 };
@@ -633,9 +819,16 @@ harden(makeMountFileExo);
  * @param {boolean} opts.readOnly
  * @param {FilePowers} opts.filePowers
  * @param {CheckinTreeFn} [opts.checkin]
+ * @param {CheckinBlobFn} [opts.checkinBlob]
  * @returns {object}
  */
-export const makeMount = ({ rootPath, readOnly, filePowers, checkin }) => {
+export const makeMount = ({
+  rootPath,
+  readOnly,
+  filePowers,
+  checkin,
+  checkinBlob,
+}) => {
   const prefix = readOnly ? 'Read-only mount' : 'Mount';
   /** @type {MountContext} */
   const ctx = {
@@ -645,6 +838,7 @@ export const makeMount = ({ rootPath, readOnly, filePowers, checkin }) => {
     filePowers,
     description: `${prefix} at ${rootPath}`,
     checkin,
+    checkinBlob,
   };
 
   return makeMountExo(ctx);

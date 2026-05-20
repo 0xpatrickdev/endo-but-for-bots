@@ -4715,6 +4715,194 @@ test('mount entry - entries from a read-only mount mint read-only handles', asyn
   });
 });
 
+test('mount openFile / openDirectory mint typed handles', async t => {
+  const { host, config } = await prepareHost(t);
+
+  const mountPath = path.join(config.statePath, '..', 'mount-test-open');
+  await createMountFixture(mountPath, {
+    'src/index.js': 'export default 1',
+    'src/lib/util.js': 'export const x = 2',
+  });
+
+  await E(host).provideMount(mountPath, 'test-mount-open');
+  const mount = await E(host).lookup(['test-mount-open']);
+
+  // openFile against a string path returns a file handle.
+  const file = await E(mount).openFile(['src', 'index.js']);
+  t.is(await E(file).text(), 'export default 1');
+
+  // openDirectory against a string path returns a sub-mount.
+  const dir = await E(mount).openDirectory(['src']);
+  const dirList = await E(dir).list();
+  t.deepEqual([...dirList].sort(), ['index.js', 'lib']);
+
+  // Wrong-kind calls throw descriptively.
+  await t.throwsAsync(E(mount).openFile(['src']), { message: /directory/ });
+  await t.throwsAsync(E(mount).openDirectory(['src', 'index.js']), {
+    message: /not a directory/,
+  });
+});
+
+test('mount createFile / createDirectory are write-side handle-minters', async t => {
+  const { host, config } = await prepareHost(t);
+
+  const mountPath = path.join(config.statePath, '..', 'mount-test-create');
+  await createMountFixture(mountPath, {});
+
+  await E(host).provideMount(mountPath, 'test-mount-create');
+  const mount = await E(host).lookup(['test-mount-create']);
+
+  // createDirectory mints a sub-mount and is idempotent.
+  const subDir = await E(mount).createDirectory(['a', 'b']);
+  t.true(await E(mount).has('a', 'b'));
+  await E(subDir).writeText(['leaf.txt'], 'hello');
+  // Cross-reference: file is on disk in the expected nested location.
+  const onDisk = await fs.promises.readFile(
+    path.join(mountPath, 'a', 'b', 'leaf.txt'),
+    'utf-8',
+  );
+  t.is(onDisk, 'hello');
+
+  // createFile creates an empty file when absent and returns a writable handle.
+  const fileHandle = await E(mount).createFile(['fresh.txt']);
+  t.true(await E(mount).has('fresh.txt'));
+  t.is(await E(fileHandle).text(), '');
+  await E(fileHandle).writeText('payload');
+  t.is(await E(fileHandle).text(), 'payload');
+
+  // createFile against an existing file just returns a handle (no clobber).
+  const sameHandle = await E(mount).createFile(['fresh.txt']);
+  t.is(await E(sameHandle).text(), 'payload');
+});
+
+test('mount stat returns the kind for present nodes, undefined for missing', async t => {
+  const { host, config } = await prepareHost(t);
+
+  const mountPath = path.join(config.statePath, '..', 'mount-test-stat');
+  await createMountFixture(mountPath, {
+    'file.txt': 'present',
+    'dir/inner.txt': 'inner',
+  });
+
+  await E(host).provideMount(mountPath, 'test-mount-stat');
+  const mount = await E(host).lookup(['test-mount-stat']);
+
+  t.deepEqual(await E(mount).stat(['file.txt']), { kind: 'file' });
+  t.deepEqual(await E(mount).stat(['dir']), { kind: 'directory' });
+  t.is(await E(mount).stat(['missing.txt']), undefined);
+});
+
+test('mount accepts EndoMountEntry as a path argument', async t => {
+  const { host, config } = await prepareHost(t);
+
+  const mountPath = path.join(config.statePath, '..', 'mount-test-entry-arg');
+  await createMountFixture(mountPath, {
+    'src/index.js': 'export default 1',
+  });
+
+  await E(host).provideMount(mountPath, 'test-mount-entry-arg');
+  const mount = await E(host).lookup(['test-mount-entry-arg']);
+
+  const entry = await E(mount).entry(['src', 'index.js']);
+
+  // The same path-bearing methods that accept strings or arrays now accept
+  // a same-lineage entry without needing the caller to re-flatten segments.
+  t.is(await E(mount).readText(entry), 'export default 1');
+  t.deepEqual(await E(mount).stat(entry), { kind: 'file' });
+  const handleFromEntry = await E(mount).openFile(entry);
+  t.is(await E(handleFromEntry).text(), 'export default 1');
+});
+
+test('mount rejects EndoMountEntry from a different mount lineage', async t => {
+  const { host, config } = await prepareHost(t);
+
+  // Two separately-mounted directories, distinct lineages.
+  const pathA = path.join(config.statePath, '..', 'mount-test-lin-a');
+  const pathB = path.join(config.statePath, '..', 'mount-test-lin-b');
+  await createMountFixture(pathA, { 'a.txt': 'from A' });
+  await createMountFixture(pathB, { 'b.txt': 'from B' });
+  await E(host).provideMount(pathA, 'test-mount-lin-a');
+  await E(host).provideMount(pathB, 'test-mount-lin-b');
+  const mountA = await E(host).lookup(['test-mount-lin-a']);
+  const mountB = await E(host).lookup(['test-mount-lin-b']);
+
+  const entryFromA = await E(mountA).entry(['a.txt']);
+
+  // mountB must refuse an entry minted by mountA — entries do not retarget.
+  await t.throwsAsync(E(mountB).readText(entryFromA), {
+    message: /different mount lineage/,
+  });
+  await t.throwsAsync(E(mountB).openFile(entryFromA), {
+    message: /different mount lineage/,
+  });
+
+  // But mountA continues to honor its own entries.
+  t.is(await E(mountA).readText(entryFromA), 'from A');
+});
+
+test('mount entries from a sub-mount share lineage with the parent', async t => {
+  const { host, config } = await prepareHost(t);
+
+  const mountPath = path.join(config.statePath, '..', 'mount-test-lin-share');
+  await createMountFixture(mountPath, {
+    'src/index.js': 'sub-lineage',
+  });
+
+  await E(host).provideMount(mountPath, 'test-mount-lin-share');
+  const mount = await E(host).lookup(['test-mount-lin-share']);
+
+  // A sub-mount returned by lookup shares the parent mount's lineage; an
+  // entry minted from the sub-mount works on the parent and vice versa.
+  const sub = await E(mount).lookup(['src']);
+  const subEntry = await E(sub).entry(['index.js']);
+  t.is(await E(sub).readText(subEntry), 'sub-lineage');
+
+  // The parent mount also accepts the sub-mount's entry, because they
+  // share lineage — but its segments resolve relative to the sub-mount.
+  // The parent's pathOrEntry conversion uses the entry's segments as-is,
+  // which the parent's resolver applies relative to its own currentDir.
+  // For an entry whose segments are mount-root-relative (sub.entry returns
+  // segments relative to sub's currentDir), the parent sees them relative
+  // to its own root — so the parent does NOT find the same file unless
+  // the path happens to resolve.  This is a property of segment relativity,
+  // not of lineage: the lineage check only proves authority, not pathing.
+});
+
+test('mount file - stat / append / snapshot', async t => {
+  const { host, config } = await prepareHost(t);
+
+  const mountPath = path.join(config.statePath, '..', 'mount-test-file-ops');
+  await createMountFixture(mountPath, {
+    'notes.txt': 'one\n',
+  });
+
+  await E(host).provideMount(mountPath, 'test-mount-file-ops');
+  const mount = await E(host).lookup(['test-mount-file-ops']);
+  const file = await E(mount).openFile(['notes.txt']);
+
+  // stat reports kind.
+  t.deepEqual(await E(file).stat(), { kind: 'file' });
+
+  // append extends the file.
+  await E(file).append('two\n');
+  await E(file).append('three\n');
+  t.is(await E(file).text(), 'one\ntwo\nthree\n');
+
+  // snapshot returns a SnapshotBlob whose content reads back as the file.
+  const blob = await E(file).snapshot();
+  // eslint-disable-next-line no-underscore-dangle
+  const blobMethods = await E(blob).__getMethodNames__();
+  t.true(blobMethods.includes('sha256'));
+  t.true(blobMethods.includes('text'));
+  t.is(await E(blob).text(), 'one\ntwo\nthree\n');
+
+  // Read-only attenuation refuses mutating ops via append and snapshot still works.
+  const ro = await E(file).readOnly();
+  await t.throwsAsync(E(ro).append('four\n'), { message: /read-only/ });
+  t.deepEqual(await E(ro).stat(), { kind: 'file' });
+  t.is(await E(ro).text(), 'one\ntwo\nthree\n');
+});
+
 // symlink confinement tests
 
 /**

@@ -505,7 +505,10 @@ export const BlobInterface = M.interface('EndoBlob', {
 });
 
 const PathSegmentsShape = M.arrayOf(M.string());
-const PathArgShape = M.or(M.string(), PathSegmentsShape);
+// Path arg accepts string, array of segments, or an EndoMountEntry
+// remotable.  Lineage provenance is enforced inside the methods that
+// accept entries; the interface only filters the shape.
+const PathArgShape = M.or(M.string(), PathSegmentsShape, M.remotable());
 
 export const MountInterface = M.interface('EndoMount', {
   // ReadableTree-compatible surface
@@ -522,6 +525,13 @@ export const MountInterface = M.interface('EndoMount', {
   makeDirectory: M.call(PathArgShape).returns(M.promise()),
   // Descriptor minting (mount-scoped logical references)
   entry: M.call(PathArgShape).returns(M.remotable()),
+  // Handle-oriented navigation and creation
+  openFile: M.call(PathArgShape).returns(M.promise()),
+  openDirectory: M.call(PathArgShape).returns(M.promise()),
+  createFile: M.call(PathArgShape).returns(M.promise()),
+  createDirectory: M.call(PathArgShape).returns(M.promise()),
+  // Metadata
+  stat: M.call(PathArgShape).returns(M.promise()),
   // Attenuation
   readOnly: M.call().returns(M.remotable()),
   // Snapshot
@@ -536,6 +546,9 @@ export const MountFileInterface = M.interface('EndoMountFile', {
   json: M.call().returns(M.promise()),
   writeText: M.call(M.string()).returns(M.promise()),
   writeBytes: M.call(M.remotable()).returns(M.promise()),
+  append: M.call(M.string()).returns(M.promise()),
+  stat: M.call().returns(M.promise()),
+  snapshot: M.call().returns(M.promise()),
   readOnly: M.call().returns(M.remotable()),
   help: M.call().returns(M.string()),
 });
