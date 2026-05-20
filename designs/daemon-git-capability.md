@@ -177,6 +177,9 @@ Read-only state is part of the `Git` capability / formula itself, not just a wra
 The same backing invariants — same repository-root verification, same backing-storage check — apply on both construction paths.
 Git authority is bounded by the mount it was derived from, and `Git.readOnly()` can only attenuate further; it can never widen.
 
+The same-authority-shape invariant is what makes the repository-identity pin (Design Decision 7) construct-able on a read-only mount in the first place: pinning needs read access to `.git/config` and `git rev-parse` output, and the read-only mount grants exactly that historical-contents read access at construction time.
+See Design Decision 8 § *Two additional boundaries on a read-only `Git`* for the explicit cross-link between read-only mount authority and historical-contents grant, and for the inverse note (callers handing out a read-only `Git` derived from a read-only mount are simultaneously granting historical-contents read access, not just present-worktree read access).
+
 Behavioral boundaries that follow from this same-authority-shape invariant are catalogued in § Design Decision 8 (allowed and rejected operations on a read-only `Git`) and § Design Decision 9 (`Git.readOnly()` idempotence and attenuation semantics).
 `GitRemote` construction from a read-only `Git` is rejected for now, even for `fetch`, because fetching mutates `.git` object and ref state (see `daemon-git-remotes.md` § Capability Construction).
 
