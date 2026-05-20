@@ -504,23 +504,43 @@ same public capability boundary.
 
 ## Backend Boundary
 
-The public `Git` capability should not depend on a particular implementation
-library.
+The public `Git` capability is shaped for the native-git backend in
+[`packages/fae`](../packages/fae)'s existing reference implementation.  A
+later JS backend (`isomorphic-git`, an Endo-native HTTP git smart-protocol
+client, a daemon-local object-database walker) may require contract
+revisions in v2 or v3.  The contract below is best-effort
+backend-pluggable, not contractually backend-replaceable; methods that
+turn out to leak native-git assumptions (sanitization, askpass, allowlist
+rejection) move to a `NativeGitBackend` sub-interface during that swap.
 
 ```ts
+// Essential backend contract (every backend must satisfy):
 interface GitBackend {
   assertRepositoryRoot(): Promise<void>;
   status(): Promise<BackendStatusEntry[]>;
   diff(...): Promise<string>;
   add(...): Promise<void>;
   // ...
-  tree(ref: string): Promise<ReadableTree>;
+  trees(): GitTreeProviderBackend;
+}
+
+// Native-git-shaped contract; carries the hardening envelope:
+interface NativeGitBackend extends GitBackend {
+  sanitizeChildEnv(env: Record<string, string>): Record<string, string>;
+  rejectRepoLocalExecutables(): Promise<void>;
+  // …native-only operational surface
 }
 ```
 
+The split is deliberate: it names the parts of today's implementation that
+are accidentally specific to shelling-out, so a future JS backend can
+implement the essential contract without inheriting hooks that do not
+apply to it.  Until that swap actually happens, the v1 backend is the
+native one.
+
 ### Initial Backend: Native Git
 
-Start with a native-git backend because the existing reference tool already
+Start with a `NativeGitBackend` because the existing reference tool already
 proves the hardening envelope and local workflow shape:
 
 - exact worktree-root verification;
@@ -543,8 +563,10 @@ archive stream.
 
 A JS implementation such as an `isomorphic-git`-style backend remains a
 valid future experiment, especially for commit-tree reads or alternate
-storage backends.  The public capability contract should make that choice
-replaceable rather than designing around one library up front.
+storage backends.  Adopting one will sharpen the line between `GitBackend`
+(essential) and `NativeGitBackend` (native-only) and may surface methods
+that should move from one to the other.  Plan for the contract to evolve
+rather than treating it as frozen.
 
 Evaluation criteria for any future backend:
 
@@ -762,8 +784,12 @@ Complete the required phases from
    live on a separately-granted `GitTreeProvider` obtained via
    `git.trees()`.  This lets a host grant read-only auditor agents tree
    access without the worktree-mutation surface.
-4. **Backend choice is replaceable.**  Native git is the practical initial
-   backend; the capability contract should survive a backend change.
+4. **Backend choice is best-effort pluggable, not contractually swappable.**
+   The v1 contract is shaped for the `NativeGitBackend` extracted from
+   `packages/fae`.  A future JS backend may force the essential
+   `GitBackend` contract to narrow as native-only methods migrate to
+   `NativeGitBackend`.  The contract is allowed to evolve at backend-swap
+   time rather than being treated as frozen by v1.
 5. **No hidden authority expansion.**  Git does not imply network or shell
    access, and a read-only mount does not become writable through git.
 6. **Bulk reads are a backend data plane.**  Large immutable tree operations
