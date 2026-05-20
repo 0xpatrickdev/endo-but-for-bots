@@ -490,6 +490,12 @@ Instead, it requires every new method to move toward the shared shape so a later
 - [ ] Ensure public mounts do not expose backing paths.
 - [ ] Add tests proving trusted code can correlate a mount with its backing while guest-visible introspection cannot recover that path.
 
+**Prerequisite.** The rationale claim that the hidden-facet implementation "survives daemon restart trivially because it is reconstituted from the same formula" assumes the daemon's formula machinery can reconstitute a sibling facet alongside the public `EndoMount` facet on the same formula.  Today's `mount` formula in `packages/daemon/src/mount.js` returns a single `makeExo('EndoMount', ...)` and `packages/daemon/src/daemon.js`'s formula switch (`case 'mount':`) returns one Exo per formula id.  The phase therefore depends on one of:
+- adding multi-facet support to the formula reconstitution path (a sibling Exo on the same formula id, addressable through a host-private name table keyed by formula id), or
+- expressing the backing facet as a derived formula that reconstitutes from the same mount formula id but lives in a separate host-private name table.
+
+The current implementation supports neither out of the box; the phase's first task is to choose between those two paths (or a third that the maintainer prefers) and to add the supporting formula-machinery change before any backing-facet code lands.
+
 ### Phase 5: Converge with Shared Filesystem Types
 
 - [ ] Add adapters or aliases to make `EndoMount` / `EndoMountFile` satisfy the `Directory` / `File` contracts where practical.
