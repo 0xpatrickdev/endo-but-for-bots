@@ -553,17 +553,66 @@ later adapter or migration is mostly mechanical.
 
 ## Open Questions
 
-1. Should `readOnly()` return a structurally narrower `ReadableTree`
-   interface once shared `Directory` / `File` adoption is complete, or keep
-   the current daemon convention of same-named Exos whose writes throw?
-2. Should `entry(path)` accept multi-segment arrays only, or also preserve a
-   slash-delimited string convenience form?
-3. Should `EndoMountEntry.displayPath()` be public, or should callers carry
-   their own presentation string separately from the capability?
-4. Should `snapshot()` remain best-effort, or should physical mounts grow a
-   stronger capture mode before it is used for build reproducibility?
-5. When the full VFS namespace arrives, should descriptors be mount-local or
-   namespace-local?
+1. **Descriptors mount-local or namespace-local?**  When the full VFS
+   namespace arrives, descriptors need to compose across providers
+   (physical mount, git tree, memory backend, CAS).  This is a real open
+   question whose answer depends on VFS-namespace design that lives in
+   [daemon-capability-filesystem](daemon-capability-filesystem.md) and
+   is out of scope for this trio.
+
+### Resolved (recorded as Design Decisions)
+
+The following questions were carried in early drafts; their resolutions
+live in *Design Decisions* below.
+
+- `readOnly()` interface narrowing — decision 6.
+- `entry(path)` accepting both arrays and slash strings — already in the
+  `EndoMount` interface (`string | string[]`).
+- `displayPath()` public — decision 7.
+
+### Spike Tasks
+
+These are open questions that need measurement or a concrete use case
+before the answer is design-stable.  Each lives as a checklist item under
+its associated phase.
+
+- **Snapshot consistency for build-reproducibility.**  The current
+  contract is per-file-consistent, per-tree best-effort
+  ([§ Snapshot Semantics](#snapshot-semantics)).  If a downstream caller
+  (caplet build, deterministic test fixture) actually needs single-instant
+  capture, run a spike during the snapshot-consumer's design pass to
+  measure whether the per-file guarantee is sufficient or whether a
+  stronger mode is required, then either accept the current contract or
+  add a `snapshot({ consistency: 'transactional' })` option in a follow-up
+  doc.  Until a real consumer surfaces the need, the per-file guarantee
+  stays.
+
+## Design Decisions
+
+1. **Mount authority is an object.**  The guest holds `EndoMount`,
+   `EndoMountFile`, and `EndoMountEntry`; the guest never holds the
+   physical host path.
+2. **Strings are selectors, not authorities.**  Relative paths remain
+   accepted as convenience inputs but are normalized into entries at the
+   boundary.
+3. **`EndoMountEntry` is a value, not a handle.**  Handle-minting
+   (`lookup`, `openFile`, `openDirectory`) lives on `EndoMount` and
+   accepts an entry as the path-bearing argument.
+4. **`EndoMountBacking` is a hidden Exo facet on the mount formula.**
+   Restart-trivial, no extra persistence machinery, no separate seal
+   key.
+5. **Snapshot consistency is per-file, best-effort per-tree.**  Stronger
+   modes are a future addition gated on a real consumer.
+6. **`readOnly()` keeps the same-named-throwing-Exo convention in v1.**
+   The structural-narrowing form (returning a `ReadableTree` / `ReadableBlob`
+   that has no mutation methods at all) lands in Phase 5 alongside the
+   shared `Directory` / `File` adoption; the v1 form preserves source
+   compatibility for the existing daemon callers.
+7. **`displayPath()` is public.**  The data is mount-relative-only (no
+   host-path leak) and the convenience is worth more than the
+   alternative "callers carry their own presentation string"; treating
+   presentation as a property of the capability keeps the rendering
+   consistent across consumers.
 
 ## Prompt
 

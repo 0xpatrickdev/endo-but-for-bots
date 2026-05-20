@@ -816,21 +816,19 @@ Complete the required phases from
 
 ## Open Questions
 
-1. Should `Git.tree(ref)` be the only public git-tree entry point, or should
-   there also be a host-facing `provideGitTree()` formula for long-lived
-   named trees?
-2. Should textual `diff()` remain the first public shape, or should a
-   structured hunk model be introduced before broad use?
-3. How much conflict state should be modeled structurally in phase 4 rather
-   than returned as backend text?
-4. Should the initial git formula reference only the worktree mount, or also
-   pin the repository identity separately to guard against replacing `.git`
-   underneath the mount?
-5. Which operations, if any, should be valid over a read-only worktree mount
-   beyond inspection and immutable tree access?
-6. Should a host-facing `provideGitTree()` or `stageGitTree()` API expose the
-   bulk path explicitly, or should it remain only an optimization behind
-   existing `ReadableTree` consumers?
+This trio's open-question debt has been resolved into the Design
+Decisions below.  No open questions remain on this document; revisit if
+real implementation surfaces new ones.
+
+### Resolved (recorded as Design Decisions)
+
+- Tree-access split (`Git.tree(ref)` vs sibling provider) — decision 3.
+- Structured `diff()` shape — decision 6.
+- Structured conflict state in phase 4 — decision 6.
+- Pinning repository identity separately from worktree mount — decision 7.
+- Operations valid over a read-only worktree mount — decision 8.
+- Host shortcut for read-only `GitTreeProvider` — decision 9; bulk-path
+  exposure is a backend-private optimization, see decision 10.
 
 ## Design Decisions
 
@@ -853,9 +851,37 @@ Complete the required phases from
    time rather than being treated as frozen by v1.
 5. **No hidden authority expansion.**  Git does not imply network or shell
    access, and a read-only mount does not become writable through git.
-6. **Bulk reads are a backend data plane.**  Large immutable tree operations
-   may use native archive streams internally, but that does not change the
-   guest-visible capability surface.
+6. **Text in v1, structured in v2.**  `diff` / `show` / `merge` / `rebase`
+   / `stashList` / `stashShow` return `Promise<string>` in v1 and migrate
+   to the shapes named in § Future Structured Result Shapes in v2.
+   Conflict state is modeled structurally from v2 onward (`GitConflict`).
+7. **Pin repository identity separately from the worktree mount.**  The
+   git formula records (a) the worktree mount identity AND (b) a
+   repository-identity pin captured at construction time (the
+   `.git/HEAD` first-recognized commit-oid, or the formula id of a
+   sibling sealed repo-identity facet).  Subsequent operations verify
+   the pin before acting; this defends against `.git` being replaced
+   under the mount (Open Question #4 in the early draft).  Read-only
+   inspection methods log a structured warning and fail-closed if the
+   pin no longer matches.
+8. **Read-only worktree mounts permit inspection + immutable trees +
+   `worktree.snapshot()`; reject everything else.**  Allowed: `status`,
+   `diff`, `log`, `show`, `revParse`, `branches`, `currentBranch`,
+   `trees()` and its derived `GitTreeProvider`, and a `worktree.snapshot()`
+   that captures the live tree without mutating it.  Rejected: `add`,
+   `restore`, `commit`, `createBranch`, `deleteBranch`, `renameBranch`,
+   `switch`, `merge`, `rebase`, `stashPush`, `stashApply`, `stashPop`,
+   `stashDrop`.
+9. **A host shortcut for read-only audit grants exists.**  `Git.trees()`
+   returns a `GitTreeProvider` derivable from a `Git` cap; a separate
+   `provideGitTreeProvider(mount, petName)` host method exists so an
+   operator can grant a read-only auditor agent just the tree provider
+   without ever issuing the parent `Git`.
+10. **Bulk reads are a backend data plane.**  Large immutable tree
+    operations may use native archive streams internally (see § Bulk
+    Tree Data Plane), but that does not change the guest-visible
+    capability surface; no `stageGitTree()` style guest API exposes the
+    bulk path in v1.
 
 ## Prompt
 

@@ -843,26 +843,46 @@ The public `GitRemote` contract should survive those swaps.
 
 ## Open Questions
 
-1. Should `pull()` live on `GitRemote`, or should agents explicitly compose
-   `remote.fetch()` with local `git.merge()` / `git.rebase()` so policy is
-   more visible?
-2. Should `GitRemote.inspect()` reveal the full remote URL to the guest, or
-   only origin plus a host-assigned label?
-3. Is a bearer/basic HTTPS MVP sufficient, or do target users require SSH in
-   the first public release?
-4. Should the credential capability be generic across services, or should
-   git start with a narrow `GitCredential` abstraction and generalize later?
-5. How should provider-specific branch protection be reflected, if at all,
-   versus relying solely on local policy and server-side rejection?
-6. What should the host-mediated bootstrap API be for cloning a remote into
-   a new physical worktree before a local `Git` capability exists?
-7. Should the HTTPS transport input remain a general `HttpClient`, or should
-   git eventually narrow it into a dedicated `GitHttpsTransport` capability?
-8. What observable telemetry should distinguish CapTP control-plane time from
-   remote transport data-plane time for debugging slow fetches and pushes?
-9. What concrete peer-to-peer use case would justify a Noise-based git
-   transport, and how would its endpoint identity bind to repository and
-   credential policy?
+1. **Concrete peer-to-peer use case for a Noise-based git transport.**
+   Explicitly deferred until HTTPS data-plane shape is proven (§ Future
+   Encrypted Transports).  A real use case (Endo agents exchanging git
+   objects directly, sneakernet repo sync, etc.) is what justifies
+   designing the transport and its endpoint-identity policy.
+
+### Resolved (recorded as Design Decisions)
+
+- `pull()` location — decision 7.
+- `GitRemote.inspect()` URL reveal scope — decision 8.
+- Credential capability generality (generic vs `GitCredential`) —
+  decision 9.
+- Provider-specific branch protection — decision 10.
+- `HttpClient` vs `GitHttpsTransport` narrowing — decision 11.
+
+### Spike Tasks
+
+These are open questions that need measurement or a concrete use case
+before the answer is design-stable.  Each gets a one-line follow-up
+deliverable.
+
+- **MVP transport scope: HTTPS-only sufficient?**  Before Phase 1 ships,
+  survey the target endo-MVP users (likely the Fae / Lal / Genie agents'
+  current operators) and confirm that HTTPS bearer/basic credentials
+  cover their first-release flows.  If a non-trivial fraction needs SSH,
+  the SSH design in Phase 7 moves earlier.  Deliverable: a one-page
+  note in `designs/` confirming or revising the HTTPS-only Phase 1.
+- **Bootstrap / clone API.**  A `provideGitClone({...})` host flow that
+  composes mount creation + endpoint policy + sealed credential authority
+  before a local `Git` exists is a real follow-up requirement (early-draft
+  Open Question #6).  Design lives in its own `designs/daemon-git-clone.md`
+  follow-up; the spike's deliverable is the design doc, scheduled for
+  Phase 6 after HTTPS fetch/push are exercised in real workflows.
+- **Telemetry to distinguish CapTP control-plane time from remote
+  transport data-plane time.**  During Phase 2, add structured timing
+  fields to `GitFetchResult` and `GitPushResult` (initial shape:
+  `{ captpMs: number; transportMs: number }` augmenting the existing
+  result types) and iterate based on what debug sessions actually need.
+  The shape may change after the spike; the principle (timing is
+  observable) is decision 12.
 
 ## Design Decisions
 
@@ -879,6 +899,42 @@ The public `GitRemote` contract should survive those swaps.
 6. **CapTP is the remote control plane.**  Remote git packfiles should move
    over bounded HTTPS or another explicit git transport, not through CapTP
    object messages by default.
+7. **`pull()` lives on `GitRemote`.**  The composition is `fetch + local
+   integration` per § Operation Semantics; the `strategy` enum keeps the
+   policy explicit on every call.  An agent that wants finer-grained
+   composition can still call `E(remote).fetch()` and then `E(git).merge()`
+   or `E(git).rebase()` separately, but the bundled `pull()` is the
+   ergonomic path for the common case.
+8. **`GitRemote.inspect()` reveals the full remote URL.**  The URL is
+   controller-owned policy that the host already chose to share; hiding
+   it behind a host-assigned label adds an indirection without obviously
+   protecting anything (the guest can correlate operations to the URL
+   anyway).  Construction-time rejection of URLs with embedded
+   `user:password@host` userinfo prevents the only case where the URL
+   itself would carry a secret.
+9. **Credentials are generic across services.**  `BearerCredential` and
+   `BasicCredential` are not git-specific; the same caps work for any
+   HTTPS service that accepts the same authentication shape.
+   Specializing to `GitCredential` after the fact is cheap; generalizing
+   a specialized one later is expensive.
+10. **Provider-specific branch protection is server-side, not daemon-side.**
+    The daemon does not introspect GitHub / GitLab / Forgejo / Gitea
+    branch-protection APIs; relying on server-side rejection keeps the
+    daemon free of provider-specific knowledge.  Local policy
+    (`pushRefspecs`, `allowForcePush`, `allowDelete`) covers the
+    operator-known constraints; server-side rejection covers the
+    provider-specific ones.
+11. **HTTPS transport input remains a general `HttpClient` in v1.**  A
+    dedicated `GitHttpsTransport` capability may emerge later if
+    spike-measured git-specific needs (smart-protocol pipelining,
+    sideband channel handling) make it worth specializing.  Until then,
+    the general transport cap composes cleanly with other Endo HTTP
+    consumers.
+12. **Timing is observable on every remote operation.**  Phase 2 adds
+    timing fields to `GitFetchResult` / `GitPushResult` so a debugging
+    consumer can distinguish CapTP control-plane time from remote
+    transport data-plane time without needing daemon-side
+    instrumentation.
 
 ## Prompt
 
