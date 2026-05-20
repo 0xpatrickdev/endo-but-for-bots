@@ -207,7 +207,11 @@ related `@endo/platform/fs` vocabulary.
 ```ts
 interface EndoMount {
   // Existing ReadableTree-compatible surface.
+  // `has` accepts either a path-segment varargs form or a single
+  // mount-minted entry; the entry form is the no-observational-authority
+  // existence test for an `EndoMountEntry` value.
   has(...path: string[]): Promise<boolean>;
+  has(entry: EndoMountEntry): Promise<boolean>;
   list(...path: string[]): Promise<string[]>;
   lookup(path: string | string[] | EndoMountEntry):
     Promise<EndoMount | EndoMountFile>;
@@ -224,7 +228,9 @@ interface EndoMount {
   createFile(path: string | string[] | EndoMountEntry):
     Promise<EndoMountFile>;
 
-  // Metadata.
+  // Metadata.  `stat(entry)` is the no-observational-authority metadata
+  // query for an `EndoMountEntry` value; the path-form siblings keep
+  // existing string-path callers working.
   stat(path: string | string[] | EndoMountEntry):
     Promise<EndoMountStat | undefined>;
 
@@ -285,10 +291,6 @@ interface EndoMountEntry {
   segments(): string[];
   displayPath(): string;
 
-  // Existence and metadata at the moment of the call.
-  exists(): Promise<boolean>;
-  stat(): Promise<EndoMountStat | undefined>;
-
   // Narrow to a child entry without granting access outside the mount.
   child(name: string): EndoMountEntry;
 }
@@ -298,15 +300,19 @@ An `EndoMountEntry` is a **value**, not a handle.  It carries:
 
 - mount-lineage provenance (so another mount rejects it on identity);
 - normalized relative segments;
-- enough presentation data for status reports;
-- pure existence and metadata queries.
+- enough presentation data for status reports.
 
-It does **not** mint live handles.  Handle-minting lives on `EndoMount`
-and accepts an entry as the path-bearing argument (`mount.openFile(entry)`,
+It carries **no live-filesystem authority at all** — no observational
+queries like `exists()` or `stat()`, and no handle-minting methods.
+Existence and metadata queries live on `EndoMount` and accept an entry:
+`mount.has(entry)` for the existence test and `mount.stat(entry)` for the
+metadata query.  Handle-minting also lives on `EndoMount` and accepts an
+entry as the path-bearing argument (`mount.openFile(entry)`,
 `mount.openDirectory(entry)`, `mount.lookup(entry)`).  This keeps the
 entry shape value-shaped — a deeply read-only value an agent can pass
-around freely — and concentrates the handle-minting authority on the
-mount where it can be revoked or attenuated as a unit.
+around freely — and concentrates *both* observational authority and
+handle-minting authority on the mount where they can be revoked or
+attenuated as a unit.
 
 An entry:
 
@@ -322,68 +328,85 @@ inside an Exo (or as a passable record under SES `harden`), with
 
 #### Alternative Considered: Entries as Mini-Capabilities
 
-An earlier shape put `lookup()`, `openFile()`, and `openDirectory()` on
-the entry itself:
+An earlier shape put **both** observational authority (`exists()`,
+`stat()`) and handle-minting (`lookup()`, `openFile()`,
+`openDirectory()`) on the entry itself:
 
 ```ts
 // Considered and rejected:
 interface EndoMountEntry {
   // ...value-shaped members...
+  exists(): Promise<boolean>;
+  stat(): Promise<EndoMountStat | undefined>;
   lookup(): Promise<EndoMount | EndoMountFile>;
   openDirectory(): Promise<EndoMount>;
   openFile(): Promise<EndoMountFile>;
 }
 ```
 
-That shape made entries mini-capabilities that minted handles on
-themselves, ergonomic per call site (`await E(entry).openFile()` rather
-than `await E(mount).openFile(entry)`).
+That shape made entries mini-capabilities that both observed the live
+filesystem (every `entry.exists()` / `entry.stat()` call reaches the
+backing storage) and minted handles on themselves, ergonomic per call
+site (`await E(entry).openFile()` rather than
+`await E(mount).openFile(entry)`).
 
 Rejected for these reasons:
 
-- **Diffuses authority across many handles.**  Every entry holding a
-  reference to its own mount-handle-minting authority means the mount's
-  effective surface is everywhere a passed-around entry lives.  The mount
-  becomes the sum of its issued entries plus itself; revoking or
-  attenuating the mount has to chase down the entries too.
+- **Diffuses authority across many handles.**  Every entry holding both
+  a reference to its mount's observational authority *and* its
+  handle-minting authority means the mount's effective surface is
+  everywhere a passed-around entry lives.  The mount becomes the sum of
+  its issued entries plus itself; revoking or attenuating the mount has
+  to chase down the entries too.  An entry that looks like a value but
+  invokes the backing filesystem on every call is not really a value —
+  it is a mini-capability with the syntax of a value, which is harder
+  to reason about than either pole.
 - **Harder to reason about authority lineage.**  When a handle is minted
   via `entry.openFile()`, the lineage is `mount → entry → handle`; the
   entry might be from a `readOnly()` view, or it might predate a mount
   attenuation, and the resulting handle's authority is the *minimum* of
   all three layers.  When the same mint goes through the mount
   (`mount.openFile(entry)`), the mount's current state is the
-  single-point authority.
+  single-point authority.  The same argument applies to observational
+  authority: `entry.exists()` against a stale mount-attenuation state
+  is harder to reason about than `mount.has(entry)` against the
+  current mount.
 - **Concentrates authority where the panel-flagged ocap-discipline says
   it should be.**  The same reasoning the maintainer applied to MF1
   (`provideGit` should accept a cap, not a pet name that triggers a
-  name-table lookup) applies here: handle-minting is the mount's
-  authority, exercised by the mount.  Entries are values you pass to
-  the mount; they don't carry authority of their own.
+  name-table lookup) applies here: both observational queries and
+  handle-minting are the mount's authority, exercised by the mount.
+  Entries are values you pass to the mount; they don't carry authority
+  of their own.
 - **Matches the existing `EndoMount.readOnly()` attenuation idiom.**
-  A `readOnly()` mount minting handles via `mount.openFile(entry)` is
-  trivially attenuated.  A `readOnly()` mount returning entries that
-  carry their own openFile would have to attenuate every issued entry
-  too, or fail to attenuate at all.
+  A `readOnly()` mount minting handles via `mount.openFile(entry)` and
+  answering `mount.has(entry)` / `mount.stat(entry)` is trivially
+  attenuated.  A `readOnly()` mount returning entries that carry their
+  own observational or handle-minting methods would have to attenuate
+  every issued entry too, or fail to attenuate at all.
 
-The trade-off is a small ergonomic loss (`mount.openFile(entry)` is one
-extra noun per call vs. `entry.openFile()`) for a substantial
-authority-reasoning gain.  If a real use case surfaces where the value
-shape is awkward enough to warrant revisiting, the implementation can
-add handle-minting methods back to entries as a sugar layer over the
-mount's authority; that addition would not break the
-mount-is-authority discipline as long as the entries continue to
-delegate to the mount rather than holding minting authority directly.
+The chosen shape — entries hold neither observational authority nor
+handle-minting authority — is the strict ocap version.  The trade-off
+is a small ergonomic loss (`mount.openFile(entry)` and
+`mount.has(entry)` are one extra noun per call vs. `entry.openFile()`
+and `entry.exists()`) for a substantial authority-reasoning gain.  If a
+real use case surfaces where the value shape is awkward enough to
+warrant revisiting, the implementation can re-add either axis to the
+entry as a sugar layer over the mount's authority; that addition would
+not break the mount-is-authority discipline as long as the entries
+continue to delegate to the mount rather than holding authority
+directly.
 
 ### `EndoMount.lookup()` semantics on missing nodes
 
 `EndoMount.lookup(entry)` returns a live handle for an existing node and
 **throws** `EndoMountMissingError` for a missing one.  Callers that want
-to test before opening use `entry.exists()` first; the `entry.exists() →
-mount.lookup(entry)` pattern is the recommended idiom.  No `maybeLookup`
-sibling is part of the initial design; if usage warrants one later, it can be added without
-contract breakage.  The throw-on-missing default matches `openFile` /
-`openDirectory` and is consistent with the existing `lookup(path)`
-behavior that exists today.
+to test before opening use `mount.has(entry)` first; the
+`mount.has(entry) → mount.lookup(entry)` pattern is the recommended
+idiom.  No `maybeLookup` sibling is part of the initial design; if usage
+warrants one later, it can be added without contract breakage.  The
+throw-on-missing default matches `openFile` / `openDirectory` and is
+consistent with the existing `lookup(path)` behavior that exists today.
 
 ### `EndoMountStat`
 
@@ -659,9 +682,14 @@ its associated phase.
 2. **Strings are selectors, not authorities.**  Relative paths remain
    accepted as convenience inputs but are normalized into entries at the
    boundary.
-3. **`EndoMountEntry` is a value, not a handle.**  Handle-minting
-   (`lookup`, `openFile`, `openDirectory`) lives on `EndoMount` and
-   accepts an entry as the path-bearing argument.
+3. **`EndoMountEntry` is a value, not a handle.**  The entry carries no
+   live-filesystem authority at all: no observational queries (`exists`,
+   `stat`) and no handle-minting (`lookup`, `openFile`, `openDirectory`).
+   Both axes live on `EndoMount` and accept an entry as the path-bearing
+   argument (`mount.has(entry)`, `mount.stat(entry)`,
+   `mount.lookup(entry)`, `mount.openFile(entry)`,
+   `mount.openDirectory(entry)`).  The entry is a passable, deeply
+   read-only value the agent can hand around without conferring access.
 4. **`EndoMountBacking` is a hidden Exo facet on the mount formula.**
    Restart-trivial, no extra persistence machinery, no separate seal
    key.
