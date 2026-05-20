@@ -706,12 +706,9 @@ export const makeHostMaker = ({
       const tree = await provide(/** @type {FormulaIdentifier} */ (treeId));
       // For live mounts, prefer to snapshot the source first so
       // concurrent writes to the mount cannot perturb the running
-      // caplet.  ReadableTrees are already immutable.  Mount's
-      // `snapshot()` is not implemented at the time of writing
-      // (mount.js:305 throws); we therefore swallow that "not yet
-      // implemented" rejection and fall back to walking the live
-      // mount.  When mount.snapshot lands, this code path becomes
-      // automatically isolated.
+      // caplet. ReadableTrees are already immutable. Older mounts
+      // may still reject snapshot(), so keep the live-walk fallback
+      // for compatibility with remote or stale providers.
       let sourceForWalk = tree;
       try {
         // eslint-disable-next-line no-underscore-dangle

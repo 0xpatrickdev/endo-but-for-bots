@@ -829,6 +829,68 @@ export interface EndoReadable {
   text(): Promise<string>;
   json(): Promise<unknown>;
 }
+
+export type EndoMountStat = {
+  type: 'file' | 'directory';
+  size: number;
+  mtimeMs: number;
+};
+
+export interface EndoMountEntry {
+  path(): string[];
+  displayPath(): string;
+  stat(): Promise<EndoMountStat | undefined>;
+  lookup(): Promise<EndoMount | EndoMountFile>;
+  openDirectory(): Promise<EndoMount>;
+  openFile(): Promise<EndoMountFile>;
+  child(name: string): EndoMountEntry;
+}
+
+export interface EndoMountFile {
+  text(): Promise<string>;
+  streamBase64(): FarRef<Reader<Uint8Array>>;
+  json(): Promise<unknown>;
+  writeText(content: string): Promise<void>;
+  appendText(content: string): Promise<void>;
+  writeBytes(readableRef: FarRef<AsyncIterator<Uint8Array>>): Promise<void>;
+  stat(): Promise<EndoMountStat>;
+  snapshot(): Promise<FarRef<EndoReadable>>;
+  readOnly(): EndoMountFile;
+}
+
+export interface EndoMount {
+  has(...pathSegments: string[]): Promise<boolean>;
+  list(...pathSegments: string[]): Promise<string[]>;
+  lookup(
+    path: string | string[] | EndoMountEntry,
+  ): Promise<EndoMount | EndoMountFile>;
+  entry(path: string | string[]): EndoMountEntry;
+  openDirectory(path: string | string[] | EndoMountEntry): Promise<EndoMount>;
+  openFile(path: string | string[] | EndoMountEntry): Promise<EndoMountFile>;
+  createDirectory(
+    path: string | string[] | EndoMountEntry,
+  ): Promise<EndoMount>;
+  createFile(path: string | string[] | EndoMountEntry): Promise<EndoMountFile>;
+  stat(
+    path: string | string[] | EndoMountEntry,
+  ): Promise<EndoMountStat | undefined>;
+  readText(path: string | string[] | EndoMountEntry): Promise<string>;
+  maybeReadText(
+    path: string | string[] | EndoMountEntry,
+  ): Promise<string | undefined>;
+  writeText(
+    path: string | string[] | EndoMountEntry,
+    content: string,
+  ): Promise<void>;
+  remove(path: string | string[] | EndoMountEntry): Promise<void>;
+  move(
+    from: string | string[] | EndoMountEntry,
+    to: string | string[] | EndoMountEntry,
+  ): Promise<void>;
+  makeDirectory(path: string | string[] | EndoMountEntry): Promise<void>;
+  readOnly(): EndoMount;
+  snapshot(): Promise<unknown>;
+}
 export interface EndoWorker {}
 
 export type MakeHostOrGuestOptions = {
@@ -956,8 +1018,8 @@ export interface EndoHost extends EndoAgent {
     path: string,
     petName: string | string[],
     opts?: { readOnly?: boolean },
-  ): Promise<unknown>;
-  provideScratchMount(petName: string | string[]): Promise<unknown>;
+  ): Promise<EndoMount>;
+  provideScratchMount(petName: string | string[]): Promise<EndoMount>;
   provideHostPath(cap: unknown): Promise<string>;
   provideGuest(
     petName?: string,
@@ -1220,6 +1282,7 @@ export type FilePowers = {
   makeFileReader: (path: string) => Reader<Uint8Array>;
   makeFileWriter: (path: string) => Writer<Uint8Array>;
   writeFileText: (path: string, text: string) => Promise<void>;
+  appendFileText: (path: string, text: string) => Promise<void>;
   readFileText: (path: string) => Promise<string>;
   readFileBytes: (path: string) => Promise<Uint8Array>;
   readFile: (path: string) => Promise<Uint8Array>;
@@ -1232,6 +1295,9 @@ export type FilePowers = {
   removeDirectory: (path: string) => Promise<void>;
   renamePath: (source: string, target: string) => Promise<void>;
   realPath: (path: string) => Promise<string>;
+  statPath: (
+    path: string,
+  ) => Promise<{ type: 'file' | 'directory'; size: number; mtimeMs: number }>;
   isDirectory: (path: string) => Promise<boolean>;
   exists: (path: string) => Promise<boolean>;
 };

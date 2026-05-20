@@ -1435,6 +1435,22 @@ const makeDaemonCore = async (
     );
 
   /**
+   * @param {object} tree
+   */
+  const snapshotMountTree = async tree => {
+    const { sha256 } = await platformCheckinTree(tree, contentStore);
+    return makeReadableTree(sha256);
+  };
+
+  /**
+   * @param {string} filePath
+   */
+  const snapshotMountFile = async filePath => {
+    const sha256 = await contentStore.store(filePowers.makeFileReader(filePath));
+    return makeReadableBlob(sha256);
+  };
+
+  /**
    * @param {FormulaIdentifier} workerId
    * @param {string} source
    * @param {Array<string>} codeNames
@@ -2601,7 +2617,13 @@ const makeDaemonCore = async (
       if (!isDir) {
         throw new Error(`Mount path is not a directory: ${q(mountPath)}`);
       }
-      return makeMount({ rootPath: mountPath, readOnly, filePowers });
+      return makeMount({
+        rootPath: mountPath,
+        readOnly,
+        filePowers,
+        snapshotTree: snapshotMountTree,
+        snapshotFile: snapshotMountFile,
+      });
     },
     'scratch-mount': async ({ readOnly }, _context, _id, formulaNumber) => {
       const rootPath = filePowers.joinPath(
@@ -2610,7 +2632,13 @@ const makeDaemonCore = async (
         /** @type {string} */ (formulaNumber),
       );
       await filePowers.makePath(rootPath);
-      return makeMount({ rootPath, readOnly, filePowers });
+      return makeMount({
+        rootPath,
+        readOnly,
+        filePowers,
+        snapshotTree: snapshotMountTree,
+        snapshotFile: snapshotMountFile,
+      });
     },
     lookup: ({ hub, path }, context) =>
       makeLookup(
