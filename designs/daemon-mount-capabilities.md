@@ -15,7 +15,10 @@
 ## Summary
 
 Finish the `EndoMount` capability so it can serve as the live, handle-first filesystem basis for agent tools and the revised git capability.
-Three pieces land together: `EndoMount.snapshot()` becomes real instead of throwing; an `EndoMountEntry` value type carries mount-scoped descriptors for paths that may not currently exist (its authority is the issuing mount, not the entry itself); and a hidden `EndoMountBacking` Exo facet on the mount formula gives trusted daemon code physical-worktree access without leaking host paths to guests.
+Three pieces land together.
+`EndoMount.snapshot()` becomes real instead of throwing.
+An `EndoMountEntry` value type carries mount-scoped descriptors for paths that may not currently exist (its authority is the issuing mount, not the entry itself).
+A hidden `EndoMountBacking` Exo facet on the mount formula gives trusted daemon code physical-worktree access without leaking host paths to guests.
 The mount surface stays read-compatible with `ReadableTree` / `ReadableBlob`.
 
 ## What You Should Know First
@@ -374,7 +377,10 @@ Implementation should reuse the existing platform checkin machinery rather than 
 - The daemon already delegates tree ingestion to `@endo/platform/fs/lite` `checkinTree()`.
 
 `snapshot()` must state its consistency guarantee.
-The minimum viable contract is **per-file consistency, no per-tree guarantee**: each captured blob is the exact bytes that were present in that file at some moment during the snapshot operation, and each captured tree-entry name is the exact name that existed at some moment during the snapshot operation, but the captures of different files may correspond to different moments.
+The minimum viable contract is **per-file consistency, no per-tree guarantee**.
+Each captured blob is the exact bytes that were present in that file at some moment during the snapshot operation.
+Each captured tree-entry name is the exact name that existed at some moment during the snapshot operation.
+The captures of different files may correspond to different moments.
 A concurrent writer that touches file A and then file B during the operation may produce a snapshot in which A reflects the post-write state while B reflects the pre-write state.
 The snapshot is hash-consistent per file, not per tree.
 Stronger transactional capture (single filesystem instant across the whole tree) can be future work.
