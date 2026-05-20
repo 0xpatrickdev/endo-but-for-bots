@@ -227,6 +227,7 @@ type ScratchMountFormula = {
 type GitFormula = {
   type: 'git';
   mount: FormulaIdentifier;
+  readOnly?: boolean;
 };
 
 type GitRemoteFormula = {
@@ -2072,6 +2073,7 @@ export interface DaemonCore {
 
   formulateGit: (
     mountId: FormulaIdentifier,
+    readOnly: boolean,
     deferredTasks: DeferredTasks<GitDeferredTaskParams>,
   ) => FormulateResult<EndoGit>;
 

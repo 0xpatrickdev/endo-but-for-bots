@@ -4984,8 +4984,9 @@ test('provideGit structured status reports conflicted entries', async t => {
   await git(repoPath, ['commit', '-am', 'right side']);
 
   await E(host).provideMount(repoPath, 'git-status-conflict-worktree');
+  const conflictWorktree = await E(host).lookup('git-status-conflict-worktree');
   const gitCap = await E(host).provideGit(
-    'git-status-conflict-worktree',
+    conflictWorktree,
     'git-status-conflict-cap',
   );
 
@@ -5012,18 +5013,32 @@ test('provideGit enforces mount identity and read-only boundaries', async t => {
   await E(host).provideMount(otherPath, 'git-other');
   await E(host).provideMount(repoPath, 'git-readonly', { readOnly: true });
 
-  const gitCap = await E(host).provideGit('git-worktree-id', 'git-cap-id');
+  const worktree = await E(host).lookup('git-worktree-id');
+  const gitCap = await E(host).provideGit(worktree, 'git-cap-id');
   const otherMount = await E(host).lookup('git-other');
   const otherEntry = await E(otherMount).entry('outside.txt');
 
   await t.throwsAsync(() => E(gitCap).add([otherEntry]), {
     message: /different mount root/,
   });
-  await t.throwsAsync(() => E(host).provideGit('git-readonly', 'git-ro-cap'), {
-    message: /read-only/,
-  });
 
-  const readOnlyGit = await E(gitCap).readOnly();
+  // provideGit(readOnlyMount) now propagates read-only into the Git
+  // capability instead of rejecting.  See daemon-git-capability.md §
+  // Read-only construction paths.
+  const readOnlyMount = await E(host).lookup('git-readonly');
+  const roGit = await E(host).provideGit(readOnlyMount, 'git-ro-cap');
+  const roGitFromWritable = await E(gitCap).readOnly();
+  // eslint-disable-next-line no-underscore-dangle
+  const roGitMethods = await E(roGit).__getMethodNames__();
+  // eslint-disable-next-line no-underscore-dangle
+  const roGitFromWritableMethods = await E(roGitFromWritable).__getMethodNames__();
+  t.deepEqual(
+    roGitMethods.slice().sort(),
+    roGitFromWritableMethods.slice().sort(),
+    'both read-only construction paths expose the same surface',
+  );
+
+  const readOnlyGit = roGitFromWritable;
   const readOnlyWorktree = await E(readOnlyGit).worktree();
   const entry = await E(readOnlyWorktree).entry('readonly.txt');
   await t.throwsAsync(() => E(readOnlyWorktree).writeText(entry, 'fail'), {
@@ -5050,7 +5065,13 @@ test('provideGit enforces mount identity and read-only boundaries', async t => {
       }),
     ),
   );
+  // Same mutation throws from a read-only Git minted via
+  // provideGit(readOnlyMount).
+  await t.throwsAsync(() => E(roGit).add([entry]), {
+    message: /read-only/,
+  });
   t.deepEqual(await E(readOnlyGit).status(), []);
+  t.deepEqual(await E(roGit).status(), []);
 });
 
 test('provideGit fails closed when repository identity changes', async t => {
@@ -5060,8 +5081,9 @@ test('provideGit fails closed when repository identity changes', async t => {
   await createGitFixture(repoPath);
 
   await E(host).provideMount(repoPath, 'git-identity-worktree');
+  const identityWorktree = await E(host).lookup('git-identity-worktree');
   const gitCap = await E(host).provideGit(
-    'git-identity-worktree',
+    identityWorktree,
     'git-identity-cap',
   );
   t.deepEqual(await E(gitCap).status(), []);
@@ -5076,6 +5098,33 @@ test('provideGit fails closed when repository identity changes', async t => {
 
   await t.throwsAsync(() => E(gitCap).status(), {
     message: /repository identity changed/,
+  });
+});
+
+test('provideGit(readOnlyMount) read-only Git survives restart', async t => {
+  const { cancelled, config, host } = await prepareHost(t);
+
+  const repoPath = path.join(config.statePath, '..', 'git-restart-ro-repo');
+  await createGitFixture(repoPath);
+
+  await E(host).provideMount(repoPath, 'git-restart-ro-worktree', {
+    readOnly: true,
+  });
+  const readOnlyMount = await E(host).lookup('git-restart-ro-worktree');
+  const roGitBefore = await E(host).provideGit(readOnlyMount, 'git-restart-ro');
+  // Mutation throws before the restart.
+  await t.throwsAsync(() => E(roGitBefore).commit('nope'), {
+    message: /read-only/,
+  });
+
+  await restart(config);
+
+  const { host: hostAfterRestart } = await makeHost(config, cancelled);
+  const roGitAfter = await E(hostAfterRestart).lookup('git-restart-ro');
+  // Read-only flag persists: status still works, commit still throws.
+  t.deepEqual(await E(roGitAfter).status(), []);
+  await t.throwsAsync(() => E(roGitAfter).commit('nope'), {
+    message: /read-only/,
   });
 });
 
@@ -5124,7 +5173,8 @@ test('provideGit tree exposes immutable commit contents', async t => {
   await git(repoPath, ['commit', '-m', 'add source']);
 
   await E(host).provideMount(repoPath, 'git-tree-worktree');
-  const gitCap = await E(host).provideGit('git-tree-worktree', 'git-tree-cap');
+  const treeWorktree = await E(host).lookup('git-tree-worktree');
+  const gitCap = await E(host).provideGit(treeWorktree, 'git-tree-cap');
   const tree = await E(gitCap).tree('HEAD');
   // eslint-disable-next-line no-underscore-dangle
   const treeMethods = await E(tree).__getMethodNames__();
@@ -5173,8 +5223,9 @@ test('GitTree archive check-in rejects symlinks', async t => {
   await git(repoPath, ['commit', '-m', 'add symlink']);
 
   await E(host).provideMount(repoPath, 'git-tree-symlink-worktree');
+  const treeSymlinkWorktree = await E(host).lookup('git-tree-symlink-worktree');
   const gitCap = await E(host).provideGit(
-    'git-tree-symlink-worktree',
+    treeSymlinkWorktree,
     'git-tree-symlink-cap',
   );
   const tree = await E(gitCap).tree('HEAD');
@@ -5198,10 +5249,7 @@ test('provideGitRemote supports bounded local fetch, pull, and push', async t =>
 
   await E(host).provideMount(repoPath, 'git-remote-worktree');
   const worktree = await E(host).lookup('git-remote-worktree');
-  const gitCap = await E(host).provideGit(
-    'git-remote-worktree',
-    'git-remote-cap',
-  );
+  const gitCap = await E(host).provideGit(worktree, 'git-remote-cap');
   const remote = await E(host).provideGitRemote(
     {
       git: gitCap,
@@ -5317,7 +5365,8 @@ test('provideGitRemote defaults to HTTPS-only remote URLs', async t => {
   await git(repoPath, ['remote', 'add', 'origin', barePath]);
 
   await E(host).provideMount(repoPath, 'git-policy-worktree');
-  await E(host).provideGit('git-policy-worktree', 'git-policy-cap');
+  const policyWorktree = await E(host).lookup('git-policy-worktree');
+  await E(host).provideGit(policyWorktree, 'git-policy-cap');
   const remote = await E(host).provideGitRemote(
     {
       gitName: 'git-policy-cap',
@@ -5352,7 +5401,8 @@ test('provideGitRemote rejects secret credential fields and exposes metadata', a
   await createGitFixture(repoPath);
 
   await E(host).provideMount(repoPath, 'git-credential-worktree');
-  await E(host).provideGit('git-credential-worktree', 'git-credential-cap');
+  const credentialWorktree = await E(host).lookup('git-credential-worktree');
+  await E(host).provideGit(credentialWorktree, 'git-credential-cap');
 
   await t.throwsAsync(
     () =>
@@ -5403,7 +5453,8 @@ test('provideGit credentials keep secrets out of formulas and inspect output', a
   await createGitFixture(repoPath);
 
   await E(host).provideMount(repoPath, 'git-sealed-worktree');
-  await E(host).provideGit('git-sealed-worktree', 'git-sealed-cap');
+  const sealedWorktree = await E(host).lookup('git-sealed-worktree');
+  await E(host).provideGit(sealedWorktree, 'git-sealed-cap');
   const credential = await E(host).provideBearerCredential('example-token', {
     audience: 'https://example.com',
     token: 'super-secret-token',
@@ -5519,7 +5570,8 @@ test('GitRemote credential revocation is checked before network transfer', async
     await createGitFixture(repoPath);
 
     await E(host).provideMount(repoPath, 'git-revoked-worktree');
-    await E(host).provideGit('git-revoked-worktree', 'git-revoked-cap');
+    const revokedWorktree = await E(host).lookup('git-revoked-worktree');
+    await E(host).provideGit(revokedWorktree, 'git-revoked-cap');
     const credential = await E(host).provideBearerCredential('revoked-token', {
       audience: 'https://example.com',
       token: 'revoked-secret',
@@ -5568,7 +5620,8 @@ test('GitRemoteController updates policy, records audit, and revokes after resta
   {
     const { host } = await makeHost(config, cancelled);
     await E(host).provideMount(repoPath, 'git-control-worktree');
-    await E(host).provideGit('git-control-worktree', 'git-control-cap');
+    const controlWorktree = await E(host).lookup('git-control-worktree');
+    await E(host).provideGit(controlWorktree, 'git-control-cap');
     const remote = await E(host).provideGitRemote(
       {
         gitName: 'git-control-cap',

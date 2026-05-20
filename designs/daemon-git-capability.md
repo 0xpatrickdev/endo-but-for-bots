@@ -5,7 +5,7 @@
 | **Created** | 2026-05-18 |
 | **Updated** | 2026-05-20 |
 | **Author** | 0xPatrick (prompted) |
-| **Status** | Proposed |
+| **Status** | In Progress |
 
 > **Read in order.** This is doc 2 of 3.  It requires
 > [daemon-mount-capabilities](daemon-mount-capabilities.md) (doc 1) as a

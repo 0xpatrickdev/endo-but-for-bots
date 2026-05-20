@@ -3269,16 +3269,27 @@ const makeDaemonCore = async (
         snapshotFile: snapshotMountFile,
       });
     },
-    git: async ({ mount }, context) => {
+    git: async ({ mount, readOnly = false }, context) => {
       if (gitPowers === undefined) {
         throw new Error('Git powers are not available in this daemon');
       }
       context.thisDiesIfThatDies(mount);
-      const worktree = /** @type {import('./types.js').EndoMount} */ (
+      const liveWorktree = /** @type {import('./types.js').EndoMount} */ (
         await provide(mount, 'mount')
       );
+      const worktree = readOnly
+        ? /** @type {import('./types.js').EndoMount} */ (
+            await E(liveWorktree).readOnly()
+          )
+        : liveWorktree;
       const repoRoot = getMountHostPath(mount);
-      return makeGit({ worktree, repoRoot, gitPowers, registerArchiveTree });
+      return makeGit({
+        worktree,
+        repoRoot,
+        gitPowers,
+        readOnly,
+        registerArchiveTree,
+      });
     },
     'git-remote': async (
       {
@@ -4195,7 +4206,7 @@ const makeDaemonCore = async (
   };
 
   /** @type {DaemonCore['formulateGit']} */
-  const formulateGit = async (mountId, deferredTasks) => {
+  const formulateGit = async (mountId, readOnly, deferredTasks) => {
     return /** @type {FormulateResult<import('./types.js').EndoGit>} */ (
       withFormulaGraphLock(async () => {
         await null;
@@ -4214,6 +4225,7 @@ const makeDaemonCore = async (
         const formula = harden({
           type: /** @type {const} */ ('git'),
           mount: mountId,
+          ...(readOnly && { readOnly: true }),
         });
 
         return formulate(formulaNumber, formula);

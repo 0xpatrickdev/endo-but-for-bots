@@ -329,43 +329,32 @@ export const makeHostMaker = ({
 
     /**
      * Derive a local Git capability from a daemon-minted mount.
+     * Cap-passing is the only normative form; callers that need to
+     * resolve a pet name go through `E(host).lookup(name)` first.  A
+     * read-only mount produces a read-only Git instead of being
+     * rejected — see `designs/daemon-git-capability.md` § Read-only
+     * construction paths.
      *
-     * @param {NameOrPath | unknown} mountRef
+     * @param {unknown} mount
      * @param {NameOrPath} petName
      */
-    const provideGit = async (mountRef, petName) => {
+    const provideGit = async (mount, petName) => {
       const { namePath } = assertPetNamePath(namePathFrom(petName));
 
-      const mountNamePath =
-        typeof mountRef === 'string' || Array.isArray(mountRef)
-          ? namePathFrom(/** @type {NameOrPath} */ (mountRef))
-          : undefined;
-      if (mountNamePath !== undefined) {
-        assertNamePath(mountNamePath);
-      }
-      const mount =
-        mountNamePath === undefined
-          ? mountRef
-          : await E(directory).lookup(mountNamePath);
       const mountId = getIdForRef(mount);
       if (mountId === undefined) {
         throw makeError(X`provideGit: mount is not a daemon-minted mount`);
       }
 
       const mountFormula = await getFormulaForId(mountId);
-      if (
+      const readOnly =
         (mountFormula.type === 'mount' ||
           mountFormula.type === 'scratch-mount') &&
-        mountFormula.readOnly
-      ) {
-        throw makeError(
-          X`provideGit: mount ${q(mountNamePath ?? '<cap>')} is read-only`,
-        );
-      }
+        mountFormula.readOnly === true;
 
       // Validate that the mount is one of the top-level physical
       // backing formulas before formulating Git. Subdirectory views
-      // and read-only attenuations intentionally do not pass.
+      // intentionally do not pass.
       getMountHostPath(mountId);
 
       /** @type {DeferredTasks<GitDeferredTaskParams>} */
@@ -374,7 +363,7 @@ export const makeHostMaker = ({
         E(directory).storeIdentifier(namePath, identifiers.gitId),
       );
 
-      const { value } = await formulateGit(mountId, tasks);
+      const { value } = await formulateGit(mountId, readOnly, tasks);
       return value;
     };
 
