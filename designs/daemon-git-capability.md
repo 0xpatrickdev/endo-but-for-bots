@@ -991,13 +991,48 @@ real implementation surfaces new ones.
    the structured-shapes phase onward (`GitConflict`).
 7. **Pin repository identity separately from the worktree mount.**  The
    git formula records (a) the worktree mount identity AND (b) a
-   repository-identity pin captured at construction time (the
-   `.git/HEAD` first-recognized commit-oid, or the formula id of a
-   sibling sealed repo-identity facet).  Subsequent operations verify
-   the pin before acting; this defends against `.git` being replaced
-   under the mount (Open Question #4 in the early draft).  Read-only
-   inspection methods log a structured warning and fail-closed if the
-   pin no longer matches.
+   repository-identity pin captured at construction time, then verifies
+   the pin before acting on every subsequent operation.  This defends
+   against `.git` being replaced under the mount (Open Question #4 in
+   the early draft).  Read-only inspection methods log a structured
+   warning and fail-closed if the pin no longer matches.
+
+   **Pin algorithm.**  The pin is computed at construction time by
+   reading `git rev-parse --git-common-dir --git-path config
+   --git-path HEAD` inside the worktree, then hashing a canonical tuple
+   of:
+
+   - the absolute `--git-common-dir` (canonicalized, symlinks resolved);
+   - the contents of `<common-dir>/config` at the moment of the pin,
+     excluding mutable-by-design sections (`remote.*.url`,
+     `branch.*.merge`, and similar settings the operator may legitimately
+     edit post-pin without changing repository identity);
+   - the OID of the first commit reachable from HEAD if the repo has
+     commits (`git rev-list --max-count=1 HEAD`), or the sentinel
+     `EMPTY` if the repo is unborn or empty.
+
+   **Edge cases.**
+
+   - **Linked worktrees** (`git worktree add`): the pin uses the
+     `--git-common-dir`, not the `.git`-file's pointer.  A worktree-add
+     against the same parent repo therefore pins to the same identity,
+     which is correct: the same git object database serves both
+     worktrees.
+   - **Detached HEAD**: the first-commit OID is used (HEAD's own OID
+     for a detached single-commit case, the rev-list root otherwise);
+     the pin is stable so long as that OID remains reachable.
+   - **Submodules**: the pin is the submodule's own `--git-common-dir`,
+     not the parent repo's.  Swapping a submodule's `.git` indirection
+     re-pins (correctly: it is a different repository as far as the
+     submodule's local `Git` cap is concerned).
+   - **Empty / unborn repos**: the `EMPTY` sentinel means the pin
+     matches any future first-commit; the next successful `commit`
+     triggers a re-pin (or the pin verification fails with a structured
+     warning if the operator wants strict-pin semantics for the unborn
+     case).
+
+   **Re-pinning** is a host-side operation: the host can re-derive
+   `Git` with a refreshed pin.  Guests cannot mutate the pin.
 8. **Read-only worktree mounts permit inspection + immutable trees +
    `worktree.snapshot()`; reject everything else.**  A read-only `Git`
    can be obtained two ways and the two paths produce the same authority
