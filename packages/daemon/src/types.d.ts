@@ -229,6 +229,15 @@ type GitFormula = {
   mount: FormulaIdentifier;
 };
 
+type GitRemoteFormula = {
+  type: 'git-remote';
+  git: FormulaIdentifier;
+  remote: string;
+  url?: string;
+  directions: Array<'fetch' | 'pull' | 'push'>;
+  allowedRefs?: string[];
+};
+
 export type MountDeferredTaskParams = {
   mountId: FormulaIdentifier;
 };
@@ -239,6 +248,10 @@ export type ScratchMountDeferredTaskParams = {
 
 export type GitDeferredTaskParams = {
   gitId: FormulaIdentifier;
+};
+
+export type GitRemoteDeferredTaskParams = {
+  gitRemoteId: FormulaIdentifier;
 };
 
 type LookupFormula = {
@@ -421,6 +434,7 @@ export type Formula =
   | MountFormula
   | ScratchMountFormula
   | GitFormula
+  | GitRemoteFormula
   | LookupFormula
   | MakeUnconfinedFormula
   | MakeArchiveFormula
@@ -968,6 +982,27 @@ export interface EndoGit {
   stashDrop(stash?: string | GitRef): Promise<string>;
   tree(ref: string | GitRef): Promise<unknown>;
 }
+
+export type GitRemotePolicy = {
+  remote: string;
+  url?: string;
+  directions: Array<'fetch' | 'pull' | 'push'>;
+  allowedRefs?: string[];
+};
+
+export interface EndoGitRemote {
+  inspect(): Promise<GitRemotePolicy & { revoked: boolean }>;
+  fetch(options?: {
+    refspecs?: string[];
+    prune?: boolean;
+  }): Promise<{ output: string }>;
+  pull(options?: { branch?: string }): Promise<{ output: string }>;
+  push(options?: {
+    source?: string;
+    target?: string;
+    forceWithLease?: boolean;
+  }): Promise<{ output: string }>;
+}
 export interface EndoWorker {}
 
 export type MakeHostOrGuestOptions = {
@@ -1100,6 +1135,16 @@ export interface EndoHost extends EndoAgent {
     mountName: string | string[],
     petName: string | string[],
   ): Promise<EndoGit>;
+  provideGitRemote(
+    options: {
+      gitName: string | string[];
+      remote?: string;
+      url?: string;
+      directions?: Array<'fetch' | 'pull' | 'push'>;
+      allowedRefs?: string[];
+    },
+    petName: string | string[],
+  ): Promise<EndoGitRemote>;
   provideScratchMount(petName: string | string[]): Promise<EndoMount>;
   provideHostPath(cap: unknown): Promise<string>;
   provideGuest(
@@ -1825,6 +1870,13 @@ export interface DaemonCore {
     mountId: FormulaIdentifier,
     deferredTasks: DeferredTasks<GitDeferredTaskParams>,
   ) => FormulateResult<EndoGit>;
+
+  formulateGitRemote: (
+    gitId: FormulaIdentifier,
+    remote: string,
+    policy: Omit<GitRemotePolicy, 'remote'>,
+    deferredTasks: DeferredTasks<GitRemoteDeferredTaskParams>,
+  ) => FormulateResult<EndoGitRemote>;
 
   formulateScratchMount: (
     readOnly: boolean,

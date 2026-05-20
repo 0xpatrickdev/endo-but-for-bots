@@ -4620,6 +4620,70 @@ test('provideGit enforces mount identity and read-only boundaries', async t => {
   });
 });
 
+test('provideGitRemote supports bounded local fetch, pull, and push', async t => {
+  const { host, config } = await prepareHost(t);
+
+  const repoPath = path.join(config.statePath, '..', 'git-remote-repo');
+  const barePath = path.join(config.statePath, '..', 'git-remote-bare.git');
+  const peerPath = path.join(config.statePath, '..', 'git-remote-peer');
+  await createGitFixture(repoPath);
+  await git(repoPath, ['init', '--bare', barePath]);
+  await git(repoPath, ['remote', 'add', 'origin', barePath]);
+
+  await E(host).provideMount(repoPath, 'git-remote-worktree');
+  const worktree = await E(host).lookup('git-remote-worktree');
+  const gitCap = await E(host).provideGit(
+    'git-remote-worktree',
+    'git-remote-cap',
+  );
+  const remote = await E(host).provideGitRemote(
+    {
+      gitName: 'git-remote-cap',
+      remote: 'origin',
+      directions: ['fetch', 'pull', 'push'],
+    },
+    'origin-remote',
+  );
+
+  await E(remote).push({ source: 'main', target: 'main' });
+  await git(config.statePath, ['clone', barePath, peerPath]);
+  await git(peerPath, ['switch', 'main']);
+  await git(peerPath, ['config', 'user.name', 'Peer Test']);
+  await git(peerPath, ['config', 'user.email', 'peer@example.com']);
+  await fs.promises.writeFile(
+    path.join(peerPath, 'upstream.txt'),
+    'from upstream\n',
+    'utf-8',
+  );
+  await git(peerPath, ['add', 'upstream.txt']);
+  await git(peerPath, ['commit', '-m', 'upstream work']);
+  await git(peerPath, ['push', 'origin', 'main']);
+
+  const fetchResult = await E(remote).fetch({ refspecs: ['main'] });
+  t.regex(fetchResult.output, /main/u);
+  await E(remote).pull({ branch: 'main' });
+  t.is(await E(worktree).readText('upstream.txt'), 'from upstream\n');
+
+  const localEntry = await E(worktree).entry('local.txt');
+  await E(worktree).writeText(localEntry, 'from local\n');
+  await E(gitCap).add([localEntry]);
+  await E(gitCap).commit('local work');
+  const pushResult = await E(remote).push({ source: 'main', target: 'main' });
+  t.regex(pushResult.output, /main/u);
+
+  const fetchOnly = await E(host).provideGitRemote(
+    {
+      gitName: 'git-remote-cap',
+      remote: 'origin',
+      directions: ['fetch'],
+    },
+    'origin-fetch-only',
+  );
+  await t.throwsAsync(() => E(fetchOnly).push({ source: 'main' }), {
+    message: /does not allow push/,
+  });
+});
+
 // symlink confinement tests
 
 /**
