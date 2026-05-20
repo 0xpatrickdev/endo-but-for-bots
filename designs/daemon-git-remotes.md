@@ -450,6 +450,25 @@ For interactive agent setup, remote creation can optionally use the
 
 This belongs in the controller layer, not in the guest-held remote cap.
 
+### Policy Validation Matrix
+
+The combinations below catch the subtle failure modes where a refspec
+form and a policy flag interact (`+` force prefix vs. `allowForcePush`,
+deletion refspecs vs. `allowDelete`, tag refspecs vs. `allowTags`, short
+vs. fully-qualified names, wildcard scopes, and the `allowedBranches`
+vs. `pushRefspecs` shortcut).  The implementation should reject the
+listed "Rejected" forms with a structured error citing the offending
+policy field and the specific refspec / flag combination.
+
+| Policy field | Accepted forms | Rejected forms | Validation rule |
+|---|---|---|---|
+| `fetchRefspecs` | Fully-qualified refs (`refs/heads/main:refs/remotes/origin/main`); wildcards under a fixed parent (`+refs/heads/*:refs/remotes/origin/*`); leading `+` force prefix to update non-fast-forward remote-tracking refs (fetch-side force is local-only and does not require `allowForcePush`); deletion refspecs (`:refs/remotes/origin/foo`) only when `allowDelete: true` | Short names (`main:origin/main`); refspecs whose destination lies outside `refs/remotes/<remote-name>/`; tag refspecs (`refs/tags/*`) when `allowTags: false`; deletion refspecs when `allowDelete: false` | At construction, every fetch refspec must parse to `[+]<src>:<dst>` where `<dst>` is rooted at `refs/remotes/<remote-name>/`; deletion forms (empty `<src>`) require `allowDelete: true`; tag-prefix sources require `allowTags: true` |
+| `pushRefspecs` | Fully-qualified source and destination (`refs/heads/agent/main:refs/heads/agent/main`); wildcards under a fixed parent on both sides (`refs/heads/agent/*:refs/heads/agent/*`); leading `+` only when `allowForcePush: true`; deletion refspecs (`:refs/heads/foo`) only when `allowDelete: true`; tag-source refspecs only when `allowTags: true` | Short names; `+`-prefixed refspecs when `allowForcePush: false`; deletion refspecs when `allowDelete: false`; tag refspecs when `allowTags: false`; refspecs whose source resolves outside the local repo's `refs/` namespace | Mirror of `fetchRefspecs` validation, plus the force / delete / tag flag interactions; the source side must be a known local ref namespace, not an arbitrary string |
+| `allowedBranches` | A list of branch names or `refs/heads/<glob>` patterns interpreted as a shortcut: equivalent to a derived `pushRefspecs` of `refs/heads/<b>:refs/heads/<b>` for each branch, AND a destination-side filter on any explicit `pushRefspecs` | Short names with no `refs/heads/` anchoring that would also match tags or remote-tracking refs by accident | If both `allowedBranches` and `pushRefspecs` are set, the union is forbidden: the policy must choose one mode.  If only `allowedBranches` is set, the implementation derives `pushRefspecs` from it.  If `pushRefspecs` is empty AND `allowedBranches` is empty, push is rejected entirely (a push-direction remote with no allowed targets is misconfigured, not "permit nothing"; the operator must say so explicitly with `allowedDirections: ['fetch']`) |
+| `allowTags` | `true` to allow tag refspecs in fetch and push (`refs/tags/*` on either side); `false` (default) to reject any tag-prefix refspec | Tag refspecs when `false` | Validated at refspec-parse time against both `fetchRefspecs` and `pushRefspecs` |
+| `allowDelete` | `true` to allow deletion refspecs (empty `<src>`) in fetch (`:refs/remotes/origin/foo`) and push (`:refs/heads/foo`); `false` (default) to reject deletion forms | Deletion refspecs when `false` | Deletion form is detected by an empty `<src>` in `[+]<src>:<dst>`; both directions are gated by the same flag |
+| `allowForcePush` | `true` to allow leading `+` on `pushRefspecs` entries; `false` (default) to reject the `+` prefix on push.  Fetch-side `+` is unaffected (remote-tracking refs are local). | `+`-prefixed push refspecs when `false`; non-`+` push refspecs that the server reports as non-fast-forward (the local validation cannot detect this; the post-push response check fail-closes) | Local validation rejects the `+` prefix at refspec-parse time; the post-push response check rejects an upstream non-fast-forward result regardless of the `+` flag |
+
 ## Operation Semantics
 
 ### `fetch`
