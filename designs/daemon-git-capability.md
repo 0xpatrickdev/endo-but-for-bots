@@ -98,7 +98,7 @@ That work should remain useful as a reference for a `NativeGitBackend`.
 |---|---|
 | Repository root string configured authority | `EndoMount` carries public worktree authority |
 | Path strings were passed into git calls | `EndoMountEntry` values are passed after mount-local resolution |
-| Git only meant commands against a worktree | Git exposes a mutable worktree capability plus a sibling `GitTreeProvider` for immutable trees |
+| Git only meant commands against a worktree | Git exposes worktree mutation, `tree(ref)` for immutable historical reads, and `readOnly()` for in-place attenuation |
 | Adapter details leaked into the tool design | Public `Git` capability is backend-shaped (native-first), with `NativeGitBackend` named separately |
 
 ## Architecture
@@ -108,8 +108,8 @@ flowchart TD
   host[HOST] -->|provideMount '/repo' 'worktree'| mount[EndoMount]
   mount -.->|host-private backing grant| gitProvider[Git provider]
   gitProvider -->|over live worktree| git[Git capability]
-  git -->|trees()| tree[GitTreeProvider]
-  tree -->|tree ref| rt[ReadableTree / ReadableBlob]
+  git -->|tree ref| rt[ReadableTree / ReadableBlob]
+  git -->|readOnly| roGit[Git, attenuated]
 ```
 
 The public worktree authority remains the `EndoMount`.  Trusted daemon code
@@ -151,34 +151,29 @@ pretend they can support live worktree mutations.
 
 ## Capability Construction
 
-The host flow is capability-derived.  `provideGit()` takes an `EndoMount`
-capability as its first argument and a pet name as the second:
+The preferred host flow is capability-derived.  `provideGit()` takes an
+`EndoMount` capability as its first argument and a pet name as the second:
 
 ```js
 const worktree = await E(host).provideMount('/repo', 'repo-worktree');
 const git = await E(host).provideGit(worktree, 'repo-git');
 ```
 
-Cap-passing is the *only* form on `provideGit`.  Name-table lookup is a
-separate capability that callers exercise via `E(host).lookup(name)`
-first and then pass the resulting cap into `provideGit`:
+A pet-name lookup form is also supported as a convenience:
 
 ```js
-const worktree = await E(host).lookup('repo-worktree');
-const git = await E(host).provideGit(worktree, 'repo-git');
+const git = await E(host).provideGit('repo-worktree', 'repo-git');
 ```
 
-The reason is ocap-discipline: a `provideGit(petName, ...)` form would
-mean the daemon's `host.provideGit` is exercising its own name-table
-lookup authority on the caller's behalf, conflating the `provideGit`
-capability with a name-table-lookup capability.  Keeping the two
-separate means a caller can hold one without the other.  Agent
-harnesses (Fae / Lal / Genie) may offer string convenience to LLMs at
-the harness layer; that does not change the daemon's contract.
+When the first argument is a string, the host resolves it against its own
+name table and treats it as cap-passing of the resolved mount.  The
+cap-passing form is canonical; the pet-name form is sugar over it that
+exists for parity with other `provide*` host methods.
 
 `provideGit()`:
 
-1. accepts the mount capability;
+1. accepts the mount capability directly, or resolves a pet name against
+   the host's name table and uses the result;
 2. uses the host-private mount backing grant (see
    [daemon-mount-capabilities](daemon-mount-capabilities.md) § Host-Private
    Physical Backing) to prove the mount is physical;
@@ -316,17 +311,49 @@ interface Git {
   stashPop(index?: number): Promise<void>;
   stashDrop(index?: number): Promise<void>;
 
-  // Immutable tree access (read-only sibling capability).
-  trees(): Promise<GitTreeProvider>;
+  // Immutable tree access (one-turn read on the same capability).
+  tree(ref: GitRef | string): Promise<ReadableTree>;
+
+  // Attenuation to a read-only posture.  Mutation methods on the returned
+  // cap throw at runtime in v1; v2 narrows the type to drop them.
+  readOnly(): Git;
 }
 ```
 
-`trees()` returns the read-only `GitTreeProvider` defined below.  Splitting
-immutable tree access off the mutable `Git` capability means a host can
-grant a read-only auditor agent just the `GitTreeProvider` without granting
-the worktree-mutation surface.  The two concerns named in § Two Git
-Concerns, Kept Separate live as two distinguishable capabilities, not as
-two methods on one Exo.
+`tree(ref)` returns the read surface defined by `GitTreeProvider` below; the
+interface name remains as the documented shape of the returned read
+capability even though tree access lives as a method on `Git` itself.
+
+`readOnly()` mirrors the `EndoMount.readOnly()` attenuation idiom
+([daemon-mount-capabilities](daemon-mount-capabilities.md) § Design
+Decision 6): the returned `Git` exposes the same methods, but the
+mutation methods (`add`, `restore`, `commit`, `createBranch`,
+`deleteBranch`, `renameBranch`, `switch`, `merge`, `rebase`, `stashPush`,
+`stashApply`, `stashPop`, `stashDrop`) throw at runtime in v1 and are
+narrowed out of the type in v2.  A read-only auditor agent holds the
+attenuated `Git`; the operator hands it `await E(git).readOnly()` rather
+than the unattenuated cap.
+
+### Alternatives Considered for Tree Access Shape
+
+The design panel recommended splitting tree access off `Git` into a
+separately-grantable `GitTreeProvider` capability obtained via
+`git.trees()`.  Two further shapes were considered.  The chosen shape
+(tree on `Git` plus `Git.readOnly()`) was picked for consistency with the
+existing `EndoMount.readOnly()` idiom and for the one-turn cost on the
+common case.
+
+| Shape | Pros | Cons |
+|---|---|---|
+| **Chosen: `Git.tree(ref)` plus `Git.readOnly()`** | One-turn read on the common case (caller holds `Git`, wants `tree`).  Matches `EndoMount.readOnly()` idiom.  Read-only auditor is `await E(git).readOnly()` — no new cap shape. | No standalone "tree-only" grant shape: a caller who should only read historical trees still holds an attenuated `Git`, which advertises the read methods it does not care about. |
+| **Considered: split-only (`git.trees() → GitTreeProvider.tree(ref)`)** | Cleanest decomposition: tree-only callers hold a different cap type, not an attenuated parent.  Matches decomplector's "different concerns → different caps" lens. | Two-turn cost on every read (`await E(git).trees()` then `await E(provider).tree(ref)`), unless the holder caches the provider.  No in-place attenuation pattern for the rest of `Git`. |
+| **Considered: both axes (`Git.tree(ref)` + `Git.readOnly()` + separately-grantable `GitTreeProvider` via host shortcut)** | Covers every use case: one-turn tree access for `Git` holders, read-only attenuation posture, and tree-only grants for build systems / archivers that should never see worktree state. | Widest public surface.  Two ways to obtain a tree-reading capability (via `Git.tree(ref)` and via the separately-granted provider) is the kind of accidental complexity creep an implementation later regrets. |
+
+If a real build-system or code-archiver use case surfaces that wants a
+genuinely tree-only grant (without worktree-method advertisement at all),
+the implementation can revisit and add the separately-grantable
+`GitTreeProvider` shape.  Until then, an attenuated `Git` plus
+`tree(ref)` covers the auditor case without inventing a new cap type.
 
 The initial implementation can keep some result types textual where the
 stable structure is not yet worth committing to.  The path-bearing inputs
@@ -349,10 +376,14 @@ await E(git).add([readme]);
 const commit = await E(git).commit('docs: update README');
 
 // browse a historical tree without touching the worktree
-const trees = await E(git).trees();
-const headTree = await E(trees).tree('HEAD');
+const headTree = await E(git).tree('HEAD');
 const oldReadme = await E(headTree).lookup('README.md');
 const text = await E(oldReadme).text();
+
+// hand a read-only attenuated Git to an auditor agent
+const auditor = await E(git).readOnly();
+await E(auditor).status();          // ok — read method
+await E(auditor).commit('nope');    // throws — mutation method on read-only
 ```
 
 ### Future Structured Result Shapes
@@ -441,13 +472,20 @@ relative strings and loses the provenance supplied by the mount.
 
 ### Read Surface
 
+The git-tree backend's read surface is `ReadableTree` (with blobs as
+`ReadableBlob`).  `Git.tree(ref)` returns it directly:
+
 ```ts
 interface GitTreeProvider {
+  // Documented name for the shape Git.tree(ref) returns when factored
+  // out conceptually; in v1 tree access is a method on Git itself, not a
+  // separately-grantable cap.  See § Alternatives Considered for Tree
+  // Access Shape for the trade-off.
   tree(ref: GitRef | string): Promise<ReadableTree>;
 }
 ```
 
-The tree provider should:
+The returned tree should:
 
 - resolve the ref in the repository object database;
 - expose directories as `ReadableTree`;
@@ -455,12 +493,6 @@ The tree provider should:
 - never expose mutation methods;
 - be usable anywhere a `ReadableTree` is accepted today, including
   checkin, checkout, staging, and later VFS mounting.
-
-Obtain it from a `Git` capability via `await E(git).trees()`.  The host may
-also expose a `provideGitTreeProvider()` shortcut for cases where the
-intent is read-only auditing and the caller should not be issued the full
-`Git` capability at all; that route is part of the *Open Questions*
-discussion of long-lived named trees.
 
 ### VFS Integration
 
@@ -552,7 +584,7 @@ interface GitBackend {
   diff(...): Promise<string>;
   add(...): Promise<void>;
   // ...
-  trees(): GitTreeProviderBackend;
+  tree(ref: string): Promise<ReadableTree>;
 }
 
 // Native-git-shaped contract; carries the hardening envelope:
@@ -669,8 +701,11 @@ the extra network and credential authority remains explicit.
 
 - A read-only worktree mount may support inspection and immutable tree reads
   but must reject mutating git operations.
-- `git.trees()` returns a `GitTreeProvider` whose `tree(ref)` returns
-  immutable read capabilities; the provider itself never exposes mutation.
+- `git.tree(ref)` returns immutable read capabilities (a `ReadableTree`);
+  the returned tree never exposes mutation.
+- `git.readOnly()` returns a `Git` whose mutation methods throw; use it
+  to grant an auditor agent inspection authority without the worktree
+  mutation surface.
 - `worktree.snapshot()` remains the way to capture the live worktree into
   content-addressed snapshot storage.
 
@@ -730,20 +765,25 @@ Complete the required phases from
   by `EndoMountEntry`, not path strings.
 - Add restart / persistence tests for long-lived git capabilities.
 
-### Phase 5: Git-Tree Provider
+### Phase 5: Git-Tree Reads and Read-Only Attenuation
 
-- Implement `GitTreeProvider` as a standalone capability returned by
-  `Git.trees()`.
-- Implement `GitTreeProvider.tree(ref) -> ReadableTree`.
+- Implement `Git.tree(ref) -> ReadableTree` directly on the `Git` cap
+  (the `GitTreeProvider` shape names the returned read surface).
+- Implement `Git.readOnly()` returning an attenuated `Git`; mutation
+  methods throw at runtime in v1 and are dropped from the type in v2
+  alongside the structured-result-shape migration.
 - Add tests for browsing blobs and subtrees at specific refs.
+- Add tests for read-only attenuation: every mutation method on a
+  `readOnly()` cap throws; every read method still works.
 - Verify compatibility with existing checkin / checkout / stage-tree flows.
 - Add a backend-private bulk tree path for large materialization operations,
   initially using `git archive --format=tar` if the native backend remains
   the practical implementation.
-- Add a host shortcut for granting `GitTreeProvider` without granting the
-  parent `Git` (the read-only-auditor profile).
-- Keep the provider separable so it can later be mounted by the VFS
-  compositor.
+- Keep the read surface separable enough that, if a build-system or
+  archiver use case surfaces a need for a tree-only-grant cap, the
+  separately-grantable `GitTreeProvider` shape can be added without
+  breaking `Git.tree(ref)` consumers (see § Alternatives Considered for
+  Tree Access Shape).
 
 ### Phase 6: Agent Adapters and Migration
 
@@ -827,30 +867,33 @@ real implementation surfaces new ones.
 
 ### Resolved (recorded as Design Decisions)
 
-- Tree-access split (`Git.tree(ref)` vs sibling provider) — decision 3.
+- Tree-access shape (`tree(ref)` on `Git` plus `readOnly()` attenuation;
+  separately-grantable `GitTreeProvider` is a documented alternative for
+  future use cases) — decision 3 and § Alternatives Considered for Tree
+  Access Shape.
 - Structured `diff()` shape — decision 6.
 - Structured conflict state in phase 4 — decision 6.
 - Pinning repository identity separately from worktree mount — decision 7.
 - Operations valid over a read-only worktree mount — decision 8.
-- Host shortcut for read-only `GitTreeProvider` — decision 9; bulk-path
-  exposure is a backend-private optimization, see decision 10.
+- Read-only audit grant shape — decision 9; bulk-path exposure is a
+  backend-private optimization, see decision 10.
 
 ## Design Decisions
 
 1. **Git derives from `EndoMount`, by cap-passing.**  `provideGit(mountCap,
-   petName)` is the only entry point; cap-passing is the only form.
-   Pet-name lookup is a *separate* capability on the host's name table
-   (`E(host).lookup(name)`); `provideGit` itself accepts a cap only.
-   This avoids conflating the `provideGit` capability with a
-   name-table-lookup capability.  No host API mints local `Git` from a
-   raw path string once the mount model exists.
+   petName)` is the canonical entry point.  Pet-name lookup is a
+   convenience that resolves to cap-passing; no host API mints local `Git`
+   from a raw path string once the mount model exists.
 2. **Entries, not strings, carry path authority.**  Path strings may appear
    at UI boundaries, but git operations consume mount-minted descriptors.
-3. **Live worktree and immutable trees are separate capabilities.**
-   Mutable worktree operations live on `Git`; immutable revision-tree reads
-   live on a separately-granted `GitTreeProvider` obtained via
-   `git.trees()`.  This lets a host grant read-only auditor agents tree
-   access without the worktree-mutation surface.
+3. **Live worktree and immutable trees are separate methods, not separate
+   capabilities.**  Mutable worktree operations and `tree(ref)` both live
+   on `Git`; read-only attenuation comes via `Git.readOnly()`, matching
+   the `EndoMount.readOnly()` idiom.  An audit-grant for a read-only
+   auditor agent is `await E(git).readOnly()`; the auditor holds an
+   attenuated `Git`.  See § Alternatives Considered for Tree Access
+   Shape for the split-capability variant the design panel originally
+   recommended and the rationale for picking attenuation instead.
 4. **Backend choice is best-effort pluggable, not contractually swappable.**
    The v1 contract is shaped for the `NativeGitBackend` extracted from
    `packages/fae`.  A future JS backend may force the essential
@@ -875,16 +918,19 @@ real implementation surfaces new ones.
 8. **Read-only worktree mounts permit inspection + immutable trees +
    `worktree.snapshot()`; reject everything else.**  Allowed: `status`,
    `diff`, `log`, `show`, `revParse`, `branches`, `currentBranch`,
-   `trees()` and its derived `GitTreeProvider`, and a `worktree.snapshot()`
-   that captures the live tree without mutating it.  Rejected: `add`,
-   `restore`, `commit`, `createBranch`, `deleteBranch`, `renameBranch`,
-   `switch`, `merge`, `rebase`, `stashPush`, `stashApply`, `stashPop`,
-   `stashDrop`.
-9. **A host shortcut for read-only audit grants exists.**  `Git.trees()`
-   returns a `GitTreeProvider` derivable from a `Git` cap; a separate
-   `provideGitTreeProvider(mount, petName)` host method exists so an
-   operator can grant a read-only auditor agent just the tree provider
-   without ever issuing the parent `Git`.
+   `tree(ref)`, `readOnly()` (idempotent), and `worktree.snapshot()`.
+   Rejected: `add`, `restore`, `commit`, `createBranch`, `deleteBranch`,
+   `renameBranch`, `switch`, `merge`, `rebase`, `stashPush`,
+   `stashApply`, `stashPop`, `stashDrop`.
+9. **Read-only audit grants come via `Git.readOnly()`, not a separate
+   cap shape.**  The operator hands the auditor `await E(git).readOnly()`
+   and the auditor holds an attenuated `Git` whose mutation methods
+   throw.  No `provideGitReadOnly()` or `provideGitTreeProvider()` host
+   shortcut exists in v1; the readOnly() attenuation is the documented
+   path.  If a future use case wants a tree-only-grant cap that hides
+   the worktree methods entirely, the separately-grantable
+   `GitTreeProvider` shape from § Alternatives Considered can be added
+   without breaking existing consumers.
 10. **Bulk reads are a backend data plane.**  Large immutable tree
     operations may use native archive streams internally (see § Bulk
     Tree Data Plane), but that does not change the guest-visible
