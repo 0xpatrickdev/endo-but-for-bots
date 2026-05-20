@@ -1,8 +1,23 @@
 # Endo Design Documents
 
-*Last updated: 2026-05-20 (full grooming pass: milestone-totals reconciled to current table contents, calibration round 2026-05-20 added, Summary by Milestone and Gantt re-projected, Progress-as-of refreshed; landed on top of the 2026-05-19 status-only sweep that reconciled Status fields with shipped state on `llm`, M½ project-hygiene milestone extracted from M1, endopi raft added, PR #302 consolidation absorbed, and patterns-diagnostic-feedback added)*
+*Last updated: 2026-05-20 (daemon mount and git capability plans added — three new design docs revised per design-panel review: structured-result-shape migration deferred to Phase 7, `tree(ref)` and `readOnly()` both live on the `Git` cap, `NativeGitBackend` hardening envelope split off the essential `GitBackend` contract, `EndoMountBacking` pinned to a hidden Exo facet, credential-injection mechanism named, native git pinned to >=2.30, restart-mid-operation tests added, open-question debt reduced from 20 to 2; landed on top of the same-day full grooming pass that reconciled milestone-totals, added the 2026-05-20 calibration round, re-projected the Summary by Milestone and Gantt, and refreshed Progress-as-of; itself landed on top of the 2026-05-19 status-only sweep that reconciled Status fields with shipped state on `llm`, M½ project-hygiene milestone extracted from M1, endopi raft added, PR #302 consolidation absorbed, and patterns-diagnostic-feedback added)*
 
 *Recently added or revised:
+[daemon-mount-capabilities](daemon-mount-capabilities.md) (added
+2026-05-18, revised 2026-05-20; concrete completion plan for
+`EndoMount`, mount-scoped entry descriptors as values, snapshotting,
+and trusted physical-backing provenance as a hidden Exo facet),
+[daemon-git-capability](daemon-git-capability.md) (added 2026-05-18,
+revised 2026-05-20; revised git design over `EndoMount` /
+`EndoMountFile`; `tree(ref)` for historical reads and `readOnly()`
+for attenuation both live on the `Git` cap; `NativeGitBackend`
+hardening envelope split off the essential `GitBackend` contract;
+structured result shapes deferred to Phase 7),
+[daemon-git-remotes](daemon-git-remotes.md) (added 2026-05-18, revised
+2026-05-20; MVP remote-git companion for fetch, pull, push, bounded HTTPS
+transport, phase-conditional endpoint policy (formula-owned in Phase 1;
+controller-owned once Phase 5 lands), and non-extractable
+credentials with a `GIT_ASKPASS`-fed-by-anonymous-pipe injection mechanism),
 [patterns-diagnostic-feedback](patterns-diagnostic-feedback.md) (added
 2026-05-19, revised 2026-05-20; opt-in
 `@endo/patterns/explain-mismatch.js` submodule with a Rust-compiler-style
@@ -82,8 +97,11 @@ reconnect).*
 | [daemon-checkin-checkout](daemon-checkin-checkout.md) | 2026-03-17 | 2026-05-19 | **Complete** |
 | [daemon-capability-filesystem](daemon-capability-filesystem.md) | 2026-02-15 | 2026-05-19 | Reference |
 | [daemon-content-store-gc](daemon-content-store-gc.md) | 2026-03-20 | 2026-05-08 | **Complete** |
+| [daemon-git-capability](daemon-git-capability.md) | 2026-05-18 | 2026-05-20 | Proposed |
+| [daemon-git-remotes](daemon-git-remotes.md) | 2026-05-18 | 2026-05-20 | Proposed |
 | [daemon-message-streaming](daemon-message-streaming.md) | 2026-03-26 | 2026-05-19 | In Progress (PR #287) |
 | [daemon-mount](daemon-mount.md) | 2026-03-20 | 2026-05-19 | In Progress |
+| [daemon-mount-capabilities](daemon-mount-capabilities.md) | 2026-05-18 | 2026-05-20 | Proposed |
 | [filesystem-watchers](filesystem-watchers.md) | 2026-05-07 | 2026-05-07 | Not Started |
 | [platform-fs](platform-fs.md) | 2026-03-18 | 2026-05-19 | **Complete** |
 | [daemon-capability-persona](daemon-capability-persona.md) | 2026-02-16 | 2026-02-24 | Not Started |
@@ -174,7 +192,7 @@ reconnect).*
 | [weblet-next](weblet-next.md) | 2026-03-24 | 2026-03-24 | Reference |
 | [workers-panel](workers-panel.md) | 2026-02-14 | 2026-02-24 | Not Started |
 
-**Totals:** 39 Complete/Implemented, 18 In Progress, 36 Not Started, 16 Proposed, 2 Active, 6 Reference, 2 Deprecated, 1 Superseded (120 designs). Refreshed 2026-05-19 by a status-only sweep (consolidating the 2026-05-18 sweep with the 2026-05-19 batch update for 11 additional designs from closed PR #302) plus the patterns-diagnostic-feedback and ocapn-noise-session-reconnect Proposed entries; the 12-design jump in Complete/Implemented over the 2026-05-08 snapshot reflects shipped work whose Status field had not previously been updated, not new completions in this pass; see the corresponding "## Status" sections in each design file for evidence pointers (commit SHA or PR number). Totals reflect the 11 design files added on `llm` since the sweep's branch point (the endopi raft of `endopi` + 8 `endopi-*` gap-closing designs plus `hardened-text-codecs-shim` and `hardened-url-shim`).
+**Totals:** 39 Complete/Implemented, 18 In Progress, 36 Not Started, 19 Proposed, 2 Active, 6 Reference, 2 Deprecated, 1 Superseded (123 designs). Refreshed 2026-05-19 by a status-only sweep (consolidating the 2026-05-18 sweep with the 2026-05-19 batch update for 11 additional designs from closed PR #302) plus the patterns-diagnostic-feedback and ocapn-noise-session-reconnect Proposed entries; the 12-design jump in Complete/Implemented over the 2026-05-08 snapshot reflects shipped work whose Status field had not previously been updated, not new completions in this pass; see the corresponding "## Status" sections in each design file for evidence pointers (commit SHA or PR number). Totals reflect the 14 design files added on `llm` since the sweep's branch point (the endopi raft of `endopi` + 8 `endopi-*` gap-closing designs, `hardened-text-codecs-shim`, `hardened-url-shim`, and the daemon mount and git capability trio: `daemon-mount-capabilities` + `daemon-git-capability` + `daemon-git-remotes`).
 
 ## Roadmap
 
@@ -295,6 +313,9 @@ flowchart TD
         pfs[platform-fs<br/><i>COMPLETE</i>]
         dfs[daemon-capability-filesystem<br/><i>REFERENCE</i>]
         dmount[daemon-mount<br/><i>IN PROGRESS</i>]
+        dmcap[daemon-mount-capabilities]
+        dgit[daemon-git-capability]
+        dgitremote[daemon-git-remotes]
         dfsw[filesystem-watchers]
         dcsgc[daemon-content-store-gc]
         dpers[daemon-capability-persona]
@@ -302,10 +323,15 @@ flowchart TD
         icancel[inventory-cancel-and-liveness]
         pfs --> dfs
         pfs --> dmount
+        dmount --> dmcap
+        dmcap --> dgit
+        dgit --> dgitremote
         pfs --> dci
         pfs --> dfsw
         dmount --> dfsw
         dmount --> dtools
+        dgitremote --> dtools
+        enetfetch --> dgitremote
         dmount --> dcsgc
         dsand --> dbank
         dfs --> dbank
@@ -396,6 +422,9 @@ capabilities available to agents.
 | daemon-capability-filesystem | Reference | `Dir`/`File` capabilities sketch retained as reference; narrower mount slice ships via daemon-mount |
 | ~~daemon-content-store-gc~~ | **Complete** | Content-store pruning and scratch-mount directory cleanup at GC time; landed in PR #99 |
 | daemon-mount | In Progress | Phases 1-3, 5 on `llm` (commit `e22f71327`); symlink confinement, 20 integration tests; Phase 4 (sub-mounts, snapshot) in PR #135 open, mount extensions in PR #127 open, `followNameChanges` in PR #277 open |
+| daemon-mount-capabilities | Proposed | Complete `EndoMount`: snapshot bridge, mount-scoped descriptors, `makeFile` sibling, entry overloads on `has`/`stat`/`lookup`, trusted backing provenance |
+| daemon-git-capability | Proposed | Revised git design over `EndoMount` / `EndoMountEntry`; `tree(ref)` and `readOnly()` both live on the `Git` cap |
+| daemon-git-remotes | Proposed | MVP remote-git companion: fetch / pull / push composed from local `Git`, bounded HTTPS transport, endpoint policy, and credential caps |
 | filesystem-watchers | Not Started | `EndoMount.followNameChanges` parity with `EndoDirectory`; Node `fs.watch` adapter on `FilePowers` |
 | daemon-locator-terminology | Not Started | Clean locator API; unblocked |
 | daemon-rename-to-manager | Not Started | Rename `daemon.js`/`Daemon`/`MignonicPowers` to `manager.js`/`Manager`/`WorkerPowers` to align JS with Rust `endor` nomenclature |
