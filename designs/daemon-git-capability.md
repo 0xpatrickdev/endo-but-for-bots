@@ -282,10 +282,14 @@ interface Git {
   }): Promise<GitRef>;
   deleteBranch(name: string, options?: { force?: boolean }): Promise<void>;
   renameBranch(from: string, to: string): Promise<void>;
-  // switch() takes any ref, not only a branch name — it matches `git switch
-  // --detach <oid>` and the deliberate `*Branch` family is for branch-only
-  // operations.  A caller switching to a tag or commit-oid uses this method.
-  switch(ref: GitRef | string): Promise<void>;
+  // Branch checkout and detached-HEAD checkout are separate methods so
+  // the `*Branch` family stays coherent.  switchBranch(name) checks out
+  // a branch by name (matches `git switch <branch>`); detach(ref)
+  // performs a detached-HEAD checkout of any other ref — tag, commit
+  // oid, or arbitrary tree-ish — and matches `git switch --detach
+  // <ref>` / `git checkout --detach <ref>`.
+  switchBranch(name: string): Promise<void>;
+  detach(ref: GitRef | string): Promise<void>;
 
   // History editing and integration.
   merge(ref: GitRef | string, options?: { noFastForward?: boolean }):
@@ -320,7 +324,7 @@ interface Git {
 
 `tree(ref)` returns the read surface defined by `GitTreeProvider` below; the interface name remains as the documented shape of the returned read capability even though tree access lives as a method on `Git` itself.
 
-`readOnly()` mirrors the `EndoMount.readOnly()` attenuation idiom ([daemon-mount-capabilities](daemon-mount-capabilities.md) § Design Decision 6): the returned `Git` exposes the same methods, but the mutation methods (`add`, `restore`, `commit`, `createBranch`, `deleteBranch`, `renameBranch`, `switch`, `merge`, `rebase`, `stashPush`, `stashApply`, `stashPop`, `stashDrop`) throw at runtime initially and are narrowed out of the type when structured shapes land (Phase 7).
+`readOnly()` mirrors the `EndoMount.readOnly()` attenuation idiom ([daemon-mount-capabilities](daemon-mount-capabilities.md) § Design Decision 6): the returned `Git` exposes the same methods, but the mutation methods (`add`, `restore`, `commit`, `createBranch`, `deleteBranch`, `renameBranch`, `switchBranch`, `detach`, `merge`, `rebase`, `stashPush`, `stashApply`, `stashPop`, `stashDrop`) throw at runtime initially and are narrowed out of the type when structured shapes land (Phase 7).
 A read-only auditor agent holds the attenuated `Git`; the operator hands it `await E(git).readOnly()` rather than the unattenuated cap.
 
 ### Alternatives Considered for Tree Access Shape
@@ -660,7 +664,7 @@ Complete the required phases from [daemon-mount-capabilities](daemon-mount-capab
 ### Phase 3: Local Mutation Surface
 
 - [ ] Implement `add`, `restore`, and `commit`.
-- [ ] Implement branch listing / create / delete / rename / switch.
+- [ ] Implement branch listing / create / delete / rename / `switchBranch` / `detach`.
 - [ ] Enforce read-only mount rejection on all mutation calls.
 - [ ] Port the native hardening checks from the reference implementation into backend tests.
 
@@ -712,7 +716,7 @@ Complete the required phases from [daemon-mount-capabilities](daemon-mount-capab
 
 - clean / modified / added / deleted / untracked / conflicted status;
 - add / restore / commit;
-- branch create / switch / rename / delete;
+- branch create / `switchBranch` / `detach` / rename / delete;
 - merge, rebase, and stash happy paths plus conflicts;
 - exact behavior after daemon restart;
 - **daemon-restart mid-operation**: kill the daemon during `rebase` (between commits), restart, and confirm `rebase --continue` resumes cleanly from the recorded `.git/rebase-merge` state without orphaning the index;
@@ -812,7 +816,7 @@ No open questions remain on this document; revisit if real implementation surfac
    - **Read-only-mount-derived path:** `provideGit(readOnlyMount)` constructs a `Git` whose mutability flag is already false; the formula does not briefly mint a writable `Git` and wrap it.
 
    Allowed on a read-only `Git`: `status`, `diff`, `log`, `show`, `revParse`, `branches`, `currentBranch`, `tree(ref)`, `readOnly()` (idempotent — see Design Decision 9), and `worktree.snapshot()`.
-   Rejected: `add`, `restore`, `commit`, `createBranch`, `deleteBranch`, `renameBranch`, `switch`, `merge`, `rebase`, `stashPush`, `stashApply`, `stashPop`, `stashDrop`.
+   Rejected: `add`, `restore`, `commit`, `createBranch`, `deleteBranch`, `renameBranch`, `switchBranch`, `detach`, `merge`, `rebase`, `stashPush`, `stashApply`, `stashPop`, `stashDrop`.
 
    Two additional boundaries on a read-only `Git`:
    - `GitRemote` construction from a read-only `Git` is rejected for now.
