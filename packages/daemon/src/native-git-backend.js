@@ -32,15 +32,15 @@ const GIT_BASE_ARGS = harden([
   // No `.gitattributes` filtering (textconv, filter drivers).
   '-c',
   'core.attributesFile=/dev/null',
-  // No external diff.
-  '-c',
-  'diff.external=',
   // No commit / tag signing prompts.
   '-c',
   'commit.gpgSign=false',
   '-c',
   'tag.gpgSign=false',
 ]);
+// Note: diff.external is suppressed per-command via `--no-ext-diff`
+// (see `diff`).  Setting it as a -c override resolves to empty-string
+// which git tries to exec, producing "external diff died".
 
 const GIT_TIMEOUT_MS = 60_000;
 const GIT_MAX_BUFFER = 1024 * 1024;
@@ -442,7 +442,37 @@ export const makeNativeGitBackend = ({ repoRoot }) => {
       return harden(entries);
     },
 
-    diff: async () => fail('diff'),
+    /**
+     * @param {object} options
+     * @param {boolean} [options.cached]    Use the index instead of the worktree.
+     * @param {string} [options.base]       Base revision (resolved to a string).
+     * @param {string} [options.head]       Head revision (resolved to a string).
+     * @param {string[]} [options.paths]    Repo-relative paths to limit the diff.
+     */
+    diff: async (options = {}) => {
+      const opts = /** @type {{ cached?: boolean, base?: string, head?: string, paths?: string[] }} */ (
+        options
+      );
+      // --no-ext-diff suppresses any external diff program a guest may
+      // have committed into the repo config.  Combined with the rest of
+      // the hardening envelope (hooks off, filters off), guests cannot
+      // make `git diff` execute arbitrary code.
+      const args = ['diff', '--no-ext-diff'];
+      if (opts.cached) args.push('--cached');
+      if (opts.base !== undefined) {
+        args.push(requireRevision(opts.base, 'diff.base'));
+      }
+      if (opts.head !== undefined) {
+        args.push(requireRevision(opts.head, 'diff.head'));
+      }
+      if (Array.isArray(opts.paths) && opts.paths.length > 0) {
+        for (const p of opts.paths) {
+          requireNonEmptyString(p, 'diff path');
+        }
+        args.push('--', ...opts.paths);
+      }
+      return runGit(args);
+    },
 
     log: async (options = {}) => {
       const opts = /** @type {{ maxCount?: number, ref?: string }} */ (options);
@@ -616,13 +646,47 @@ export const makeNativeGitBackend = ({ repoRoot }) => {
       return harden(refs);
     },
 
-    createBranch: async () => fail('createBranch'),
+    /**
+     * @param {string} name
+     * @param {{ startPoint?: string, switchAfterCreate?: boolean }} opts
+     */
+    createBranch: async (name, opts = {}) => {
+      requireNonEmptyString(name, 'createBranch.name');
+      await assertNoExecutableRepoConfig();
+      const args = ['branch', name];
+      if (opts.startPoint !== undefined) {
+        args.push(requireRevision(opts.startPoint, 'createBranch.startPoint'));
+      }
+      await runGit(args);
+      if (opts.switchAfterCreate) {
+        await runGit(['switch', name]);
+      }
+      return harden({ name, kind: /** @type {'branch'} */ ('branch') });
+    },
 
-    deleteBranch: async () => fail('deleteBranch'),
+    /**
+     * @param {string} name
+     * @param {{ force?: boolean }} opts
+     */
+    deleteBranch: async (name, opts = {}) => {
+      requireNonEmptyString(name, 'deleteBranch.name');
+      await assertNoExecutableRepoConfig();
+      const flag = opts.force ? '-D' : '-d';
+      await runGit(['branch', flag, name]);
+    },
 
-    renameBranch: async () => fail('renameBranch'),
+    renameBranch: async (from, to) => {
+      requireNonEmptyString(from, 'renameBranch.from');
+      requireNonEmptyString(to, 'renameBranch.to');
+      await assertNoExecutableRepoConfig();
+      await runGit(['branch', '-m', from, to]);
+    },
 
-    switch: async () => fail('switch'),
+    switch: async ref => {
+      const target = requireRevision(ref, 'switch.ref');
+      await assertNoExecutableRepoConfig();
+      await runGit(['switch', target]);
+    },
 
     merge: async () => fail('merge'),
 

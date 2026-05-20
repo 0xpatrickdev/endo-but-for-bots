@@ -244,12 +244,112 @@ test('NativeGitBackend.revParse rejects revisions starting with "-"', async t =>
   });
 });
 
-test('NativeGitBackend.diff still throws "not yet implemented"', async t => {
-  // Diff arrives in a follow-up commit; this pin makes the
-  // backend contract's NYI surface visible.
+test('NativeGitBackend.diff returns worktree changes by default', async t => {
+  const repoRoot = await provisionGitWorktree(t);
+  await fs.promises.writeFile(path.join(repoRoot, 'a.txt'), 'v1');
+  await execFileAsync('git', ['add', 'a.txt'], { cwd: repoRoot });
+  await execFileAsync(
+    'git',
+    ['-c', 'user.email=t@t', '-c', 'user.name=T', 'commit', '-m', 'add a'],
+    { cwd: repoRoot },
+  );
+  await fs.promises.writeFile(path.join(repoRoot, 'a.txt'), 'v2\n');
+
+  const backend = makeNativeGitBackend({ repoRoot });
+  const out = await backend.diff({});
+  t.regex(out, /diff --git/);
+  t.regex(out, /-v1/);
+  t.regex(out, /\+v2/);
+});
+
+test('NativeGitBackend.diff with --cached and a path filter', async t => {
+  const repoRoot = await provisionGitWorktree(t);
+  await fs.promises.writeFile(path.join(repoRoot, 'staged.txt'), 'staged');
+  await fs.promises.writeFile(path.join(repoRoot, 'unstaged.txt'), 'unstaged');
+  await execFileAsync('git', ['add', 'staged.txt'], { cwd: repoRoot });
+
+  const backend = makeNativeGitBackend({ repoRoot });
+  const out = await backend.diff({ cached: true, paths: ['staged.txt'] });
+  // Cached diff sees the staged file only.
+  t.regex(out, /staged\.txt/);
+  t.notRegex(out, /unstaged\.txt/);
+});
+
+test('NativeGitBackend branch ops: create, list, rename, switch, delete', async t => {
   const repoRoot = await provisionGitWorktree(t);
   const backend = makeNativeGitBackend({ repoRoot });
-  await t.throwsAsync(backend.diff({}), { message: /not yet implemented/ });
+
+  // Create from current HEAD; result reports the new ref.
+  const created = await backend.createBranch('feature/initial', {});
+  t.deepEqual(created, { name: 'feature/initial', kind: 'branch' });
+
+  // Listing sees the new branch alongside main.
+  const branches1 = await backend.branches();
+  t.deepEqual(
+    branches1.map(r => r.name).sort(),
+    ['feature/initial', 'main'],
+  );
+
+  // Switch then rename: the current branch should change too.
+  await backend.switch('feature/initial');
+  await backend.renameBranch('feature/initial', 'feature/renamed');
+  const current = await backend.currentBranch();
+  t.deepEqual(current, { name: 'feature/renamed', kind: 'branch' });
+
+  // Delete: must switch away first because you cannot delete the
+  // current branch.
+  await backend.switch('main');
+  await backend.deleteBranch('feature/renamed', {});
+  const branches2 = await backend.branches();
+  t.deepEqual(
+    branches2.map(r => r.name).sort(),
+    ['main'],
+  );
+});
+
+test('NativeGitBackend.createBranch with startPoint and switchAfterCreate', async t => {
+  const repoRoot = await provisionGitWorktree(t);
+  // Add a second commit so a distinct startPoint is meaningful.
+  await fs.promises.writeFile(path.join(repoRoot, 'x.txt'), 'x');
+  await execFileAsync('git', ['add', 'x.txt'], { cwd: repoRoot });
+  await execFileAsync(
+    'git',
+    ['-c', 'user.email=t@t', '-c', 'user.name=T', 'commit', '-m', 'add x'],
+    { cwd: repoRoot },
+  );
+  const backend = makeNativeGitBackend({ repoRoot });
+  const startPoint = (await backend.revParse('HEAD~1')).oid || '';
+
+  await backend.createBranch('past', {
+    startPoint,
+    switchAfterCreate: true,
+  });
+  const current = await backend.currentBranch();
+  t.is(current && current.name, 'past');
+  // The startPoint commit is now HEAD.
+  const head = await backend.revParse('HEAD');
+  t.is(head.oid, startPoint);
+});
+
+test('Git.diff routes EndoMountEntry inputs through the lineage gate', async t => {
+  const repoRoot = await provisionGitWorktree(t);
+  await fs.promises.writeFile(path.join(repoRoot, 'tracked.txt'), 'v1');
+  await execFileAsync('git', ['add', 'tracked.txt'], { cwd: repoRoot });
+  await execFileAsync(
+    'git',
+    ['-c', 'user.email=t@t', '-c', 'user.name=T', 'commit', '-m', 'add t'],
+    { cwd: repoRoot },
+  );
+  await fs.promises.writeFile(path.join(repoRoot, 'tracked.txt'), 'v2\n');
+
+  const filePowers = makeFilePowers({ fs, path });
+  const mount = makeMount({ rootPath: repoRoot, readOnly: false, filePowers });
+  const backend = makeNativeGitBackend({ repoRoot });
+  const git = makeGit({ mount, backend });
+
+  const entry = await E(mount).entry(['tracked.txt']);
+  const out = await E(git).diff({ entries: [entry] });
+  t.regex(out, /tracked\.txt/);
 });
 
 test('NativeGitBackend.add stages files via repo-relative paths', async t => {

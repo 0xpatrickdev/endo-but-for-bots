@@ -198,7 +198,37 @@ export const makeGit = ({ mount, backend }) => {
     },
 
     async diff(options = {}) {
-      return backend.diff(options);
+      // Translate caller-supplied options to the backend shape:
+      // - `base` and `head` accept GitRef-or-string; collapse to a
+      //   string name the backend forwards to git unchanged.
+      // - `entries` (EndoMountEntry[]) get resolved to repo-relative
+      //   paths with the same lineage check `add` uses.  `paths`
+      //   (string[]) passes through (callers can use either).
+      const opts =
+        /** @type {{ cached?: boolean, base?: unknown, head?: unknown, entries?: readonly object[], paths?: string[] }} */ (
+          options
+        );
+      const resolved =
+        /** @type {{ cached?: boolean, base?: string, head?: string, paths?: string[] }} */ ({});
+      if (opts.cached !== undefined) resolved.cached = opts.cached;
+      if (opts.base !== undefined) {
+        resolved.base =
+          typeof opts.base === 'string'
+            ? opts.base
+            : /** @type {{ name: string }} */ (opts.base).name;
+      }
+      if (opts.head !== undefined) {
+        resolved.head =
+          typeof opts.head === 'string'
+            ? opts.head
+            : /** @type {{ name: string }} */ (opts.head).name;
+      }
+      if (Array.isArray(opts.entries) && opts.entries.length > 0) {
+        resolved.paths = await entriesToRepoPaths(opts.entries);
+      } else if (Array.isArray(opts.paths) && opts.paths.length > 0) {
+        resolved.paths = [...opts.paths];
+      }
+      return backend.diff(resolved);
     },
 
     async log(options = {}) {
