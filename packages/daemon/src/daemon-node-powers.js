@@ -345,12 +345,27 @@ export const makeFilePowers = ({ fs, path: fspath }) => {
 
   /** @param {string} path */
   const statPath = async path => {
-    const stat = await fs.promises.stat(path);
+    const stat = await fs.promises.lstat(path);
+    const kind = /** @type {'directory' | 'file' | 'symlink'} */ (
+      stat.isDirectory()
+        ? 'directory'
+        : stat.isSymbolicLink()
+          ? 'symlink'
+          : 'file'
+    );
     return harden({
-      type: stat.isDirectory() ? 'directory' : 'file',
-      size: stat.size,
-      mtimeMs: stat.mtimeMs,
+      kind,
+      sizeBytes: stat.size,
+      modifiedMs: stat.mtimeMs,
     });
+  };
+
+  /**
+   * @param {string} path
+   */
+  const pathIdentity = async path => {
+    const stat = await fs.promises.stat(path);
+    return `${stat.dev}:${stat.ino}`;
   };
 
   /** @param {string} path */
@@ -380,6 +395,7 @@ export const makeFilePowers = ({ fs, path: fspath }) => {
     removeDirectory,
     renamePath,
     realPath,
+    pathIdentity,
     statPath,
     isDirectory,
     exists,

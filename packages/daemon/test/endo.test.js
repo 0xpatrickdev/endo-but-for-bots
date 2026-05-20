@@ -3924,6 +3924,7 @@ test('readable tree lookup unknown name throws', async t => {
  * @param {Record<string, string>} files - Map of relative path to content.
  */
 const createMountFixture = async (basePath, files) => {
+  await fs.promises.rm(basePath, { recursive: true, force: true });
   await fs.promises.mkdir(basePath, { recursive: true });
   for (const [relPath, content] of Object.entries(files)) {
     const fullPath = path.join(basePath, relPath);
@@ -4459,7 +4460,7 @@ test('mount file writeText and json', async t => {
   t.is(actualContent, '{"version": 2}');
 });
 
-test('mount entry descriptors support create, open, stat, and provenance', async t => {
+test('mount entry descriptors support has, lookup, stat, makeFile, and provenance', async t => {
   const { host, config } = await prepareHost(t);
 
   const mountPath = path.join(config.statePath, '..', 'mount-test-entry');
@@ -4476,23 +4477,25 @@ test('mount entry descriptors support create, open, stat, and provenance', async
 
   const createdEntry = await E(mount).entry(['src', 'created.txt']);
   t.is(await E(createdEntry).displayPath(), 'src/created.txt');
-  t.deepEqual(await E(createdEntry).path(), ['src', 'created.txt']);
-  t.is(await E(createdEntry).stat(), undefined);
+  t.deepEqual(await E(createdEntry).segments(), ['src', 'created.txt']);
+  t.false(await E(mount).has(createdEntry));
+  t.is(await E(mount).stat(createdEntry), undefined);
 
-  const createdFile = await E(mount).createFile(createdEntry);
-  await E(createdFile).writeText('created');
-  await E(createdFile).appendText(' and appended');
+  await E(mount).makeFile(createdEntry, 'created');
+  const createdFile = await E(mount).lookup(createdEntry);
+  await E(createdFile).append(' and appended');
   t.is(await E(createdFile).text(), 'created and appended');
+  t.true(await E(mount).has(createdEntry));
 
   const stat = await E(mount).stat(createdEntry);
-  t.like(stat, { type: 'file', size: 'created and appended'.length });
+  t.like(stat, { kind: 'file', sizeBytes: 'created and appended'.length });
 
   const srcEntry = await E(mount).entry('src');
-  const srcDir = await E(mount).openDirectory(srcEntry);
+  const srcDir = await E(mount).lookup(srcEntry);
   t.deepEqual(await E(srcDir).list(), ['created.txt', 'existing.txt']);
 
   const childEntry = await E(srcEntry).child('created.txt');
-  const openedFile = await E(childEntry).openFile();
+  const openedFile = await E(mount).lookup(childEntry);
   t.is(await E(openedFile).text(), 'created and appended');
 
   await t.throwsAsync(() => E(otherMount).readText(createdEntry), {
@@ -4514,7 +4517,7 @@ test('mount snapshots capture immutable tree and file views', async t => {
 
   const snapshotTree = await E(mount).snapshot();
   const snapshotFile = await E(snapshotTree).lookup('live.txt');
-  const liveFile = await E(mount).openFile('live.txt');
+  const liveFile = await E(mount).lookup('live.txt');
 
   const snapshotBlob = await E(liveFile).snapshot();
 
