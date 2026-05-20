@@ -553,6 +553,30 @@ proves the hardening envelope and local workflow shape:
 This backend uses the host-private physical mount backing, not a path granted
 to the guest.
 
+#### Native Git Version Pin
+
+The backend pins **`git >= 2.30`** as its minimum supported version (ships
+with Ubuntu 22.04 LTS, macOS Monterey's git-installable, Homebrew's
+default, RHEL 9, and Debian 12).  The chosen parsing surfaces are stable
+across that floor:
+
+- `git status --porcelain=v2 --branch` for `status()` (NUL-terminated with
+  `-z`);
+- `git log --pretty=format:%H%x1f%s%x1f%aN%x1f%aI%x1e` for `log()`;
+- `git diff --raw -z` plus `git diff` (text) for `diff()` v1; `git diff
+  --no-color --no-ext-diff` invariants for the v2 hunk parser
+  ([§ Future Structured Result Shapes](#future-structured-result-shapes));
+- `git for-each-ref --format=...` for `branches()`;
+- `git rev-parse --verify --end-of-options` for `revParse()`;
+- `git ls-tree -z --long` and `git cat-file --batch` for lazy tree reads;
+- `git archive --format=tar` for bulk tree reads.
+
+The startup check runs `git --version` once per daemon instance and
+refuses to construct a `NativeGitBackend` on hosts whose git is older than
+the pinned floor.  Parsers assume the pinned formats; they reject and
+surface a structured error if a future host's git emits a format the
+parser does not recognize, rather than degrading silently.
+
 For immutable tree reads, the native backend may expose both a lazy object
 view and a bulk archive reader internally.  Callers should not observe which
 strategy was used except through performance.  A small `lookup('README.md')`
