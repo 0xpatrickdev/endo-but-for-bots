@@ -219,6 +219,16 @@ export const makeFilePowers = ({ fs, path: fspath }) => {
 
   /**
    * @param {string} path
+   * @param {string} text
+   */
+  const appendFileText = async (path, text) => {
+    await writeJobs.enqueue(async () => {
+      await fs.promises.appendFile(path, text);
+    });
+  };
+
+  /**
+   * @param {string} path
    */
   const readFileText = async path => {
     return fs.promises.readFile(path, 'utf-8');
@@ -334,6 +344,16 @@ export const makeFilePowers = ({ fs, path: fspath }) => {
   };
 
   /** @param {string} path */
+  const statPath = async path => {
+    const stat = await fs.promises.stat(path);
+    return harden({
+      type: stat.isDirectory() ? 'directory' : 'file',
+      size: stat.size,
+      mtimeMs: stat.mtimeMs,
+    });
+  };
+
+  /** @param {string} path */
   const exists = async path => {
     try {
       await fs.promises.access(path);
@@ -347,6 +367,7 @@ export const makeFilePowers = ({ fs, path: fspath }) => {
     makeFileReader,
     makeFileWriter,
     writeFileText,
+    appendFileText,
     readFileText,
     readFileBytes,
     readFile,
@@ -359,6 +380,7 @@ export const makeFilePowers = ({ fs, path: fspath }) => {
     removeDirectory,
     renamePath,
     realPath,
+    statPath,
     isDirectory,
     exists,
   });
