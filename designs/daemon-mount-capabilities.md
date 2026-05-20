@@ -208,10 +208,14 @@ related `@endo/platform/fs` vocabulary.
 interface EndoMount {
   // Existing ReadableTree-compatible queries.  `has(entry)` is the
   // no-observational-authority existence test for an `EndoMountEntry`
-  // value.
-  has(...path: string[]): Promise<boolean>;
+  // value.  Path-bearing methods on this interface use the
+  // array-parameter form (`path: string[]`), not the rest-parameter
+  // form (`...path: string[]`), so siblings (`has`, `list`, `lookup`,
+  // `readText`, and the path-form mutators) stay coherent across the
+  // surface.
+  has(path: string[]): Promise<boolean>;
   has(entry: EndoMountEntry): Promise<boolean>;
-  list(...path: string[]): Promise<string[]>;
+  list(path: string[]): Promise<string[]>;
   lookup(path: string[]): Promise<EndoMount | EndoMountFile>;
   lookup(entry: EndoMountEntry): Promise<EndoMount | EndoMountFile>;
 
