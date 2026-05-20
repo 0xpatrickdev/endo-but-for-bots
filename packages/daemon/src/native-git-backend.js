@@ -72,6 +72,13 @@ const makeGitEnv = repoRoot => ({
   // Stable locale for deterministic parsing.
   LANG: 'C',
   LC_ALL: 'C',
+  // Default commit identity.  A daemon-managed guest agent that has
+  // its own identity will override these per-invocation; without a
+  // default, `git commit` fails with "Please tell me who you are".
+  GIT_AUTHOR_NAME: 'Endo',
+  GIT_AUTHOR_EMAIL: 'endo@invalid.local',
+  GIT_COMMITTER_NAME: 'Endo',
+  GIT_COMMITTER_EMAIL: 'endo@invalid.local',
 });
 
 /**
@@ -492,11 +499,77 @@ export const makeNativeGitBackend = ({ repoRoot }) => {
       });
     },
 
-    add: async () => fail('add'),
+    /**
+     * Stage the given repo-relative paths.  The public Git exo resolves
+     * `EndoMountEntry` values into paths before this call.  Per-repo
+     * executable filter and merge-driver config is refused at the top of
+     * every mutation, in case a guest committed something that would
+     * exec on read.
+     *
+     * @param {string[]} paths
+     */
+    add: async paths => {
+      if (!Array.isArray(paths) || paths.length === 0) {
+        throw new Error('add: paths must be a non-empty array');
+      }
+      for (const p of paths) {
+        requireNonEmptyString(p, 'add path');
+      }
+      await assertNoExecutableRepoConfig();
+      // `--` separates options from pathspecs; with --literal-pathspecs
+      // in GIT_BASE_ARGS, the paths are also glob-free.
+      await runGit(['add', '--', ...paths]);
+    },
 
-    restore: async () => fail('restore'),
+    /**
+     * Restore the given repo-relative paths from the index (default)
+     * or from the worktree if `staged` is true.
+     *
+     * @param {string[]} paths
+     * @param {{ staged?: boolean }} opts
+     */
+    restore: async (paths, opts = {}) => {
+      if (!Array.isArray(paths) || paths.length === 0) {
+        throw new Error('restore: paths must be a non-empty array');
+      }
+      for (const p of paths) {
+        requireNonEmptyString(p, 'restore path');
+      }
+      await assertNoExecutableRepoConfig();
+      const args = ['restore'];
+      if (opts.staged) args.push('--staged');
+      args.push('--', ...paths);
+      await runGit(args);
+    },
 
-    commit: async () => fail('commit'),
+    /**
+     * Create a commit from the current index using the provided message.
+     * Returns a `GitCommit` record reflecting the new HEAD.
+     *
+     * @param {string} message
+     */
+    commit: async message => {
+      requireNonEmptyString(message, 'commit message');
+      await assertNoExecutableRepoConfig();
+      // -m embeds the message inline; --allow-empty-message is left off
+      // so the daemon does not silently accept blank messages.
+      await runGit(['commit', '-m', message]);
+      // Read back the new HEAD's record so the caller learns the oid.
+      const out = await runGit([
+        'log',
+        '-1',
+        '--pretty=format:%H%x09%s%x09%an%x09%ct',
+      ]);
+      const [oid, summary, author, committedAtStr] = out.split('\t');
+      return harden({
+        oid,
+        summary,
+        author,
+        committedAt: committedAtStr
+          ? Number.parseInt(committedAtStr, 10)
+          : undefined,
+      });
+    },
 
     currentBranch: async () => {
       // `symbolic-ref --short HEAD` returns the branch name when HEAD

@@ -6,6 +6,7 @@ import { E } from '@endo/eventual-send';
 import { makeExo } from '@endo/exo';
 
 import { GitInterface } from './interfaces.js';
+import { lineageOf } from './mount.js';
 
 /**
  * @typedef {object} GitRef
@@ -126,6 +127,46 @@ import { GitInterface } from './interfaces.js';
  * @returns {object}
  */
 export const makeGit = ({ mount, backend }) => {
+  // The mount's lineage sentinel — used to verify that every entry
+  // passed to a path-bearing Git method was minted by this Git's bound
+  // mount, not by some other mount this guest may also hold.
+  const mountLineage = lineageOf(mount);
+
+  /**
+   * Translate an array of EndoMountEntry caps into the repo-relative
+   * path strings that the backend (and the underlying git binary)
+   * accept.  Entries from a different mount lineage are rejected
+   * before any path is exposed to git.
+   *
+   * @param {readonly object[]} entries
+   * @returns {Promise<string[]>}
+   */
+  const entriesToRepoPaths = async entries => {
+    if (!Array.isArray(entries) || entries.length === 0) {
+      throw new Error(
+        'entries must be a non-empty array of EndoMountEntry values',
+      );
+    }
+    const paths = [];
+    for (const entry of entries) {
+      const otherLineage = lineageOf(/** @type {object} */ (entry));
+      if (otherLineage === undefined) {
+        throw new Error(
+          'entry is not an EndoMountEntry minted by this daemon',
+        );
+      }
+      if (otherLineage !== mountLineage) {
+        throw new Error(
+          'entry was minted by a different mount lineage and cannot be used here',
+        );
+      }
+      // eslint-disable-next-line no-await-in-loop
+      const segments = await E(entry).segments();
+      paths.push(segments.join('/'));
+    }
+    return paths;
+  };
+
   return makeExo('Git', GitInterface, {
     worktree() {
       return mount;
@@ -173,21 +214,13 @@ export const makeGit = ({ mount, backend }) => {
     },
 
     async add(entries) {
-      // Phase 1: the backend wiring is in place but the entry-to-path
-      // resolver lives in Phase 2 (it consults the host-private mount
-      // backing to translate `EndoMountEntry` values into the absolute
-      // paths the native backend ultimately receives).  Until then,
-      // surface a clear "not implemented" rather than passing entries
-      // straight through.
-      throw new Error(
-        `Git.add is not yet implemented (received ${q(entries.length)} entries)`,
-      );
+      const paths = await entriesToRepoPaths(entries);
+      return backend.add(paths);
     },
 
     async restore(entries, options = {}) {
-      throw new Error(
-        `Git.restore is not yet implemented (received ${q(entries.length)} entries, options=${q(options)})`,
-      );
+      const paths = await entriesToRepoPaths(entries);
+      return backend.restore(paths, options);
     },
 
     async commit(message) {

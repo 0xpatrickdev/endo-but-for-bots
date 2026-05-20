@@ -137,11 +137,13 @@ test('Git scaffold methods all surface a clear "not yet implemented"', async t =
     message: /not yet implemented/,
   });
 
-  // add/restore are guarded at the public exo (they need the entry-to-path
-  // resolver that Phase 2 lands) rather than going through the backend.
+  // add/restore reject fabricated entries at the lineage check.  The
+  // backend never sees a path because the public exo refuses before
+  // dispatching.  ("not yet implemented" reaches the backend's own
+  // methods that the public exo dispatches to directly, like status.)
   const fakeEntry = Far('FakeEntry', { segments: () => ['foo.txt'] });
   await t.throwsAsync(E(git).add([fakeEntry]), {
-    message: /Git.add is not yet implemented/,
+    message: /not an EndoMountEntry/,
   });
 });
 
@@ -242,16 +244,117 @@ test('NativeGitBackend.revParse rejects revisions starting with "-"', async t =>
   });
 });
 
-test('NativeGitBackend mutation ops still throw "not yet implemented"', async t => {
+test('NativeGitBackend.diff still throws "not yet implemented"', async t => {
+  // Diff arrives in a follow-up commit; this pin makes the
+  // backend contract's NYI surface visible.
   const repoRoot = await provisionGitWorktree(t);
   const backend = makeNativeGitBackend({ repoRoot });
-  // Phase 2 will fill these in.  This pins the Phase 1 contract so a
-  // future commit that lands them updates the test alongside the impl.
-  await t.throwsAsync(backend.add([]), { message: /not yet implemented/ });
-  await t.throwsAsync(backend.commit('msg'), {
-    message: /not yet implemented/,
-  });
   await t.throwsAsync(backend.diff({}), { message: /not yet implemented/ });
+});
+
+test('NativeGitBackend.add stages files via repo-relative paths', async t => {
+  const repoRoot = await provisionGitWorktree(t);
+  await fs.promises.writeFile(path.join(repoRoot, 'new.txt'), 'fresh');
+  const backend = makeNativeGitBackend({ repoRoot });
+
+  await backend.add(['new.txt']);
+
+  const entries = await backend.status();
+  const [row] = entries;
+  t.is(row.path, 'new.txt');
+  t.is(row.index, 'added');
+});
+
+test('NativeGitBackend.add rejects empty / non-string paths', async t => {
+  const repoRoot = await provisionGitWorktree(t);
+  const backend = makeNativeGitBackend({ repoRoot });
+
+  await t.throwsAsync(backend.add([]), { message: /non-empty array/ });
+  await t.throwsAsync(backend.add(['']), { message: /is required/ });
+  await t.throwsAsync(backend.add(['has\0null']), { message: /NUL bytes/ });
+});
+
+test('NativeGitBackend.commit produces a new HEAD with the given message', async t => {
+  const repoRoot = await provisionGitWorktree(t);
+  await fs.promises.writeFile(path.join(repoRoot, 'a.txt'), 'a');
+  const backend = makeNativeGitBackend({ repoRoot });
+  await backend.add(['a.txt']);
+
+  const commit = await backend.commit('add a.txt');
+
+  t.regex(commit.oid, /^[0-9a-f]{40,64}$/);
+  t.is(commit.summary, 'add a.txt');
+  t.is(commit.author, 'Endo');
+  t.is(typeof commit.committedAt, 'number');
+
+  // log -1 should now report the new commit.
+  const recent = await backend.log({ maxCount: 1 });
+  t.is(recent[0].oid, commit.oid);
+});
+
+test('NativeGitBackend.restore --staged unstages an added file', async t => {
+  const repoRoot = await provisionGitWorktree(t);
+  await fs.promises.writeFile(path.join(repoRoot, 'staged.txt'), 'x');
+  const backend = makeNativeGitBackend({ repoRoot });
+  await backend.add(['staged.txt']);
+
+  // Index should now show the add.
+  let entries = await backend.status();
+  t.is(entries[0].index, 'added');
+
+  // Unstage; the file should drop back to untracked.
+  await backend.restore(['staged.txt'], { staged: true });
+  entries = await backend.status();
+  t.is(entries[0].worktree, 'untracked');
+});
+
+test('Git.add wraps EndoMountEntry inputs and refuses cross-mount entries', async t => {
+  const repoRoot = await provisionGitWorktree(t);
+  await fs.promises.writeFile(path.join(repoRoot, 'sample.txt'), 'sample');
+  const filePowers = makeFilePowers({ fs, path });
+  const mount = makeMount({ rootPath: repoRoot, readOnly: false, filePowers });
+  const backend = makeNativeGitBackend({ repoRoot });
+  const git = makeGit({ mount, backend });
+
+  // Same-lineage entry: add works through the public Git exo and the
+  // backend sees the resolved repo-relative path.
+  const ownEntry = await E(mount).entry(['sample.txt']);
+  await E(git).add([ownEntry]);
+  const entries = await backend.status();
+  t.is(entries[0].path, 'sample.txt');
+  t.is(entries[0].index, 'added');
+
+  // Cross-mount entry: a separate mount lineage's entry is rejected
+  // before the backend sees anything.
+  const otherRoot = await fs.promises.mkdtemp(
+    path.join(os.tmpdir(), 'cross-git-'),
+  );
+  t.teardown(() => fs.promises.rm(otherRoot, { recursive: true, force: true }));
+  const otherMount = makeMount({
+    rootPath: otherRoot,
+    readOnly: false,
+    filePowers,
+  });
+  const otherEntry = await E(otherMount).entry(['x.txt']);
+  await t.throwsAsync(E(git).add([otherEntry]), {
+    message: /different mount lineage/,
+  });
+});
+
+test('Git.commit through the public exo returns a structured commit record', async t => {
+  const repoRoot = await provisionGitWorktree(t);
+  await fs.promises.writeFile(path.join(repoRoot, 'b.txt'), 'b');
+  const filePowers = makeFilePowers({ fs, path });
+  const mount = makeMount({ rootPath: repoRoot, readOnly: false, filePowers });
+  const backend = makeNativeGitBackend({ repoRoot });
+  const git = makeGit({ mount, backend });
+
+  const entry = await E(mount).entry(['b.txt']);
+  await E(git).add([entry]);
+  const commit = await E(git).commit('add b.txt');
+
+  t.is(commit.summary, 'add b.txt');
+  t.regex(commit.oid, /^[0-9a-f]{40,64}$/);
 });
 
 test('NativeGitBackend.status: clean worktree returns empty list', async t => {
