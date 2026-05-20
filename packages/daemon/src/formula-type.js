@@ -9,6 +9,7 @@ const formulaTypes = new Set([
   'endo',
   'eval',
   'git',
+  'git-remote',
   'guest',
   'handle',
   'host',

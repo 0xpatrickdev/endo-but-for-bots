@@ -4,9 +4,9 @@ import { q } from '@endo/errors';
 import { E } from '@endo/far';
 import { makeExo } from '@endo/exo';
 
-import { GitInterface } from './interfaces.js';
+import { GitInterface, GitRemoteInterface } from './interfaces.js';
 
-/** @import { EndoMount, EndoMountEntry, GitPowers } from './types.js' */
+/** @import { EndoMount, EndoMountEntry, GitPowers, GitRemotePolicy } from './types.js' */
 
 const GIT_OUTPUT_LIMIT = 50_000;
 
@@ -479,3 +479,193 @@ export const makeGit = ({ worktree, repoRoot, gitPowers }) => {
   });
 };
 harden(makeGit);
+
+/**
+ * @param {unknown} value
+ * @param {string} name
+ * @returns {string}
+ */
+const requireRemoteToken = (value, name) => {
+  const token = requireNonEmptyString(value, name);
+  if (token.startsWith('-')) {
+    throw new Error(`${name} must not start with "-"`);
+  }
+  return token;
+};
+harden(requireRemoteToken);
+
+/**
+ * @param {object} args
+ * @param {string} args.repoRoot
+ * @param {GitPowers} args.gitPowers
+ * @param {GitRemotePolicy} args.policy
+ * @returns {object}
+ */
+export const makeGitRemote = ({ repoRoot, gitPowers, policy }) => {
+  /** @type {Promise<string> | undefined} */
+  let verifiedRepoRoot;
+  const remoteName = requireRemoteToken(policy.remote, 'remote');
+  const directions = new Set(policy.directions);
+  const allowedRefs = policy.allowedRefs || undefined;
+  let revoked = false;
+
+  const getRepoRoot = () => {
+    if (verifiedRepoRoot === undefined) {
+      verifiedRepoRoot = gitPowers.getRepositoryRoot(repoRoot);
+    }
+    return verifiedRepoRoot;
+  };
+
+  /**
+   * @param {string[]} args
+   */
+  const runGitRaw = async args => {
+    const root = await getRepoRoot();
+    try {
+      return await gitPowers.runGit(root, args);
+    } catch (error) {
+      const err =
+        /** @type {Error & { stdout?: string, stderr?: string, code?: number }} */ (
+          error
+        );
+      const detail = err.stderr || err.stdout || err.message || 'unknown error';
+      throw new Error(
+        `git ${args[0]} failed (exit ${err.code ?? 'unknown'}):\n${truncateOutput(detail.trim())}`,
+      );
+    }
+  };
+
+  /**
+   * @param {string[]} args
+   */
+  const runGit = async args => {
+    const { stdout, stderr } = await runGitRaw(args);
+    const output = `${stdout}${stderr ? `\n[stderr]:\n${stderr}` : ''}`;
+    return truncateOutput(output.trim() || '(no output)');
+  };
+
+  /**
+   * @param {'fetch' | 'pull' | 'push'} direction
+   */
+  const assertAllowed = direction => {
+    if (revoked) {
+      throw new Error('Git remote has been revoked');
+    }
+    if (!directions.has(direction)) {
+      throw new Error(`Git remote does not allow ${direction}`);
+    }
+  };
+
+  /**
+   * @param {string} ref
+   */
+  const assertAllowedRef = ref => {
+    requireRevision(ref, 'ref');
+    if (
+      allowedRefs !== undefined &&
+      !allowedRefs.some(
+        allowed =>
+          ref === allowed ||
+          ref.startsWith(`${allowed}:`) ||
+          ref.endsWith(`:${allowed}`),
+      )
+    ) {
+      throw new Error(`Git remote policy does not allow ref ${q(ref)}`);
+    }
+  };
+
+  const ensureConfiguredEndpoint = async () => {
+    if (policy.url === undefined) {
+      return;
+    }
+    const url = requireRemoteToken(policy.url, 'url');
+    try {
+      const { stdout } = await runGitRaw(['remote', 'get-url', remoteName]);
+      const configured = stdout.trim();
+      if (configured !== url) {
+        throw new Error(
+          `Git remote ${q(remoteName)} is configured for ${q(configured)}, not ${q(url)}`,
+        );
+      }
+    } catch (error) {
+      const message = String(
+        (error && /** @type {any} */ (error).message) || error,
+      );
+      if (!message.includes('No such remote')) {
+        throw error;
+      }
+      await runGit(['remote', 'add', remoteName, url]);
+    }
+  };
+
+  const help =
+    'Bounded Git remote capability for one local Git worktree. ' +
+    'Operations are limited by direction policy and optional ref policy. ' +
+    'Credentials are not exposed through this interface.';
+
+  return makeExo('EndoGitRemote', GitRemoteInterface, {
+    help: () => help,
+
+    async inspect() {
+      await null;
+      return harden({
+        ...policy,
+        directions: harden([...directions]),
+        revoked,
+      });
+    },
+
+    async fetch(options = {}) {
+      assertAllowed('fetch');
+      await ensureConfiguredEndpoint();
+      const { refspecs = [], prune = false } = options;
+      for (const refspec of refspecs) {
+        assertAllowedRef(refspec);
+      }
+      return harden({
+        output: await runGit([
+          'fetch',
+          ...(prune ? ['--prune'] : []),
+          remoteName,
+          ...refspecs,
+        ]),
+      });
+    },
+
+    async pull(options = {}) {
+      assertAllowed('pull');
+      await ensureConfiguredEndpoint();
+      const { branch } = options;
+      const command = ['pull', '--ff-only', remoteName];
+      if (branch !== undefined) {
+        assertAllowedRef(branch);
+        command.push(branch);
+      }
+      return harden({ output: await runGit(command) });
+    },
+
+    async push(options = {}) {
+      assertAllowed('push');
+      await ensureConfiguredEndpoint();
+      const {
+        source = 'HEAD',
+        target = undefined,
+        forceWithLease = false,
+      } = options;
+      assertAllowedRef(source);
+      if (target !== undefined) {
+        assertAllowedRef(target);
+      }
+      const refspec = target === undefined ? source : `${source}:${target}`;
+      return harden({
+        output: await runGit([
+          'push',
+          ...(forceWithLease ? ['--force-with-lease'] : []),
+          remoteName,
+          refspec,
+        ]),
+      });
+    },
+  });
+};
+harden(makeGitRemote);

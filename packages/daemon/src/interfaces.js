@@ -321,6 +321,7 @@ export const HostInterface = M.interface('EndoHost', {
     .returns(M.promise()),
   // Derive a local Git capability from a daemon-minted Mount
   provideGit: M.call(NameOrPathShape, NameOrPathShape).returns(M.promise()),
+  provideGitRemote: M.call(M.record(), NameOrPathShape).returns(M.promise()),
   // Create a daemon-managed scratch mount
   provideScratchMount: M.call(NameOrPathShape)
     .optional(M.splitRecord({}, { readOnly: M.boolean() }))
@@ -667,6 +668,37 @@ export const GitInterface = M.interface('EndoGit', {
     .optional(M.or(M.string(), GitRefShape))
     .returns(M.promise()),
   tree: M.call(M.or(M.string(), GitRefShape)).returns(M.promise()),
+  help: M.call().returns(M.string()),
+});
+
+export const GitRemoteInterface = M.interface('EndoGitRemote', {
+  inspect: M.call().returns(M.promise()),
+  fetch: M.call()
+    .optional(
+      M.splitRecord(
+        {},
+        {
+          refspecs: M.arrayOf(M.string()),
+          prune: M.boolean(),
+        },
+      ),
+    )
+    .returns(M.promise()),
+  pull: M.call()
+    .optional(M.splitRecord({}, { branch: M.string() }))
+    .returns(M.promise()),
+  push: M.call()
+    .optional(
+      M.splitRecord(
+        {},
+        {
+          source: M.string(),
+          target: M.string(),
+          forceWithLease: M.boolean(),
+        },
+      ),
+    )
+    .returns(M.promise()),
   help: M.call().returns(M.string()),
 });
 

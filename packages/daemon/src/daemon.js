@@ -23,7 +23,7 @@ import { assertMailboxStoreName, makeMailboxMaker } from './mail.js';
 import { makeGuestMaker } from './guest.js';
 import { makeChannelMaker } from './channel.js';
 import { makeHostMaker } from './host.js';
-import { makeGit } from './git.js';
+import { makeGit, makeGitRemote } from './git.js';
 import { makeRemoteControlProvider } from './remote-control.js';
 import {
   assertName,
@@ -539,6 +539,8 @@ const makeDaemonCore = async (
         return [['hub', formula.hub]];
       case 'git':
         return [['mount', formula.mount]];
+      case 'git-remote':
+        return [['git', formula.git]];
       case 'make-unconfined': {
         /** @type {Array<[string, FormulaIdentifier]>} */
         const deps = [
@@ -2655,6 +2657,27 @@ const makeDaemonCore = async (
       const repoRoot = getMountHostPath(mount);
       return makeGit({ worktree, repoRoot, gitPowers });
     },
+    'git-remote': async (
+      { git, remote, url, directions, allowedRefs },
+      context,
+    ) => {
+      if (gitPowers === undefined) {
+        throw new Error('Git powers are not available in this daemon');
+      }
+      context.thisDiesIfThatDies(git);
+      const gitFormula = await getFormulaForId(git);
+      if (gitFormula.type !== 'git') {
+        throw new Error(
+          `Git remote requires a git formula, got ${q(gitFormula.type)}`,
+        );
+      }
+      const repoRoot = getMountHostPath(gitFormula.mount);
+      return makeGitRemote({
+        repoRoot,
+        gitPowers,
+        policy: harden({ remote, url, directions, allowedRefs }),
+      });
+    },
     lookup: ({ hub, path }, context) =>
       makeLookup(
         hub,
@@ -3463,6 +3486,35 @@ const makeDaemonCore = async (
         const formula = harden({
           type: /** @type {const} */ ('git'),
           mount: mountId,
+        });
+
+        return formulate(formulaNumber, formula);
+      })
+    );
+  };
+
+  /** @type {DaemonCore['formulateGitRemote']} */
+  const formulateGitRemote = async (gitId, remote, policy, deferredTasks) => {
+    return /** @type {FormulateResult<import('./types.js').EndoGitRemote>} */ (
+      withFormulaGraphLock(async () => {
+        await null;
+        const formulaNumber = /** @type {FormulaNumber} */ (
+          await randomHex256()
+        );
+
+        await deferredTasks.execute({
+          gitRemoteId: formatId({
+            number: formulaNumber,
+            node: localNodeNumber,
+          }),
+        });
+
+        /** @type {import('./types.js').Formula} */
+        const formula = harden({
+          type: /** @type {const} */ ('git-remote'),
+          git: gitId,
+          remote,
+          ...policy,
         });
 
         return formulate(formulaNumber, formula);
@@ -5381,6 +5433,7 @@ const makeDaemonCore = async (
     checkinTree,
     formulateMount,
     formulateGit,
+    formulateGitRemote,
     formulateScratchMount,
     formulateInvitation,
     formulateDirectoryForStore,

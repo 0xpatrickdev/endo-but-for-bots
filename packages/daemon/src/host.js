@@ -2,7 +2,7 @@
 /// <reference types="ses"/>
 
 /** @import { ERef } from '@endo/eventual-send' */
-/** @import { AgentDeferredTaskParams, ChannelDeferredTaskParams, Context, DaemonCore, DeferredTasks, EndoGuest, EndoHost, EnvRecord, EvalDeferredTaskParams, FormulaIdentifier, FormulaNumber, GitDeferredTaskParams, InvitationDeferredTaskParams, MakeCapletDeferredTaskParams, MakeCapletOptions, MakeDirectoryNode, MakeHostOrGuestOptions, MakeMailbox, MountDeferredTaskParams, Name, NameOrPath, NamePath, NodeNumber, PeerInfo, PetName, ReadableBlobDeferredTaskParams, ReadableTreeDeferredTaskParams, MarshalDeferredTaskParams, ScratchMountDeferredTaskParams, WorkerDeferredTaskParams } from './types.js' */
+/** @import { AgentDeferredTaskParams, ChannelDeferredTaskParams, Context, DaemonCore, DeferredTasks, EndoGuest, EndoHost, EnvRecord, EvalDeferredTaskParams, FormulaIdentifier, FormulaNumber, GitDeferredTaskParams, GitRemoteDeferredTaskParams, InvitationDeferredTaskParams, MakeCapletDeferredTaskParams, MakeCapletOptions, MakeDirectoryNode, MakeHostOrGuestOptions, MakeMailbox, MountDeferredTaskParams, Name, NameOrPath, NamePath, NodeNumber, PeerInfo, PetName, ReadableBlobDeferredTaskParams, ReadableTreeDeferredTaskParams, MarshalDeferredTaskParams, ScratchMountDeferredTaskParams, WorkerDeferredTaskParams } from './types.js' */
 
 import { E } from '@endo/far';
 import { makeExo } from '@endo/exo';
@@ -73,6 +73,7 @@ const normalizeHostOrGuestOptions = opts => {
  * @param {DaemonCore['checkinTree']} args.checkinTree
  * @param {DaemonCore['formulateMount']} args.formulateMount
  * @param {DaemonCore['formulateGit']} args.formulateGit
+ * @param {DaemonCore['formulateGitRemote']} args.formulateGitRemote
  * @param {DaemonCore['formulateScratchMount']} args.formulateScratchMount
  * @param {DaemonCore['formulateInvitation']} args.formulateInvitation
  * @param {DaemonCore['formulateDirectoryForStore']} args.formulateDirectoryForStore
@@ -109,6 +110,7 @@ export const makeHostMaker = ({
   checkinTree,
   formulateMount,
   formulateGit,
+  formulateGitRemote,
   formulateScratchMount,
   formulateInvitation,
   formulateDirectoryForStore,
@@ -318,6 +320,66 @@ export const makeHostMaker = ({
       );
 
       const { value } = await formulateGit(mountId, tasks);
+      return value;
+    };
+
+    /**
+     * Derive a bounded remote-git capability from a local Git capability.
+     *
+     * @param {Record<string, unknown>} options
+     * @param {NameOrPath} petName
+     */
+    const provideGitRemote = async (options, petName) => {
+      const { namePath } = assertPetNamePath(namePathFrom(petName));
+      const gitName = options.gitName;
+      if (
+        typeof gitName !== 'string' &&
+        !Array.isArray(gitName)
+      ) {
+        throw new Error('provideGitRemote requires gitName');
+      }
+      const gitNamePath = namePathFrom(/** @type {NameOrPath} */ (gitName));
+      assertNamePath(gitNamePath);
+
+      const git = await E(directory).lookup(gitNamePath);
+      const gitId = getIdForRef(git);
+      if (gitId === undefined) {
+        throw makeError(X`provideGitRemote: git is not daemon-minted`);
+      }
+      const gitFormula = await getFormulaForId(gitId);
+      if (gitFormula.type !== 'git') {
+        throw makeError(
+          X`provideGitRemote: expected git formula, got ${q(gitFormula.type)}`,
+        );
+      }
+
+      const remote =
+        options.remote === undefined ? 'origin' : `${options.remote}`;
+      const url = options.url === undefined ? undefined : `${options.url}`;
+      const directions = Array.isArray(options.directions)
+        ? options.directions.map(direction => `${direction}`)
+        : ['fetch', 'pull', 'push'];
+      for (const direction of directions) {
+        if (!['fetch', 'pull', 'push'].includes(direction)) {
+          throw new Error(`Unsupported git remote direction ${direction}`);
+        }
+      }
+      const allowedRefs = Array.isArray(options.allowedRefs)
+        ? options.allowedRefs.map(ref => `${ref}`)
+        : undefined;
+
+      /** @type {DeferredTasks<GitRemoteDeferredTaskParams>} */
+      const tasks = makeDeferredTasks();
+      tasks.push(identifiers =>
+        E(directory).storeIdentifier(namePath, identifiers.gitRemoteId),
+      );
+
+      const { value } = await formulateGitRemote(
+        gitId,
+        remote,
+        harden({ url, directions, allowedRefs }),
+        tasks,
+      );
       return value;
     };
 
@@ -1483,6 +1545,7 @@ export const makeHostMaker = ({
       storeTree,
       provideMount,
       provideGit,
+      provideGitRemote,
       provideScratchMount,
       provideHostPath,
       provideGuest,
