@@ -23,6 +23,7 @@ import { assertMailboxStoreName, makeMailboxMaker } from './mail.js';
 import { makeGuestMaker } from './guest.js';
 import { makeChannelMaker } from './channel.js';
 import { makeHostMaker } from './host.js';
+import { makeGit } from './git.js';
 import { makeRemoteControlProvider } from './remote-control.js';
 import {
   assertName,
@@ -313,6 +314,7 @@ const makeDaemonCore = async (
     persistence: persistencePowers,
     control: controlPowers,
     filePowers,
+    gitPowers,
   } = powers;
   const { randomHex256, generateEd25519Keypair } = cryptoPowers;
   const contentStore = persistencePowers.makeContentStore();
@@ -535,6 +537,8 @@ const makeDaemonCore = async (
         ];
       case 'lookup':
         return [['hub', formula.hub]];
+      case 'git':
+        return [['mount', formula.mount]];
       case 'make-unconfined': {
         /** @type {Array<[string, FormulaIdentifier]>} */
         const deps = [
@@ -2640,6 +2644,17 @@ const makeDaemonCore = async (
         snapshotFile: snapshotMountFile,
       });
     },
+    git: async ({ mount }, context) => {
+      if (gitPowers === undefined) {
+        throw new Error('Git powers are not available in this daemon');
+      }
+      context.thisDiesIfThatDies(mount);
+      const worktree = /** @type {import('./types.js').EndoMount} */ (
+        await provide(mount, 'mount')
+      );
+      const repoRoot = getMountHostPath(mount);
+      return makeGit({ worktree, repoRoot, gitPowers });
+    },
     lookup: ({ hub, path }, context) =>
       makeLookup(
         hub,
@@ -3421,6 +3436,33 @@ const makeDaemonCore = async (
           type: 'mount',
           path: mountPath,
           readOnly,
+        });
+
+        return formulate(formulaNumber, formula);
+      })
+    );
+  };
+
+  /** @type {DaemonCore['formulateGit']} */
+  const formulateGit = async (mountId, deferredTasks) => {
+    return /** @type {FormulateResult<import('./types.js').EndoGit>} */ (
+      withFormulaGraphLock(async () => {
+        await null;
+        const formulaNumber = /** @type {FormulaNumber} */ (
+          await randomHex256()
+        );
+
+        await deferredTasks.execute({
+          gitId: formatId({
+            number: formulaNumber,
+            node: localNodeNumber,
+          }),
+        });
+
+        /** @type {import('./types.js').Formula} */
+        const formula = harden({
+          type: /** @type {const} */ ('git'),
+          mount: mountId,
         });
 
         return formulate(formulaNumber, formula);
@@ -5338,6 +5380,7 @@ const makeDaemonCore = async (
     formulateReadableBlob,
     checkinTree,
     formulateMount,
+    formulateGit,
     formulateScratchMount,
     formulateInvitation,
     formulateDirectoryForStore,

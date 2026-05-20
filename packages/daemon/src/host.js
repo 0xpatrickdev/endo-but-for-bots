@@ -2,7 +2,7 @@
 /// <reference types="ses"/>
 
 /** @import { ERef } from '@endo/eventual-send' */
-/** @import { AgentDeferredTaskParams, ChannelDeferredTaskParams, Context, DaemonCore, DeferredTasks, EndoGuest, EndoHost, EnvRecord, EvalDeferredTaskParams, FormulaIdentifier, FormulaNumber, InvitationDeferredTaskParams, MakeCapletDeferredTaskParams, MakeCapletOptions, MakeDirectoryNode, MakeHostOrGuestOptions, MakeMailbox, MountDeferredTaskParams, Name, NameOrPath, NamePath, NodeNumber, PeerInfo, PetName, ReadableBlobDeferredTaskParams, ReadableTreeDeferredTaskParams, MarshalDeferredTaskParams, ScratchMountDeferredTaskParams, WorkerDeferredTaskParams } from './types.js' */
+/** @import { AgentDeferredTaskParams, ChannelDeferredTaskParams, Context, DaemonCore, DeferredTasks, EndoGuest, EndoHost, EnvRecord, EvalDeferredTaskParams, FormulaIdentifier, FormulaNumber, GitDeferredTaskParams, InvitationDeferredTaskParams, MakeCapletDeferredTaskParams, MakeCapletOptions, MakeDirectoryNode, MakeHostOrGuestOptions, MakeMailbox, MountDeferredTaskParams, Name, NameOrPath, NamePath, NodeNumber, PeerInfo, PetName, ReadableBlobDeferredTaskParams, ReadableTreeDeferredTaskParams, MarshalDeferredTaskParams, ScratchMountDeferredTaskParams, WorkerDeferredTaskParams } from './types.js' */
 
 import { E } from '@endo/far';
 import { makeExo } from '@endo/exo';
@@ -72,6 +72,7 @@ const normalizeHostOrGuestOptions = opts => {
  * @param {DaemonCore['formulateReadableBlob']} args.formulateReadableBlob
  * @param {DaemonCore['checkinTree']} args.checkinTree
  * @param {DaemonCore['formulateMount']} args.formulateMount
+ * @param {DaemonCore['formulateGit']} args.formulateGit
  * @param {DaemonCore['formulateScratchMount']} args.formulateScratchMount
  * @param {DaemonCore['formulateInvitation']} args.formulateInvitation
  * @param {DaemonCore['formulateDirectoryForStore']} args.formulateDirectoryForStore
@@ -107,6 +108,7 @@ export const makeHostMaker = ({
   formulateReadableBlob,
   checkinTree,
   formulateMount,
+  formulateGit,
   formulateScratchMount,
   formulateInvitation,
   formulateDirectoryForStore,
@@ -275,6 +277,47 @@ export const makeHostMaker = ({
       );
 
       const { value } = await formulateMount(mountPath, readOnly, tasks);
+      return value;
+    };
+
+    /**
+     * Derive a local Git capability from a daemon-minted mount.
+     *
+     * @param {NameOrPath} mountName
+     * @param {NameOrPath} petName
+     */
+    const provideGit = async (mountName, petName) => {
+      const mountNamePath = namePathFrom(mountName);
+      assertNamePath(mountNamePath);
+      const { namePath } = assertPetNamePath(namePathFrom(petName));
+
+      const mount = await E(directory).lookup(mountNamePath);
+      const mountId = getIdForRef(mount);
+      if (mountId === undefined) {
+        throw makeError(X`provideGit: mount is not a daemon-minted mount`);
+      }
+
+      const mountFormula = await getFormulaForId(mountId);
+      if (
+        (mountFormula.type === 'mount' ||
+          mountFormula.type === 'scratch-mount') &&
+        mountFormula.readOnly
+      ) {
+        throw makeError(X`provideGit: mount ${q(mountNamePath)} is read-only`);
+      }
+
+      // Validate that the mount is one of the top-level physical
+      // backing formulas before formulating Git. Subdirectory views
+      // and read-only attenuations intentionally do not pass.
+      getMountHostPath(mountId);
+
+      /** @type {DeferredTasks<GitDeferredTaskParams>} */
+      const tasks = makeDeferredTasks();
+      tasks.push(identifiers =>
+        E(directory).storeIdentifier(namePath, identifiers.gitId),
+      );
+
+      const { value } = await formulateGit(mountId, tasks);
       return value;
     };
 
@@ -1439,6 +1482,7 @@ export const makeHostMaker = ({
       storeValue,
       storeTree,
       provideMount,
+      provideGit,
       provideScratchMount,
       provideHostPath,
       provideGuest,
