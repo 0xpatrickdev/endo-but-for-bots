@@ -646,8 +646,8 @@ hub is a separate decision with wide blast radius.
 - [x] Add integration tests for snapshot round-tripping:
   - [x] live mount -> snapshot tree
   - [x] nested directories
-  - [ ] binary file streaming
-  - [ ] symlink confinement behavior
+  - [x] binary file streaming
+  - [x] symlink confinement behavior
 - [ ] Update `daemon-mount.md` status once shipped.
 
 ### Phase 2: Add Entry Descriptors
@@ -663,7 +663,7 @@ hub is a separate decision with wide blast radius.
   an entry as the path-bearing argument; see next phase.
 - [x] Add descriptor provenance tests:
   - [x] entries from one mount rejected by another mount
-  - [ ] read-only entries (via `readOnly()` mount) cannot regain write
+  - [x] read-only entries (via `readOnly()` mount) cannot regain write
     authority through handle-minting on a sibling mutable mount
   - [x] missing entries can round-trip without creating files
 
