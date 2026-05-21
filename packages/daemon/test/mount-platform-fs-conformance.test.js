@@ -1,4 +1,5 @@
 // @ts-check
+/* global Buffer */
 
 // Establish a perimeter:
 // eslint-disable-next-line import/order
@@ -235,6 +236,24 @@ test('EndoMount.makeDirectory returns a sub-mount (Directory.makeDirectory shape
   // Writes through the returned sub-mount land inside the new dir.
   await E(sub).writeText(['leaf.txt'], 'inside-sub');
   t.is(await E(mount).readText(['sub', 'leaf.txt']), 'inside-sub');
+  t.true(
+    await E(sub).has('leaf.txt'),
+    'sub-mount has(string) resolves relative to the subdirectory',
+  );
+  t.false(
+    await E(sub).has('missing.txt'),
+    'sub-mount has(string) does not fall back to the mount root',
+  );
+});
+
+test('EndoMount.entry accepts slash-joined string selectors', async t => {
+  const { mount } = makeConfiguredMount(t);
+  const entry = await E(mount).entry('a/b/../c.txt');
+  t.deepEqual(await E(entry).segments(), ['a', 'c.txt']);
+  t.is(await E(entry).displayPath(), 'a/c.txt');
+
+  await E(mount).writeText(entry, 'via-entry');
+  t.is(await E(mount).readText(['a', 'c.txt']), 'via-entry');
 });
 
 test('EndoMount.write accepts a ReadableBlob and materializes bytes', async t => {
@@ -458,6 +477,15 @@ test('EndoMountFile.readOnly() returns a structural ReadableBlob view', async t 
     'readOnly() must expose exactly the ReadableBlob method set',
   );
   t.is(await E(view).text(), 'rb-data');
+
+  const iter = await E(view).streamBase64();
+  const first = await E(iter).next();
+  t.false(first.done);
+  t.is(
+    Buffer.from(first.value, 'base64').toString('utf-8'),
+    'rb-data',
+    'read-only blob view streams through the platform surface',
+  );
 });
 
 test('EndoMount.snapshot returns a SnapshotTree-shaped capability', async t => {

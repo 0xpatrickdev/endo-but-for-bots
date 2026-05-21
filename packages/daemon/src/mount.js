@@ -6,7 +6,6 @@
 import { E } from '@endo/far';
 import { q } from '@endo/errors';
 import { makeExo } from '@endo/exo';
-import { decodeBase64 } from '@endo/base64';
 import {
   ReadableBlobInterface,
   ReadableTreeInterface,
@@ -19,6 +18,7 @@ import {
   MountInterface,
 } from './interfaces.js';
 import { makeReaderRef } from './reader-ref.js';
+import { makeRefIterator, makeRefReader } from './ref-reader.js';
 
 const mountEntryRecords = new WeakMap();
 
@@ -261,6 +261,24 @@ const makeMountExo = ctx => {
   };
 
   /**
+   * `entry()` is the one mount API where a string is a slash-joined
+   * selector rather than a single name.  Other path-bearing convenience
+   * methods keep their existing single-name string compatibility.
+   *
+   * @param {string | string[]} pathArg
+   * @returns {string[]}
+   */
+  const segmentsFromEntryPathArg = pathArg => {
+    if (Array.isArray(pathArg)) {
+      return normalizeSegments(currentSegments, pathArg);
+    }
+    if (typeof pathArg !== 'string') {
+      throw new Error('entry() path must be a string or array');
+    }
+    return normalizeSegments(currentSegments, pathArg.split('/'));
+  };
+
+  /**
    * Distinguish a single `has(entry)` call from variadic `has(...segments)`.
    *
    * @param {Array<string | object>} args
@@ -275,7 +293,7 @@ const makeMountExo = ctx => {
         throw new Error('has() path segments must be strings');
       }
     }
-    return /** @type {string[]} */ (args);
+    return normalizeSegments(currentSegments, /** @type {string[]} */ (args));
   };
 
   /**
@@ -362,8 +380,7 @@ const makeMountExo = ctx => {
     },
 
     entry(pathArg) {
-      const pathSegments = typeof pathArg === 'string' ? [pathArg] : pathArg;
-      return makeEntry(normalizeSegments(currentSegments, pathSegments));
+      return makeEntry(segmentsFromEntryPathArg(pathArg));
     },
 
     async makeDirectory(pathArg) {
@@ -507,17 +524,13 @@ const makeMountExo = ctx => {
         if (await filePowers.isDirectory(target)) {
           throw new Error('Path is a directory');
         }
-        const readerRef = await E(value).streamBase64();
+        const readerRef = E(value).streamBase64();
         const writer = filePowers.makeFileWriter(target);
-        // Stream base64-encoded chunks decoded into bytes.
-        const iterator = /** @type {AsyncIterator<string>} */ (
-          /** @type {unknown} */ (readerRef)
-        );
-        for (;;) {
-          // eslint-disable-next-line no-await-in-loop
-          const { done, value: chunk } = await iterator.next();
-          if (done) break;
-          const bytes = decodeBase64(chunk);
+        for await (const bytes of makeRefReader(
+          /** @type {import('@endo/far').ERef<AsyncIterator<string>>} */ (
+            readerRef
+          ),
+        )) {
           // eslint-disable-next-line no-await-in-loop
           await writer.next(bytes);
         }
@@ -690,11 +703,11 @@ const makeMountFileExo = (
       assertWritable();
       await assertConfined(filePath, confinementRoot, filePowers);
       const writer = filePowers.makeFileWriter(filePath);
-      const iterator = /** @type {AsyncIterator<Uint8Array>} */ (readableRef);
-      for (;;) {
-        // eslint-disable-next-line no-await-in-loop
-        const { done, value } = await iterator.next();
-        if (done) break;
+      for await (const value of makeRefIterator(
+        /** @type {import('@endo/far').ERef<AsyncIterator<Uint8Array>>} */ (
+          readableRef
+        ),
+      )) {
         // eslint-disable-next-line no-await-in-loop
         await writer.next(value);
       }
@@ -743,7 +756,9 @@ harden(makeMountFileExo);
 const makeReadableBlobView = readOnlyFile => {
   return makeExo('EndoMountReadableBlob', ReadableBlobInterface, {
     streamBase64() {
-      return E(readOnlyFile).streamBase64();
+      return /** @type {{ streamBase64: () => object }} */ (
+        readOnlyFile
+      ).streamBase64();
     },
     async text() {
       return E(readOnlyFile).text();
