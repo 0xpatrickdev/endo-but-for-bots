@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Created** | 2026-05-18 |
-| **Updated** | 2026-05-20 |
+| **Updated** | 2026-05-21 |
 | **Author** | 0xPatrick (prompted) |
 | **Status** | Proposed |
 
@@ -591,6 +591,12 @@ That means:
 - repo config and ambient-credential-helper suppression (`-c credential.helper=` empties the ambient helper list for the invocation; the daemon-shipped `GIT_ASKPASS` above remains the controlled injection path);
 - explicit remote URL supplied from controller state, written into the invocation as a positional argument never derived from a guest input;
 - no shell interpolation; argv-array spawn only.
+
+These two concerns are orthogonal and should not be conflated.
+A **secret manager** answers *where durable secret authority lives*: a daemon-owned (or external) capability that holds, rotates, and revokes credentials across restarts and across multiple repos.
+The **fd-based askpass** answers *how one native-git invocation receives the secret without disk, env, or argv exposure*: it is the in-process injection envelope, not a place to durably store anything.
+The long-term home for durable authority is [daemon-capability-bank](daemon-capability-bank.md); once it lands, the askpass helper should fetch the credential from that bank (or an external secret manager it fronts) on demand rather than reading from git's own credential store, which keeps `.git` restartable without making git credential files durable.
+Until then, Phase 1 ships the askpass envelope on its own and treats bank-backed sourcing as the planned follow-up for unattended, multi-repo, post-restart workflows.
 
 The safe target for credential injection is: **no secret in argv, in process environment, in formula state, in inspect output, in logs, or in any persisted or durable temp file.**
 The askpass-fed-by-anonymous-pipe mechanism above is the only path that meets that bar for the basic (username/password) case.
