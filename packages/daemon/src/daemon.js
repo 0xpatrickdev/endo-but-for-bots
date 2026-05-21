@@ -684,10 +684,6 @@ const makeDaemonCore = async (
   const registerArchiveTree = (tree, archiveTar) => {
     archiveTarByGitTree.set(tree, archiveTar);
   };
-  const gitCredentialStateDir = filePowers.joinPath(
-    persistencePowers.statePath,
-    'git-credentials',
-  );
   const gitRemoteStateDir = filePowers.joinPath(
     persistencePowers.statePath,
     'git-remotes',
@@ -707,36 +703,50 @@ const makeDaemonCore = async (
     return value;
   };
 
+  /**
+   * In-process sealed credential slot, keyed by formula number.  The
+   * slot lives only for the daemon's lifetime: there is no on-disk
+   * persisted secret.  After a daemon restart the slot does not exist
+   * for any credential formula, and accessing one yields
+   * `revoked: true` until the operator re-rotates the credential via
+   * `EndoGitCredentialController.rotate()`.
+   *
+   * This realizes the design's "no secret in argv / env / persisted
+   * state" requirement (`designs/daemon-git-remotes.md` § Transport
+   * and Backend Boundary) — the secret never touches disk, so neither
+   * the daemon's state directory nor a snapshot of it can leak the
+   * material.
+   *
+   * @typedef {{
+   *   kind: 'basic',
+   *   username: string,
+   *   password: string,
+   * } | {
+   *   kind: 'bearer',
+   *   username: string,
+   *   token: string,
+   * }} GitCredentialSecret
+   *
+   * @type {Map<string, { revoked: boolean, secret: GitCredentialSecret | undefined }>}
+   */
+  const gitCredentialSealedSlots = new Map();
+
   /** @param {string} formulaNumber */
-  const gitCredentialStatePath = formulaNumber =>
-    filePowers.joinPath(gitCredentialStateDir, `${formulaNumber}.json`);
+  const getGitCredentialSlot = formulaNumber => {
+    let slot = gitCredentialSealedSlots.get(formulaNumber);
+    if (slot === undefined) {
+      // No slot yet (fresh daemon since last rotate, or never
+      // populated).  Materialize a revoked slot so reads through the
+      // capability surface report revocation rather than an error.
+      slot = { revoked: true, secret: undefined };
+      gitCredentialSealedSlots.set(formulaNumber, slot);
+    }
+    return slot;
+  };
 
   /** @param {string} formulaNumber */
   const gitRemoteStatePath = formulaNumber =>
     filePowers.joinPath(gitRemoteStateDir, `${formulaNumber}.json`);
-
-  /**
-   * @param {string} formulaNumber
-   * @param {Record<string, unknown>} state
-   */
-  const writeGitCredentialState = async (formulaNumber, state) => {
-    await filePowers.makePath(gitCredentialStateDir);
-    await filePowers.writeFileText(
-      gitCredentialStatePath(formulaNumber),
-      JSON.stringify(state),
-    );
-  };
-
-  /** @param {string} formulaNumber */
-  const readGitCredentialState = async formulaNumber => {
-    const text = await filePowers.maybeReadFileText(
-      gitCredentialStatePath(formulaNumber),
-    );
-    if (text === undefined) {
-      throw new Error('Git credential sealed state is missing');
-    }
-    return /** @type {Record<string, unknown>} */ (JSON.parse(text));
-  };
 
   /**
    * @param {string} formulaNumber
@@ -785,6 +795,10 @@ const makeDaemonCore = async (
   };
 
   /**
+   * Update the in-process sealed slot for a credential formula.  The
+   * slot survives only the daemon's lifetime; after a restart the
+   * operator must call `rotate` again to re-supply the secret.
+   *
    * @param {string} formulaNumber
    * @param {import('./types.js').Formula} formula
    * @param {unknown} secret
@@ -795,16 +809,24 @@ const makeDaemonCore = async (
         `Expected git-credential formula, got ${q(formula.type)}`,
       );
     }
+    const slot = getGitCredentialSlot(formulaNumber);
     if (formula.kind === 'bearer') {
       const token =
         typeof secret === 'string'
           ? secret
           : /** @type {{ token?: unknown }} */ (secret).token;
-      await writeGitCredentialState(formulaNumber, {
+      const record = /** @type {{ username?: unknown }} */ (
+        typeof secret === 'string' ? {} : secret
+      );
+      slot.secret = {
         kind: 'bearer',
+        username: requireGitSecretString(
+          record.username ?? formula.username ?? 'x-access-token',
+          'username',
+        ),
         token: requireGitSecretString(token, 'token'),
-        revoked: false,
-      });
+      };
+      slot.revoked = false;
       return;
     }
     const record = /** @type {{ username?: unknown, password?: unknown }} */ (
@@ -817,15 +839,15 @@ const makeDaemonCore = async (
     ) {
       throw new Error('username rotation is not supported');
     }
-    await writeGitCredentialState(formulaNumber, {
+    slot.secret = {
       kind: 'basic',
       username: requireGitSecretString(
         record.username ?? formula.username,
         'username',
       ),
       password: requireGitSecretString(record.password, 'password'),
-      revoked: false,
-    });
+    };
+    slot.revoked = false;
   };
 
   /**
@@ -849,7 +871,14 @@ const makeDaemonCore = async (
     });
   };
 
-  /** @param {FormulaIdentifier} credentialId */
+  /**
+   * Read a credential formula's metadata plus the current in-process
+   * sealed slot.  The slot's `revoked` field is authoritative: an
+   * absent slot (fresh daemon since the last rotate) shows as
+   * `revoked: true` with `secret: undefined`.
+   *
+   * @param {FormulaIdentifier} credentialId
+   */
   const readGitCredentialForId = async credentialId => {
     const { number } = parseId(credentialId);
     // eslint-disable-next-line no-use-before-define
@@ -859,16 +888,17 @@ const makeDaemonCore = async (
         `Expected git-credential formula, got ${q(formula.type)}`,
       );
     }
-    const state = await readGitCredentialState(number);
-    const kind = state.kind;
-    if (kind !== formula.kind) {
-      throw new Error(
-        'Git credential sealed state kind does not match formula',
-      );
+    const slot = getGitCredentialSlot(number);
+    // Treat a slot with no secret as revoked even if the explicit
+    // `revoked` flag has not been set, so the daemon-restart case
+    // (slot materialized fresh by getGitCredentialSlot) consistently
+    // surfaces as revoked through the metadata.
+    const revoked = slot.revoked === true || slot.secret === undefined;
+    if (slot.secret !== undefined && slot.secret.kind !== formula.kind) {
+      throw new Error('Git credential sealed slot kind does not match formula');
     }
-    const revoked = state.revoked === true;
     const metadata = gitCredentialMetadataFromFormula(formula, revoked);
-    return harden({ formulaNumber: number, formula, state, metadata });
+    return harden({ formulaNumber: number, formula, slot, metadata });
   };
 
   /** @param {FormulaIdentifier} credentialId */
@@ -877,31 +907,55 @@ const makeDaemonCore = async (
     return metadata;
   };
 
-  /** @param {FormulaIdentifier} credentialId */
+  /**
+   * Produce a `GitCredentialUse` whose `readSecret` closure resolves
+   * the in-process sealed slot at git-spawn time.  The closure throws
+   * if the slot has been revoked or emptied between the capability
+   * call and the spawn.
+   *
+   * @param {FormulaIdentifier} credentialId
+   */
   const getGitCredentialUse = async credentialId => {
-    const { formulaNumber, state, metadata } =
+    const { formulaNumber, formula, slot, metadata } =
       await readGitCredentialForId(credentialId);
     if (metadata.revoked) {
       throw new Error('Git credential has been revoked');
     }
+    const readSecret = () => {
+      // Re-resolve the slot at spawn time rather than capturing the
+      // earlier read.  A `revoke()` between this capability call and
+      // the spawn will be observed here.
+      const liveSlot = getGitCredentialSlot(formulaNumber);
+      if (liveSlot.revoked || liveSlot.secret === undefined) {
+        throw new Error('Git credential has been revoked');
+      }
+      if (liveSlot.secret.kind !== formula.kind) {
+        throw new Error(
+          'Git credential sealed slot kind does not match formula',
+        );
+      }
+      return harden(liveSlot.secret);
+    };
     return harden({
       ...metadata,
-      secretPath: gitCredentialStatePath(formulaNumber),
+      readSecret,
       cancelled: runtimeRevocationFor(
         gitCredentialRuntimeRevocations,
         formulaNumber,
       ).cancelled,
       ...(metadata.kind === 'basic' &&
-        state.username !== metadata.username && {
-          username: `${state.username}`,
+        slot.secret !== undefined &&
+        slot.secret.username !== metadata.username && {
+          username: `${slot.secret.username}`,
         }),
     });
   };
 
   /** @param {string} formulaNumber */
   const makeGitCredentialReadState = formulaNumber => async () => {
-    const state = await readGitCredentialState(formulaNumber);
-    return harden({ revoked: state.revoked === true });
+    const slot = getGitCredentialSlot(formulaNumber);
+    const revoked = slot.revoked === true || slot.secret === undefined;
+    return harden({ revoked });
   };
 
   /** @param {string} formulaNumber */
@@ -3359,12 +3413,10 @@ const makeDaemonCore = async (
       });
     },
     'git-credential': async (formula, _context, _id, formulaNumber) => {
-      const state = await readGitCredentialState(formulaNumber);
+      const slot = getGitCredentialSlot(formulaNumber);
+      const revoked = slot.revoked === true || slot.secret === undefined;
       return makeGitCredential({
-        metadata: gitCredentialMetadataFromFormula(
-          formula,
-          state.revoked === true,
-        ),
+        metadata: gitCredentialMetadataFromFormula(formula, revoked),
         readState: makeGitCredentialReadState(formulaNumber),
       });
     },
@@ -3407,12 +3459,10 @@ const makeDaemonCore = async (
         );
       }
       const { number: credentialFormulaNumber } = parseId(credential);
-      const state = await readGitCredentialState(credentialFormulaNumber);
+      const slot = getGitCredentialSlot(credentialFormulaNumber);
+      const revoked = slot.revoked === true || slot.secret === undefined;
       return makeGitCredentialController({
-        metadata: gitCredentialMetadataFromFormula(
-          credentialFormula,
-          state.revoked === true,
-        ),
+        metadata: gitCredentialMetadataFromFormula(credentialFormula, revoked),
         readState: makeGitCredentialReadState(credentialFormulaNumber),
         rotate: secret =>
           rotateGitCredential(
@@ -3421,17 +3471,16 @@ const makeDaemonCore = async (
             secret,
           ),
         async revoke() {
-          const currentState = await readGitCredentialState(
-            credentialFormulaNumber,
-          );
           runtimeRevocationFor(
             gitCredentialRuntimeRevocations,
             credentialFormulaNumber,
           ).revoke();
-          await writeGitCredentialState(credentialFormulaNumber, {
-            ...currentState,
-            revoked: true,
-          });
+          const currentSlot = getGitCredentialSlot(credentialFormulaNumber);
+          currentSlot.revoked = true;
+          // Drop the secret material so it does not remain in memory
+          // longer than necessary; the metadata stays in the formula
+          // and is reconstructable on next provision.
+          currentSlot.secret = undefined;
         },
       });
     },

@@ -4196,11 +4196,17 @@ test('GitRemote forwards credential cancellation to native git', async t => {
       appendAudit: async () => undefined,
       getCredentialUse: async () =>
         harden({
-          kind: 'bearer',
+          kind: 'basic',
           audience: 'https://example.com',
           label: 'example',
+          username: 'example-user',
           revoked: false,
-          secretPath: '/sealed/credential.json',
+          readSecret: () =>
+            harden({
+              kind: 'basic',
+              username: 'example-user',
+              password: 'example-password',
+            }),
           cancelled: credentialCancelled,
         }),
       getCredentialMetadata: async () =>
@@ -5549,7 +5555,17 @@ test('provideGit credentials keep secrets out of formulas and inspect output', a
   t.false(JSON.stringify(remoteFormula).includes('super-secret-token'));
 });
 
-test('GitCredentialController rotates and revokes credentials after restart', async t => {
+test('GitCredentialController rotates and revokes credentials across restart', async t => {
+  // Credential secrets live in an in-process sealed slot keyed by
+  // formula number; the slot survives only the daemon's lifetime.
+  // After a daemon restart the slot resets to revoked and the
+  // operator must call `rotate` again to re-supply the secret.  No
+  // credential file appears on disk under the daemon's state
+  // directory.
+  //
+  // This realizes `designs/daemon-git-remotes.md` § Transport and
+  // Backend Boundary's "no secret in argv / env / persisted state"
+  // requirement.
   const { cancelled, config } = await prepareConfig(t);
 
   let credentialId;
@@ -5566,22 +5582,35 @@ test('GitCredentialController rotates and revokes credentials after restart', as
     );
     await E(controller).rotate('rotated-token');
     credentialId = await E(host).identify('restart-token');
+    // The credential is live (not revoked) immediately after rotate.
+    t.like(await E(controller).inspect(), {
+      kind: 'bearer',
+      audience: 'https://example.com',
+      label: 'restart',
+      revoked: false,
+    });
   }
 
-  const { number: credentialNumber } = parseId(credentialId);
-  const credentialStatePath = path.join(
-    config.statePath,
-    'git-credentials',
-    `${credentialNumber}.json`,
+  // No on-disk credential file exists under the daemon's state path.
+  const credentialDir = path.join(config.statePath, 'git-credentials');
+  t.false(
+    fs.existsSync(credentialDir),
+    'no on-disk git-credentials directory should be created',
   );
-  const rotatedState = JSON.parse(
-    fs.readFileSync(credentialStatePath, 'utf-8'),
-  );
-  t.is(rotatedState.token, 'rotated-token');
+  // The credential formula's persisted JSON contains only metadata
+  // (audience, kind, label, optional username) — never the rotated
+  // secret.
   t.false(
     JSON.stringify(readFormulaFromDb(config.statePath, credentialId)).includes(
       'rotated-token',
     ),
+    'credential formula must not embed secret material',
+  );
+  t.false(
+    JSON.stringify(readFormulaFromDb(config.statePath, credentialId)).includes(
+      'initial-token',
+    ),
+    'credential formula must not embed prior secret material',
   );
 
   await restart(config);
@@ -5589,6 +5618,17 @@ test('GitCredentialController rotates and revokes credentials after restart', as
   {
     const { host } = await makeHost(config, cancelled);
     const controller = await E(host).lookup('restart-token-controller');
+    // After restart the in-process slot is empty: the credential cap
+    // surfaces `revoked: true` until the operator re-rotates.
+    t.like(await E(controller).inspect(), {
+      kind: 'bearer',
+      audience: 'https://example.com',
+      label: 'restart',
+      revoked: true,
+    });
+    // Re-rotating supplies a fresh secret and clears the revoked
+    // marker on the live slot.
+    await E(controller).rotate('post-restart-token');
     t.like(await E(controller).inspect(), {
       kind: 'bearer',
       audience: 'https://example.com',
@@ -5596,6 +5636,7 @@ test('GitCredentialController rotates and revokes credentials after restart', as
       revoked: false,
     });
     await E(controller).revoke();
+    t.like(await E(controller).inspect(), { revoked: true });
   }
 
   await restart(config);
@@ -5603,6 +5644,9 @@ test('GitCredentialController rotates and revokes credentials after restart', as
   {
     const { host } = await makeHost(config, cancelled);
     const credential = await E(host).lookup('restart-token');
+    // Revocation followed by a second restart leaves the cap
+    // revoked: the slot is fresh-and-empty for the same reason a
+    // never-rotated post-restart credential is revoked.
     t.like(await E(credential).inspect(), { revoked: true });
   }
 });

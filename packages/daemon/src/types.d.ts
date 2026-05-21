@@ -1072,8 +1072,28 @@ export type GitCredentialMetadata = {
   revoked: boolean;
 };
 
+/**
+ * Resolved credential secret material, returned by
+ * `GitCredentialUse.readSecret()` at git-spawn time.  Bearer support is
+ * gated on the credential-injection portability spike (see
+ * `designs/daemon-git-remotes.md` § Spike); the spawn path currently
+ * rejects `kind: 'bearer'`.
+ */
+export type GitCredentialSecret =
+  | { kind: 'basic'; username: string; password: string }
+  | { kind: 'bearer'; username: string; token: string };
+
+/**
+ * Internal hand-off shape between the daemon's credential store and
+ * the gitPowers `runGitCredentialed` spawn.  The secret is never
+ * carried by-value across this hand-off; `readSecret()` is an opaque
+ * closure that resolves the daemon's in-process sealed slot keyed by
+ * formula number.  The slot lives only for the daemon's lifetime; on
+ * restart the slot is `revoked: true` until the operator re-supplies
+ * the secret via `EndoGitCredentialController.rotate()`.
+ */
 export type GitCredentialUse = GitCredentialMetadata & {
-  secretPath: string;
+  readSecret: () => GitCredentialSecret;
   cancelled?: Promise<unknown>;
 };
 

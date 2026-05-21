@@ -429,41 +429,40 @@ const EXECUTABLE_REPO_CONFIG =
   /^(filter\..*\.(clean|smudge|process)|merge\..*\.driver)$/u;
 
 /**
- * @param {string} value
+ * File descriptor in the spawned git child where the credential pipe's
+ * read end lands.  The askpass helper reads the credential bytes from
+ * this fd via the ENDO_GIT_ASKPASS_FD environment variable.  Three is
+ * the lowest fd not used by stdin/stdout/stderr.
  */
-const shellQuote = value => `'${value.replaceAll("'", "'\\''")}'`;
-harden(shellQuote);
-
-const GIT_CREDENTIAL_HELPER_SOURCE = `\
-const fs = require('fs');
-
-const secretPath = process.argv[2];
-const operation = process.argv[3];
-if (operation !== 'get') {
-  process.exit(0);
-}
-const state = JSON.parse(fs.readFileSync(secretPath, 'utf8'));
-if (state.revoked) {
-  process.exit(1);
-}
-if (state.kind === 'bearer') {
-  process.stdout.write('username=' + (state.username || 'x-access-token') + '\\n');
-  process.stdout.write('password=' + state.token + '\\n\\n');
-} else if (state.kind === 'basic') {
-  process.stdout.write('username=' + state.username + '\\n');
-  process.stdout.write('password=' + state.password + '\\n\\n');
-} else {
-  process.exit(1);
-}
-`;
+const GIT_ASKPASS_FD = 3;
 
 /**
  * @param {object} opts
  * @param {typeof import('child_process')} opts.popen
  * @param {FilePowers} opts.filePowers
+ * @param {import('url').fileURLToPath} [opts.fileURLToPath]
  * @returns {GitPowers}
  */
-export const makeGitPowers = ({ popen, filePowers }) => {
+export const makeGitPowers = ({ popen, filePowers, fileURLToPath }) => {
+  /**
+   * Defer helper-path resolution so callers that never exercise the
+   * credentialed git path (notably unit tests that mock popen and do
+   * not need an askpass helper) need not pass `fileURLToPath`.
+   */
+  let gitAskpassHelperPathMemo;
+  const resolveGitAskpassHelperPath = () => {
+    if (gitAskpassHelperPathMemo === undefined) {
+      if (fileURLToPath === undefined) {
+        throw new Error(
+          'makeGitPowers: fileURLToPath is required for credentialed git invocations',
+        );
+      }
+      gitAskpassHelperPathMemo = fileURLToPath(
+        new URL('git-askpass-helper.cjs', import.meta.url),
+      );
+    }
+    return gitAskpassHelperPathMemo;
+  };
   /**
    * @param {string} repoRoot
    */
@@ -605,24 +604,36 @@ export const makeGitPowers = ({ popen, filePowers }) => {
   };
 
   /**
-   * @param {string} repoRoot
-   */
-  const ensureCredentialHelper = async repoRoot => {
-    const helperDir = filePowers.joinPath(repoRoot, '.git-endo-home');
-    await filePowers.makePath(helperDir);
-    const helperPath = filePowers.joinPath(
-      helperDir,
-      'git-credential-helper.cjs',
-    );
-    await filePowers.writeFileText(helperPath, GIT_CREDENTIAL_HELPER_SOURCE);
-    return helperPath;
-  };
-
-  /**
+   * Spawn native git with the daemon-shipped GIT_ASKPASS helper wired
+   * through an anonymous pipe.
+   *
+   * The credential secret is resolved (synchronously, in-process) at
+   * spawn time via `credential.readSecret()`.  The result lines are
+   * written to the parent end of an anonymous pipe whose read end is
+   * inherited by the spawned git as fd `GIT_ASKPASS_FD` (3).  Native
+   * git invokes the helper binary once per credential prompt; each
+   * helper invocation reads one newline-terminated line from the
+   * inherited fd.  The pipe's underlying open file description is held
+   * open by git across the askpass invocations, so each subsequent
+   * helper sees the line the previous one did not consume.
+   *
+   * The lines are written in the order git will request them:
+   * `<username>\n<password>\n` for basic credentials.  Bearer support
+   * is gated on the credential-injection portability spike (see
+   * `designs/daemon-git-remotes.md` § Spike) and is rejected here for
+   * now; only the basic path rides the askpass mechanism on this
+   * dispatch.
+   *
+   * The secret never appears in argv, in the process environment, in
+   * formula state, in inspect output, in logs, or in any persisted
+   * temp file: only the fd number (3) rides through environ, and the
+   * credential bytes ride the kernel pipe.
+   *
    * @param {string} repoRoot
    * @param {string[]} args
    * @param {import('./types.js').GitCredentialUse} credential
    * @param {import('./types.js').GitRunOptions} [options]
+   * @returns {Promise<{ stdout: string, stderr: string }>}
    */
   const runGitCredentialed = async (
     repoRoot,
@@ -631,21 +642,120 @@ export const makeGitPowers = ({ popen, filePowers }) => {
     options = {},
   ) => {
     await verifyGitVersion();
-    const helperPath = await ensureCredentialHelper(repoRoot);
-    const helperCommand = `!${shellQuote(process.execPath)} ${shellQuote(
-      helperPath,
-    )} ${shellQuote(credential.secretPath)}`;
-    return execFileText(
-      'git',
-      [...GIT_BASE_ARGS, '-c', `credential.helper=${helperCommand}`, ...args],
-      {
-        cwd: repoRoot,
-        env: makeGitEnv(repoRoot),
-        timeout: GIT_TIMEOUT_MS,
-        maxBuffer: GIT_MAX_BUFFER,
-        cancelled: options.cancelled,
-      },
-    );
+    const secret = credential.readSecret();
+    if (secret.kind === 'bearer') {
+      throw new Error(
+        'Git bearer-token credentials are not yet supported; ' +
+          'support is gated on the credential-injection spike ' +
+          '(see designs/daemon-git-remotes.md § Spike).',
+      );
+    }
+    if (secret.kind !== 'basic') {
+      throw new Error(
+        `Unknown git credential kind: ${/** @type {{ kind: string }} */ (secret).kind}`,
+      );
+    }
+    const lines = `${secret.username}\n${secret.password}\n`;
+    const credentialBytes = Buffer.from(lines, 'utf-8');
+    // Build the spawn env.  We override GIT_ASKPASS (which makeGitEnv
+    // hard-pins to 'false' for non-credentialed runs) with our
+    // daemon-shipped helper, point the helper at the inherited fd, and
+    // keep GIT_TERMINAL_PROMPT=0 so a missed askpass does not hang on
+    // a TTY.
+    const env = harden({
+      ...makeGitEnv(repoRoot),
+      GIT_ASKPASS: resolveGitAskpassHelperPath(),
+      ENDO_GIT_ASKPASS_FD: String(GIT_ASKPASS_FD),
+    });
+    // stdio[0..2] are the usual stdin/stdout/stderr; stdio[3] is a
+    // pipe whose read end is inherited by the child as fd 3.  Node
+    // marks the parent-side write end CLOEXEC by default, so it does
+    // not leak into unrelated subprocesses; the child end is the
+    // controlled inheritance the askpass helper relies on.
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const child = popen.spawn(
+        'git',
+        [...GIT_BASE_ARGS, ...args],
+        /** @type {any} */ ({
+          cwd: repoRoot,
+          env,
+          stdio: ['ignore', 'pipe', 'pipe', 'pipe'],
+          timeout: GIT_TIMEOUT_MS,
+        }),
+      );
+      const credentialPipe =
+        /** @type {import('stream').Writable | undefined} */ (
+          /** @type {unknown} */ (child.stdio[3])
+        );
+      assert(credentialPipe);
+      // Eagerly write the credential bytes and close the write end so
+      // the helper sees EOF after the last line.  We swallow EPIPE in
+      // case git exits before consuming (e.g. argv-validation failure).
+      credentialPipe.on('error', () => {});
+      credentialPipe.end(credentialBytes);
+      /** @type {Buffer[]} */
+      const stdoutChunks = [];
+      /** @type {Buffer[]} */
+      const stderrChunks = [];
+      assert(child.stdout);
+      assert(child.stderr);
+      child.stdout.on('data', chunk => {
+        stdoutChunks.push(/** @type {Buffer} */ (chunk));
+      });
+      child.stderr.on('data', chunk => {
+        stderrChunks.push(/** @type {Buffer} */ (chunk));
+      });
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        // Best-effort: ensure the pipe is closed so the kernel can
+        // reclaim the buffered credential bytes.
+        try {
+          credentialPipe.destroy();
+        } catch (_e) {
+          // ignore
+        }
+      };
+      child.on('error', error => {
+        finish();
+        Object.assign(error, {
+          stdout: Buffer.concat(stdoutChunks).toString('utf-8'),
+          stderr: Buffer.concat(stderrChunks).toString('utf-8'),
+        });
+        reject(error);
+      });
+      child.on('close', code => {
+        finish();
+        const stdout = Buffer.concat(stdoutChunks).toString('utf-8');
+        const stderr = Buffer.concat(stderrChunks).toString('utf-8');
+        if (code === 0) {
+          resolve({ stdout, stderr });
+        } else {
+          const error = Error(
+            `git ${args[0]} failed (exit ${code ?? 'unknown'})`,
+          );
+          Object.assign(error, { stdout, stderr, code });
+          reject(error);
+        }
+      });
+      if (options.cancelled !== undefined) {
+        void options.cancelled.then(
+          () => {
+            if (!settled) {
+              finish();
+              child.kill();
+            }
+          },
+          () => {
+            if (!settled) {
+              finish();
+              child.kill();
+            }
+          },
+        );
+      }
+    });
   };
 
   /**
@@ -1105,7 +1215,7 @@ export const makeDaemonicPowers = async ({
     fs,
     popen,
   );
-  const gitPowers = makeGitPowers({ popen, filePowers });
+  const gitPowers = makeGitPowers({ popen, filePowers, fileURLToPath });
 
   return harden({
     crypto: cryptoPowers,
