@@ -29,9 +29,13 @@ tools an AI agent uses for coding assistance. It defines the tool
 interface that Lal and Fae register when granted these capabilities.
 
 > **Revision note (2026-05-18):** The later
-> [daemon-mount-capabilities](daemon-mount-capabilities.md) design refines
-> this sketch: path authority should flow through mount-scoped descriptors
-> on the completed live-mount capability.
+> [daemon-mount-capabilities](daemon-mount-capabilities.md),
+> [daemon-git-capability](daemon-git-capability.md), and
+> [daemon-git-remotes](daemon-git-remotes.md) designs refine this sketch:
+> local git authority should derive from `EndoMount`, path authority should
+> flow through mount-scoped descriptors, and remote git should be granted
+> separately through bounded `GitRemote` capabilities rather than omitted
+> from the product model.
 
 ## Design
 
@@ -314,10 +318,10 @@ include capability configuration.
    the same agent code works with or without coding capabilities —
    it simply has fewer tools available.
 
-3. **Git without push.** The `Git` capability deliberately excludes
-   network operations. Pushing requires a separate network capability.
-   This prevents data exfiltration via `git push` to an attacker's
-   remote.
+3. **Git split by authority.** The local `Git` capability deliberately
+   excludes network operations. Fetch / pull / push belong on separately
+   granted remote-git capabilities so product workflows can exist without
+   smuggling network and credential authority into local repository access.
 
 4. **Shell is array-based.** Commands are passed as `(command, args[])`
    tuples, never as shell strings. This prevents shell injection and
@@ -336,6 +340,10 @@ include capability configuration.
   framework and category taxonomy.
 - [daemon-mount-capabilities](daemon-mount-capabilities.md) — concrete
   completion plan for the live mount capability this sketch now builds on.
+- [daemon-git-capability](daemon-git-capability.md) — revised local git
+  design over `EndoMount`.
+- [daemon-git-remotes](daemon-git-remotes.md) — companion remote-git
+  design for fetch, pull, push, and credentialed endpoints.
 - [daemon-os-sandbox-plugin](daemon-os-sandbox-plugin.md) — OS-level
   process confinement for shell execution.
 - [lal-fae-form-provisioning](lal-fae-form-provisioning.md) — form-based
