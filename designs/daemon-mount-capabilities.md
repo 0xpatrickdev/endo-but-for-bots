@@ -206,47 +206,44 @@ related `@endo/platform/fs` vocabulary.
 
 ```ts
 interface EndoMount {
-  // Existing ReadableTree-compatible surface.
-  // `has` accepts either a path-segment varargs form or a single
-  // mount-minted entry; the entry form is the no-observational-authority
-  // existence test for an `EndoMountEntry` value.
+  // Existing ReadableTree-compatible queries.  `has(entry)` is the
+  // no-observational-authority existence test for an `EndoMountEntry`
+  // value.
   has(...path: string[]): Promise<boolean>;
   has(entry: EndoMountEntry): Promise<boolean>;
   list(...path: string[]): Promise<string[]>;
-  lookup(path: string | string[] | EndoMountEntry):
-    Promise<EndoMount | EndoMountFile>;
+  lookup(path: string[]): Promise<EndoMount | EndoMountFile>;
+  lookup(entry: EndoMountEntry): Promise<EndoMount | EndoMountFile>;
 
-  // Descriptor minting.
+  // Descriptor minting.  No I/O; the resulting entry can name a path
+  // that does not currently exist on disk (a deleted git file, a
+  // staged-but-absent target, a not-yet-created node).  `entry()` is
+  // the documented "string as selector" boundary: it accepts either a
+  // slash-joined string or a segment array and normalizes once.
+  // Elsewhere the interface uses `string[]` only.
   entry(path: string | string[]): EndoMountEntry;
 
-  // Handle-oriented navigation and creation.
-  // (createDirectory matches the sibling createFile naming.)
-  openDirectory(path: string | string[] | EndoMountEntry): Promise<EndoMount>;
-  openFile(path: string | string[] | EndoMountEntry): Promise<EndoMountFile>;
-  createDirectory(path: string | string[] | EndoMountEntry):
-    Promise<EndoMount>;
-  createFile(path: string | string[] | EndoMountEntry):
-    Promise<EndoMountFile>;
-
-  // Metadata.  `stat(entry)` is the no-observational-authority metadata
-  // query for an `EndoMountEntry` value; the path-form siblings keep
-  // existing string-path callers working.
-  stat(path: string | string[] | EndoMountEntry):
-    Promise<EndoMountStat | undefined>;
+  // Metadata.  `stat(entry)` is the no-observational-authority
+  // metadata query for an `EndoMountEntry` value.
+  stat(path: string[]): Promise<EndoMountStat | undefined>;
+  stat(entry: EndoMountEntry): Promise<EndoMountStat | undefined>;
 
   // Existing convenience I/O.  Retain for compatibility.
-  readText(path: string | string[] | EndoMountEntry): Promise<string>;
-  maybeReadText(path: string | string[] | EndoMountEntry):
-    Promise<string | undefined>;
-  writeText(path: string | string[] | EndoMountEntry, content: string):
-    Promise<void>;
+  readText(path: string[]): Promise<string>;
+  maybeReadText(path: string[]): Promise<string | undefined>;
+  writeText(path: string[], content: string): Promise<void>;
 
-  // Mutation.
-  remove(path: string | string[] | EndoMountEntry): Promise<void>;
-  move(
-    from: string | string[] | EndoMountEntry,
-    to: string | string[] | EndoMountEntry,
-  ): Promise<void>;
+  // Path-form mutators.  All take a path-segment array and return
+  // void.  The path locates where to act; it is not a held reference
+  // to a node.  Failure modes are the usual filesystem ones
+  // (EEXIST, ENOENT-parent, EACCES).  `makeFile` is the path-form
+  // sibling of `makeDirectory` for parallel construction and for
+  // binary content; the existing `writeText(path, content)` remains
+  // the truncate-and-write path for the text-only case.
+  makeDirectory(path: string[]): Promise<void>;
+  makeFile(path: string[], content?: string | Uint8Array): Promise<void>;
+  remove(path: string[]): Promise<void>;
+  move(from: string[], to: string[]): Promise<void>;
 
   // Attenuation and capture.
   readOnly(): EndoMount;
@@ -254,9 +251,14 @@ interface EndoMount {
 }
 ```
 
-`lookup()` remains for compatibility with the `ReadableTree` read surface.
-New code that wants a concrete node kind should prefer `openDirectory()` or
-`openFile()` because those make the expected handle type explicit.
+`lookup()` is the single handle-minting method.  It returns either an
+`EndoMount` or an `EndoMountFile` depending on what is at the path, and
+throws `EndoMountMissingError` for an absent path (see § *`lookup()`
+semantics on missing nodes* below).  There is no separate
+`openFile` / `openDirectory` pair: `lookup` already covers both kinds,
+and the existing `mount.has(entry) → mount.lookup(entry)` idiom (or a
+runtime `kind` check on the returned handle) handles the cases where
+the caller wants to discriminate.
 
 ### `EndoMountFile`
 
@@ -305,14 +307,13 @@ An `EndoMountEntry` is a **value**, not a handle.  It carries:
 It carries **no live-filesystem authority at all** — no observational
 queries like `exists()` or `stat()`, and no handle-minting methods.
 Existence and metadata queries live on `EndoMount` and accept an entry:
-`mount.has(entry)` for the existence test and `mount.stat(entry)` for the
-metadata query.  Handle-minting also lives on `EndoMount` and accepts an
-entry as the path-bearing argument (`mount.openFile(entry)`,
-`mount.openDirectory(entry)`, `mount.lookup(entry)`).  This keeps the
-entry shape value-shaped — a deeply read-only value an agent can pass
-around freely — and concentrates *both* observational authority and
-handle-minting authority on the mount where they can be revoked or
-attenuated as a unit.
+`mount.has(entry)` for the existence test and `mount.stat(entry)` for
+the metadata query.  Handle-minting also lives on `EndoMount` and
+accepts an entry as the path-bearing argument: `mount.lookup(entry)`.
+This keeps the entry shape value-shaped — a deeply read-only value an
+agent can pass around freely — and concentrates *both* observational
+authority and handle-minting authority on the mount where they can be
+revoked or attenuated as a unit.
 
 An entry:
 
@@ -348,7 +349,7 @@ That shape made entries mini-capabilities that both observed the live
 filesystem (every `entry.exists()` / `entry.stat()` call reaches the
 backing storage) and minted handles on themselves, ergonomic per call
 site (`await E(entry).openFile()` rather than
-`await E(mount).openFile(entry)`).
+`await E(mount).lookup(entry)`).
 
 Rejected for these reasons:
 
@@ -366,7 +367,7 @@ Rejected for these reasons:
   entry might be from a `readOnly()` view, or it might predate a mount
   attenuation, and the resulting handle's authority is the *minimum* of
   all three layers.  When the same mint goes through the mount
-  (`mount.openFile(entry)`), the mount's current state is the
+  (`mount.lookup(entry)`), the mount's current state is the
   single-point authority.  The same argument applies to observational
   authority: `entry.exists()` against a stale mount-attenuation state
   is harder to reason about than `mount.has(entry)` against the
@@ -379,7 +380,7 @@ Rejected for these reasons:
   Entries are values you pass to the mount; they don't carry authority
   of their own.
 - **Matches the existing `EndoMount.readOnly()` attenuation idiom.**
-  A `readOnly()` mount minting handles via `mount.openFile(entry)` and
+  A `readOnly()` mount minting handles via `mount.lookup(entry)` and
   answering `mount.has(entry)` / `mount.stat(entry)` is trivially
   attenuated.  A `readOnly()` mount returning entries that carry their
   own observational or handle-minting methods would have to attenuate
@@ -387,7 +388,7 @@ Rejected for these reasons:
 
 The chosen shape — entries hold neither observational authority nor
 handle-minting authority — is the strict ocap version.  The trade-off
-is a small ergonomic loss (`mount.openFile(entry)` and
+is a small ergonomic loss (`mount.lookup(entry)` and
 `mount.has(entry)` are one extra noun per call vs. `entry.openFile()`
 and `entry.exists()`) for a substantial authority-reasoning gain.  If a
 real use case surfaces where the value shape is awkward enough to
@@ -405,8 +406,8 @@ to test before opening use `mount.has(entry)` first; the
 `mount.has(entry) → mount.lookup(entry)` pattern is the recommended
 idiom.  No `maybeLookup` sibling is part of the initial design; if usage
 warrants one later, it can be added without contract breakage.  The
-throw-on-missing default matches `openFile` / `openDirectory` and is
-consistent with the existing `lookup(path)` behavior that exists today.
+throw-on-missing default is consistent with the existing `lookup(path)`
+behavior that exists today.
 
 ### `EndoMountStat`
 
@@ -589,22 +590,25 @@ later adapter or migration is mostly mechanical.
   (value-shaped, no observational authority and no handle-minting per
   Design Decision 3).
 - [ ] Observational queries (`has(entry)`, `stat(entry)`) and
-  handle-minting (`lookup`, `openFile`, `openDirectory`) all live on
-  `EndoMount` and accept an entry as the path-bearing argument; see
-  next phase.
+  handle-minting (`lookup(entry)`) all live on `EndoMount` and accept
+  an entry as the path-bearing argument; see next phase.
 - [ ] Add descriptor provenance tests:
   - [ ] entries from one mount rejected by another mount
   - [ ] read-only entries (via `readOnly()` mount) cannot regain write
     authority through handle-minting on a sibling mutable mount
   - [ ] missing entries can round-trip without creating files
 
-### Phase 3: Add Handle-Oriented Navigation and Metadata
+### Phase 3: Add Entry Overloads, Metadata, and the `makeFile` Sibling
 
-- [ ] Add `openFile`, `openDirectory`, `createFile`, `createDirectory`,
-  `stat`, and the `has(entry)` overload on `EndoMount`.  `stat` and
-  `has` each accept an entry as the path-bearing argument (the
-  no-observational-authority queries that previously lived on the
-  entry).
+- [ ] Add the `lookup(entry)`, `has(entry)`, and `stat(entry)`
+  overloads on `EndoMount`.  Each accepts an entry as the
+  path-bearing argument (the no-observational-authority queries an
+  earlier draft had on the entry itself).
+- [ ] Add `stat(path)` for the path-form metadata query.
+- [ ] Add `makeFile(path, content?)` as the path-form sibling of
+  `makeDirectory` (parallel construction; binary content via
+  `Uint8Array`).  Existing path-form mutators (`writeText`, `remove`,
+  `move`, `makeDirectory`) keep their current signatures unchanged.
 - [ ] Add `stat`, `append`, and `snapshot` on `EndoMountFile`.
 - [ ] Keep existing path convenience methods for compatibility.
 - [ ] Update help text and TypeScript declarations together with interface
@@ -629,19 +633,29 @@ later adapter or migration is mostly mechanical.
 
 ## Migration Notes
 
-- Existing users of `list`, `lookup`, `readText`, `writeText`, `remove`,
-  and `move` continue to work.
-- `makeDirectory(path)` is renamed to `createDirectory(path)` for
-  sibling-coherence with `createFile`.  No compatibility shim is needed
-  (no library consumers yet); the rename lands in one PR.  The
-  operation is unchanged.
-- New code that performs more than one operation on the same node should
-  prefer entries and handles.
-- Git should depend on `EndoMountEntry`, not on free-form relative path
-  strings.
+- Existing users of `list`, `lookup`, `readText`, `writeText`,
+  `remove`, `move`, and `makeDirectory` continue to work with their
+  current signatures.  `makeDirectory` keeps its name and shape; it is
+  the established convention across `daemon-mount`, `platform-fs`,
+  `daemon-weblet-application`, `filesystem-watchers`, the implemented
+  `packages/platform/src/fs` surface, and its consumers in
+  `packages/chat`, `packages/fae`, and `packages/lal`.
+- `makeFile(path, content?)` is the new path-form sibling of
+  `makeDirectory`.  It is additive: no existing method is renamed,
+  removed, or re-typed.  `writeText(path, content)` remains the
+  truncate-and-write path for the text-only case; `makeFile` is the
+  constructive sibling for parallel use with `makeDirectory` and for
+  binary content.
+- Entry overloads (`has(entry)`, `stat(entry)`, `lookup(entry)`) are
+  additive overloads on existing query / handle-minting methods; the
+  path-form callers remain unchanged.
+- New code that performs more than one operation on the same node
+  should prefer entries and handles.
+- Git should depend on `EndoMountEntry`, not on free-form relative
+  path strings.
 - Future Fae / Lal filesystem tools should expose user-friendly path
-  arguments at the tool boundary, then immediately convert them into mount
-  entries internally.
+  arguments at the tool boundary, then immediately convert them into
+  mount entries internally.
 
 ## Open Questions
 
@@ -687,14 +701,13 @@ its associated phase.
 2. **Strings are selectors, not authorities.**  Relative paths remain
    accepted as convenience inputs but are normalized into entries at the
    boundary.
-3. **`EndoMountEntry` is a value, not a handle.**  The entry carries no
-   live-filesystem authority at all: no observational queries (`exists`,
-   `stat`) and no handle-minting (`lookup`, `openFile`, `openDirectory`).
-   Both axes live on `EndoMount` and accept an entry as the path-bearing
+3. **`EndoMountEntry` is a value, not a handle.**  The entry carries
+   no live-filesystem authority at all: no observational queries
+   (`exists`, `stat`) and no handle-minting (`lookup`).  Both axes
+   live on `EndoMount` and accept an entry as the path-bearing
    argument (`mount.has(entry)`, `mount.stat(entry)`,
-   `mount.lookup(entry)`, `mount.openFile(entry)`,
-   `mount.openDirectory(entry)`).  The entry is a passable, deeply
-   read-only value the agent can hand around without conferring access.
+   `mount.lookup(entry)`).  The entry is a passable, deeply read-only
+   value the agent can hand around without conferring access.
 4. **`EndoMountBacking` is a hidden Exo facet on the mount formula.**
    Restart-trivial, no extra persistence machinery, no separate seal
    key.
