@@ -3,8 +3,14 @@
 
 /** @import { FilePowers } from './types.js' */
 
+import { E } from '@endo/far';
 import { q } from '@endo/errors';
 import { makeExo } from '@endo/exo';
+import { decodeBase64 } from '@endo/base64';
+import {
+  ReadableBlobInterface,
+  ReadableTreeInterface,
+} from '@endo/platform/fs/lite';
 
 import { mountHelp, mountFileHelp, makeHelp } from './help-text.js';
 import {
@@ -367,6 +373,11 @@ const makeMountExo = ctx => {
       const target = resolveFromRoot(segments);
       await assertConfinedOrAncestor(target, confinementRoot, filePowers);
       await filePowers.makePath(target);
+      // Return a sub-mount handle on the freshly-made path so the
+      // method satisfies `Directory.makeDirectory(path):
+      // Promise<Directory>`.  Existing callers that ignore the
+      // return value are source-compatible.
+      return openExisting(target, segments);
     },
 
     async makeFile(pathArg, content) {
@@ -456,14 +467,19 @@ const makeMountExo = ctx => {
     },
 
     readOnly() {
-      if (readOnly) {
-        return this.self; // eslint-disable-line no-invalid-this
-      }
-      return makeMountExo({
-        ...ctx,
-        readOnly: true,
-        description: `Read-only view of ${description}`,
-      });
+      // Structural narrowing: return a ReadableTree view, not an
+      // EndoMount.  Mount-specific extensions (`entry`, `stat`,
+      // `displayPath`, `readText`, `makeFile`) are removed from the
+      // read-only surface; callers that need them keep a reference
+      // to the un-attenuated mount.
+      const readOnlyMount = readOnly
+        ? this.self // eslint-disable-line no-invalid-this
+        : makeMountExo({
+            ...ctx,
+            readOnly: true,
+            description: `Read-only view of ${description}`,
+          });
+      return makeReadableTreeView(readOnlyMount);
     },
 
     async snapshot() {
@@ -472,9 +488,105 @@ const makeMountExo = ctx => {
       }
       return snapshotTree(this.self); // eslint-disable-line no-invalid-this
     },
+
+    async write(pathArg, value) {
+      await null;
+      assertWritable();
+      const segments = segmentsFromPathArg(pathArg);
+      const target = resolveFromRoot(segments);
+      await assertConfinedOrAncestor(target, confinementRoot, filePowers);
+      const parent = filePowers.joinPath(target, '..');
+      await filePowers.makePath(parent);
+      // Detect blob-vs-tree by method names, the same shape-test
+      // `checkinTree` uses.  A `streamBase64`-bearing remotable is
+      // materialised through bytes; a `list`-bearing remotable is
+      // materialised recursively.
+      // eslint-disable-next-line no-underscore-dangle
+      const methods = await E(value).__getMethodNames__();
+      if (methods.includes('streamBase64')) {
+        if (await filePowers.isDirectory(target)) {
+          throw new Error('Path is a directory');
+        }
+        const readerRef = await E(value).streamBase64();
+        const writer = filePowers.makeFileWriter(target);
+        // Stream base64-encoded chunks decoded into bytes.
+        const iterator = /** @type {AsyncIterator<string>} */ (
+          /** @type {unknown} */ (readerRef)
+        );
+        for (;;) {
+          // eslint-disable-next-line no-await-in-loop
+          const { done, value: chunk } = await iterator.next();
+          if (done) break;
+          const bytes = decodeBase64(chunk);
+          // eslint-disable-next-line no-await-in-loop
+          await writer.next(bytes);
+        }
+        await writer.return(undefined);
+        return;
+      }
+      if (methods.includes('list')) {
+        await filePowers.makePath(target);
+        const names = await E(value).list();
+        for (const name of names) {
+          // eslint-disable-next-line no-await-in-loop
+          const child = await E(value).lookup(name);
+          // eslint-disable-next-line no-await-in-loop
+          await this.self.write([...segments, name], child); // eslint-disable-line no-invalid-this
+        }
+        return;
+      }
+      throw new Error(
+        'write() value must be a ReadableBlob or ReadableTree (no streamBase64 or list method)',
+      );
+    },
+
+    async copy(fromArg, toArg) {
+      await null;
+      assertWritable();
+      const fromSegments = segmentsFromPathArg(fromArg);
+      const from = resolveFromRoot(fromSegments);
+      await assertConfined(from, confinementRoot, filePowers);
+      const source = await openExisting(from, fromSegments);
+      await this.self.write(toArg, source); // eslint-disable-line no-invalid-this
+    },
   });
 };
 harden(makeMountExo);
+
+/**
+ * Structural-narrowing view exposing only the `ReadableTree` surface
+ * (`has`, `list`, `lookup`) over a read-only mount.  Mount-specific
+ * extensions are not present on this Exo; the read-only surface is
+ * deliberately the platform contract, not the daemon's superset.
+ *
+ * @param {object} readOnlyMount - An EndoMount whose `readOnly` flag is true.
+ * @returns {object}
+ */
+const makeReadableTreeView = readOnlyMount => {
+  return makeExo('EndoMountReadableTree', ReadableTreeInterface, {
+    async has(...pathSegments) {
+      return E(readOnlyMount).has(...pathSegments);
+    },
+    async list(...pathSegments) {
+      return E(readOnlyMount).list(...pathSegments);
+    },
+    async lookup(pathArg) {
+      const result = await E(readOnlyMount).lookup(pathArg);
+      // The underlying mount returns either a sub-mount (an
+      // EndoMount) or a mount file.  Either way it is already
+      // read-only because the parent mount is; we wrap it in the
+      // structural view so descendants surface the platform shape
+      // too.
+      // eslint-disable-next-line no-underscore-dangle
+      const methods = await E(result).__getMethodNames__();
+      if (methods.includes('list')) {
+        return makeReadableTreeView(result);
+      }
+      return makeReadableBlobView(result);
+    },
+  });
+};
+harden(makeReadableTreeView);
 
 /**
  * Create a mount-scoped logical entry descriptor.  Entries are values
@@ -604,17 +716,44 @@ const makeMountFileExo = (
     },
 
     readOnly() {
-      return makeMountFileExo(
+      // Structural narrowing: return a ReadableBlob view, not an
+      // EndoMountFile.  Mount-specific surface (`stat`, `snapshot`)
+      // is removed; callers that need it keep a reference to the
+      // un-attenuated mount file.
+      const readOnlyFile = makeMountFileExo(
         filePath,
         true,
         filePowers,
         confinementRoot,
         snapshotFile,
       );
+      return makeReadableBlobView(readOnlyFile);
     },
   });
 };
 harden(makeMountFileExo);
+
+/**
+ * Structural-narrowing view exposing only the `ReadableBlob` surface
+ * (`streamBase64`, `text`, `json`) over a read-only mount file.
+ *
+ * @param {object} readOnlyFile - An EndoMountFile whose `readOnly` is true.
+ * @returns {object}
+ */
+const makeReadableBlobView = readOnlyFile => {
+  return makeExo('EndoMountReadableBlob', ReadableBlobInterface, {
+    streamBase64() {
+      return E(readOnlyFile).streamBase64();
+    },
+    async text() {
+      return E(readOnlyFile).text();
+    },
+    async json() {
+      return E(readOnlyFile).json();
+    },
+  });
+};
+harden(makeReadableBlobView);
 
 /**
  * Create a mount exo backed by a filesystem directory.

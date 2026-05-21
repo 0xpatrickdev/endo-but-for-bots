@@ -5,7 +5,7 @@
 | **Created** | 2026-05-18 |
 | **Updated** | 2026-05-21 |
 | **Author** | 0xPatrick (prompted) |
-| **Status** | In Progress |
+| **Status** | **Complete** |
 
 > **Read in order.** This is doc 1 of 3.  The trio works as one design:
 > (1) [daemon-mount-capabilities](daemon-mount-capabilities.md) (you are
@@ -713,7 +713,7 @@ them with matching shapes (`has`, `list`, `lookup`, `remove`, `move`,
 `makeDirectory`, `snapshot`).  The gap is three methods plus two
 return-type narrowings:
 
-- [ ] Add `write(path: string[] | EndoMountEntry, value: ReadableBlob | ReadableTree): Promise<void>`.
+- [x] Add `write(path: string[] | EndoMountEntry, value: ReadableBlob | ReadableTree): Promise<void>`.
   - `value` is detected via `__getMethodNames__` (the same shape-test
     `checkinTree` already uses): a `streamBase64`-bearing remotable
     materializes through `writeBytes` semantics; a `list` / `lookup`-
@@ -723,7 +723,7 @@ return-type narrowings:
     realpath, and `..`-clamping all apply uniformly.
   - The `M.interface` shape lands as
     `write: M.call(PathArgShape, M.remotable()).returns(M.promise())`.
-- [ ] Add `copy(from: string[] | EndoMountEntry, to: string[] | EndoMountEntry): Promise<void>`.
+- [x] Add `copy(from: string[] | EndoMountEntry, to: string[] | EndoMountEntry): Promise<void>`.
   - Within-mount copy.  Resolves `from` via the existing
     `openExisting` path and rewrites it through `write(to, source)`;
     the same confinement check applies to both endpoints.  Cross-mount
@@ -731,7 +731,7 @@ return-type narrowings:
     layer in `daemon-capability-filesystem`).
   - The `M.interface` shape lands as
     `copy: M.call(PathArgShape, PathArgShape).returns(M.promise())`.
-- [ ] Change `makeDirectory(path)`'s return type from `Promise<void>` to
+- [x] Change `makeDirectory(path)`'s return type from `Promise<void>` to
   `Promise<EndoMount>` so it is a subtype of
   `Directory.makeDirectory(path): Promise<Directory>`.
   - The implementation already produces the new subdirectory's
@@ -741,7 +741,7 @@ return-type narrowings:
     are source-compatible.  Both the runtime guard
     (`MountInterface.makeDirectory`) and the TypeScript declaration in
     `packages/daemon/src/types.d.ts` update together.
-- [ ] Change `readOnly()` from the same-named-throwing convention
+- [x] Change `readOnly()` from the same-named-throwing convention
   (Decision 6 initial form) to a **structural-narrowing** form: return a
   separate Exo whose `M.interface` guard is `ReadableTreeInterface`
   (from `@endo/platform/fs`), not `MountInterface`.
@@ -761,7 +761,7 @@ of them with matching shapes (`streamBase64`, `text`, `json`,
 `writeText`, `writeBytes`, `append`, `snapshot`).  The gap is one
 return-type narrowing:
 
-- [ ] Change `EndoMountFile.readOnly()` from returning `EndoMountFile`
+- [x] Change `EndoMountFile.readOnly()` from returning `EndoMountFile`
   to returning a structural-narrowed Exo whose `M.interface` guard is
   `ReadableBlobInterface`.  Same shape as 5a's `readOnly()` change:
   a separate Exo holding the same `(filePath, confinementRoot,
@@ -771,22 +771,22 @@ return-type narrowing:
 
 #### 5c. Interface-guard alignment in `packages/daemon/src/interfaces.js`
 
-- [ ] Import `DirectoryInterface as PlatformDirectoryInterface` and
+- [x] Import `DirectoryInterface as PlatformDirectoryInterface` and
   `FileInterface as PlatformFileInterface` from `@endo/platform/fs`.
-- [ ] Update `MountInterface` so the methods that overlap
+- [x] Update `MountInterface` so the methods that overlap
   `PlatformDirectoryInterface` use literally the same `M.call(...)`
   shapes.  Where `EndoMount` extends `Directory` (the entry-arg
   overloads, `stat`, `entry`, `readText`, `maybeReadText`,
   `writeText`, `makeFile`, `help`), the additions live alongside; they
   are extensions of `Directory`, not redefinitions.
-- [ ] Update `MountFileInterface` similarly against
+- [x] Update `MountFileInterface` similarly against
   `PlatformFileInterface`.
-- [ ] Update `MountEntryInterface` — no change; entries remain a
+- [x] Update `MountEntryInterface` — no change; entries remain a
   daemon-only value type.
 
 #### 5d. Conformance test
 
-- [ ] Add `packages/daemon/test/mount-platform-fs-conformance.test.js`.
+- [x] Add `packages/daemon/test/mount-platform-fs-conformance.test.js`.
   - Construct an `EndoMount` via `makeMount({ rootPath, readOnly: false,
     filePowers, snapshotTree, snapshotFile })` against a temp directory.
   - Call each of the nine `Directory` methods (`has`, `list`, `lookup`,
@@ -805,8 +805,8 @@ return-type narrowing:
 
 #### 5e. TypeScript declarations
 
-- [ ] Re-export `Directory` and `File` from
-  `packages/platform/src/fs/types.js` (already present) so
+- [x] Re-export `Directory` and `File` from
+  `packages/platform/src/fs/types.js` (added in this phase) so
   `packages/daemon/src/types.d.ts` can `@import` them and declare
   `interface EndoMount extends Directory` /
   `interface EndoMountFile extends File`.  This is the static-type
@@ -815,7 +815,7 @@ return-type narrowing:
 
 #### 5f. Compatibility tests in place during migration
 
-- [ ] Keep `ReadableTree` / `ReadableBlob` compatibility tests in place;
+- [x] Keep `ReadableTree` / `ReadableBlob` compatibility tests in place;
   they continue to pass without modification, because the
   specialization preserves the existing read surface.
 

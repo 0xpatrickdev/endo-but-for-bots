@@ -849,6 +849,33 @@ export interface EndoMountEntry {
   child(name: string): EndoMountEntry;
 }
 
+/**
+ * Structural `ReadableBlob` view exposed by `EndoMountFile.readOnly()`.
+ * Mirrors `ReadableBlob` from `@endo/platform/fs`.
+ */
+export interface ReadableBlobView {
+  streamBase64(): FarRef<Reader<string>>;
+  text(): Promise<string>;
+  json(): Promise<unknown>;
+}
+
+/**
+ * Structural `ReadableTree` view exposed by `EndoMount.readOnly()`.
+ * Mirrors `ReadableTree` from `@endo/platform/fs`; `lookup` recursively
+ * returns either another `ReadableTreeView` or a `ReadableBlobView`.
+ */
+export interface ReadableTreeView {
+  has(...pathSegments: string[]): Promise<boolean>;
+  list(...pathSegments: string[]): Promise<string[]>;
+  lookup(path: string | string[]): Promise<ReadableTreeView | ReadableBlobView>;
+}
+
+/**
+ * `EndoMountFile` is a daemon-local specialization of the platform
+ * `File` contract.  Mount-specific surface (`stat`, `snapshot`,
+ * `writeText` / `append` / `writeBytes` that throw on read-only) is
+ * additive; `readOnly()` narrows to a structural `ReadableBlob` view.
+ */
 export interface EndoMountFile {
   text(): Promise<string>;
   streamBase64(): FarRef<Reader<string>>;
@@ -858,9 +885,18 @@ export interface EndoMountFile {
   writeBytes(readableRef: FarRef<AsyncIterator<Uint8Array>>): Promise<void>;
   stat(): Promise<EndoMountStat>;
   snapshot(): Promise<FarRef<EndoReadable>>;
-  readOnly(): EndoMountFile;
+  readOnly(): ReadableBlobView;
 }
 
+/**
+ * `EndoMount` is a daemon-local specialization of the platform
+ * `Directory` contract.  Overlapping methods (`has`, `list`, `lookup`,
+ * `write`, `remove`, `move`, `copy`, `makeDirectory`, `snapshot`) match
+ * the platform shapes; mount-specific extensions (`entry`, `stat`,
+ * `displayPath`, `readText`, `maybeReadText`, `writeText`, `makeFile`)
+ * are additive; `readOnly()` narrows to a structural `ReadableTree`
+ * view.
+ */
 export interface EndoMount {
   has(...pathSegments: string[]): Promise<boolean>;
   has(entry: EndoMountEntry): Promise<boolean>;
@@ -868,6 +904,14 @@ export interface EndoMount {
   lookup(
     path: string | string[] | EndoMountEntry,
   ): Promise<EndoMount | EndoMountFile>;
+  write(
+    path: string | string[] | EndoMountEntry,
+    value: unknown,
+  ): Promise<void>;
+  copy(
+    from: string | string[] | EndoMountEntry,
+    to: string | string[] | EndoMountEntry,
+  ): Promise<void>;
   entry(path: string | string[]): EndoMountEntry;
   stat(
     path: string | string[] | EndoMountEntry,
@@ -880,7 +924,7 @@ export interface EndoMount {
     path: string | string[] | EndoMountEntry,
     content: string,
   ): Promise<void>;
-  makeDirectory(path: string | string[] | EndoMountEntry): Promise<void>;
+  makeDirectory(path: string | string[] | EndoMountEntry): Promise<EndoMount>;
   makeFile(
     path: string | string[] | EndoMountEntry,
     content?: string | Uint8Array,
@@ -890,7 +934,7 @@ export interface EndoMount {
     from: string | string[] | EndoMountEntry,
     to: string | string[] | EndoMountEntry,
   ): Promise<void>;
-  readOnly(): EndoMount;
+  readOnly(): ReadableTreeView;
   snapshot(): Promise<unknown>;
 }
 
