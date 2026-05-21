@@ -32,6 +32,16 @@ export type Tool = {
   function: ToolFunction;
 };
 
+export type ToolAdapter = {
+  tools: readonly Tool[];
+  execute: (toolCall: {
+    function: {
+      name: string;
+      arguments?: Record<string, unknown> | string;
+    };
+  }) => Promise<unknown>;
+};
+
 export type ToolCall = {
   id?: string;
   function: {
@@ -101,6 +111,8 @@ export type WorkerConfig = {
   host: string;
   model: string;
   authToken: string;
+  gitName?: string;
+  gitRemoteName?: string;
 };
 
 /** Context object for cancellation support */

@@ -9,6 +9,39 @@ import { GitInterface } from './interfaces.js';
 import { lineageOf } from './mount.js';
 
 /**
+ * Host-private map from daemon-minted Git exos to their mutability posture.
+ * Trusted adjacent providers such as GitRemote can reject read-only Git caps
+ * without adding a guest-visible inspection method.
+ *
+ * @type {WeakMap<object, boolean>}
+ */
+const gitReadOnly = new WeakMap();
+/** @type {WeakMap<object, GitBackend>} */
+const gitBackends = new WeakMap();
+
+/**
+ * Host-private accessor: returns whether a daemon-minted Git exo is
+ * read-only, or undefined for fakes / remotes not minted in this vat.
+ *
+ * @param {unknown} git
+ * @returns {boolean | undefined}
+ */
+export const isGitReadOnly = git =>
+  gitReadOnly.get(/** @type {object} */ (git));
+harden(isGitReadOnly);
+
+/**
+ * Host-private accessor for adjacent daemon providers such as GitRemote.
+ * Returns undefined for fakes or Git caps not minted in this vat.
+ *
+ * @param {unknown} git
+ * @returns {GitBackend | undefined}
+ */
+export const getGitBackend = git =>
+  gitBackends.get(/** @type {object} */ (git));
+harden(getGitBackend);
+
+/**
  * @typedef {object} GitRef
  * @property {string} name
  * @property {'branch' | 'tag' | 'commit' | 'detached'} kind
@@ -44,6 +77,14 @@ import { lineageOf } from './mount.js';
  *   | 'ignored'
  *   | 'conflicted'
  * )} GitWorktreeStatus
+ */
+
+/**
+ * @typedef {object} BackendStatusEntry
+ * @property {string} path
+ * @property {GitIndexStatus} index
+ * @property {GitWorktreeStatus} worktree
+ * @property {string} [renamedFrom]
  */
 
 /**
@@ -85,7 +126,7 @@ import { lineageOf } from './mount.js';
  * @property {() => Promise<void>} assertRepositoryRoot  Verifies the mount
  *   root is exactly a git worktree root (e.g. `git rev-parse --show-toplevel`
  *   equals the root).  Called by `provideGit` at formula instantiation.
- * @property {() => Promise<unknown[]>} status
+ * @property {() => Promise<BackendStatusEntry[]>} status
  * @property {(opts: object) => Promise<string>} diff
  * @property {(opts: object) => Promise<GitCommit[]>} log
  * @property {(ref: string) => Promise<string>} show
@@ -98,6 +139,8 @@ import { lineageOf } from './mount.js';
  * @property {(name: string, opts: object) => Promise<GitRef>} createBranch
  * @property {(name: string, opts: { force?: boolean }) => Promise<void>} deleteBranch
  * @property {(from: string, to: string) => Promise<void>} renameBranch
+ * @property {(name: string) => Promise<void>} switchBranch
+ * @property {(ref: string) => Promise<void>} detach
  * @property {(ref: string) => Promise<void>} switch
  * @property {(ref: string, opts: object) => Promise<string>} merge
  * @property {(input: object) => Promise<string>} rebase
@@ -110,6 +153,8 @@ import { lineageOf } from './mount.js';
  * @property {(ref: string) => Promise<unknown>} tree  Returns a
  *   `ReadableTree` exo for the given tree-ish; blobs implement
  *   `ReadableBlob`.
+ * @property {(input: { url?: unknown, refspecs?: unknown, prune?: boolean, tags?: boolean, credential?: unknown, signal?: AbortSignal }) => Promise<object>} remoteFetch
+ * @property {(input: { url?: unknown, refspecs?: unknown, setUpstream?: boolean, credential?: unknown, signal?: AbortSignal }) => Promise<object>} remotePush
  */
 
 /**
@@ -124,9 +169,12 @@ import { lineageOf } from './mount.js';
  * @param {object} args.mount  The `EndoMount` that carries the public
  *   worktree authority.  Returned by `worktree()`.
  * @param {GitBackend} args.backend
+ * @param {boolean} [args.readOnly]  True when this Git cap is attenuated
+ *   or was derived from a read-only mount.  Mutation methods throw before
+ *   the backend can touch the worktree.
  * @returns {object}
  */
-export const makeGit = ({ mount, backend }) => {
+export const makeGit = ({ mount, backend, readOnly = false }) => {
   // The mount's lineage sentinel — used to verify that every entry
   // passed to a path-bearing Git method was minted by this Git's bound
   // mount, not by some other mount this guest may also hold.
@@ -167,7 +215,25 @@ export const makeGit = ({ mount, backend }) => {
     return paths;
   };
 
-  return makeExo('Git', GitInterface, {
+  const assertWritable = methodName => {
+    if (readOnly) {
+      throw new Error(
+        `Git.${methodName} is not permitted on a read-only Git capability`,
+      );
+    }
+  };
+
+  /**
+   * @param {unknown} ref
+   * @returns {string}
+   */
+  const refName = ref =>
+    typeof ref === 'string' ? ref : /** @type {{ name: string }} */ (ref).name;
+
+  /** @type {object} */
+  let selfExo;
+
+  const exo = makeExo('Git', GitInterface, {
     worktree() {
       return mount;
     },
@@ -183,11 +249,18 @@ export const makeGit = ({ mount, backend }) => {
         raw.map(async r => {
           const segments = r.path === '' ? [] : r.path.split('/');
           const entry = await E(mount).entry(segments);
+          let node;
+          try {
+            node = await E(mount).lookup(entry);
+          } catch {
+            node = undefined;
+          }
           return harden({
             entry,
             path: r.path,
             index: r.index,
             worktree: r.worktree,
+            ...(node !== undefined ? { node } : {}),
             ...(r.renamedFrom !== undefined
               ? { renamedFrom: r.renamedFrom }
               : {}),
@@ -236,24 +309,27 @@ export const makeGit = ({ mount, backend }) => {
     },
 
     async show(ref) {
-      return backend.show(typeof ref === 'string' ? ref : ref.name);
+      return backend.show(refName(ref));
     },
 
     async revParse(ref) {
-      return backend.revParse(typeof ref === 'string' ? ref : ref.name);
+      return backend.revParse(refName(ref));
     },
 
     async add(entries) {
+      assertWritable('add');
       const paths = await entriesToRepoPaths(entries);
       return backend.add(paths);
     },
 
     async restore(entries, options = {}) {
+      assertWritable('restore');
       const paths = await entriesToRepoPaths(entries);
       return backend.restore(paths, options);
     },
 
     async commit(message) {
+      assertWritable('commit');
       return backend.commit(message);
     },
 
@@ -266,31 +342,63 @@ export const makeGit = ({ mount, backend }) => {
     },
 
     async createBranch(name, options = {}) {
+      assertWritable('createBranch');
       return backend.createBranch(name, options);
     },
 
     async deleteBranch(name, options = {}) {
+      assertWritable('deleteBranch');
       return backend.deleteBranch(name, options);
     },
 
     async renameBranch(from, to) {
+      assertWritable('renameBranch');
       return backend.renameBranch(from, to);
     },
 
+    async switchBranch(name) {
+      assertWritable('switchBranch');
+      return backend.switchBranch(name);
+    },
+
+    async detach(ref) {
+      assertWritable('detach');
+      return backend.detach(refName(ref));
+    },
+
     async switch(ref) {
-      return backend.switch(typeof ref === 'string' ? ref : ref.name);
+      assertWritable('switch');
+      return backend.switch(refName(ref));
     },
 
     async merge(ref, options = {}) {
-      return backend.merge(typeof ref === 'string' ? ref : ref.name, options);
+      assertWritable('merge');
+      return backend.merge(refName(ref), options);
     },
 
     async rebase(input) {
+      assertWritable('rebase');
       return backend.rebase(input);
     },
 
     async stashPush(options = {}) {
-      return backend.stashPush(options);
+      assertWritable('stashPush');
+      const opts =
+        /** @type {{ message?: string, entries?: readonly object[], paths?: string[], includeUntracked?: boolean }} */ (
+          options
+        );
+      const resolved =
+        /** @type {{ message?: string, paths?: string[], includeUntracked?: boolean }} */ ({});
+      if (opts.message !== undefined) resolved.message = opts.message;
+      if (opts.includeUntracked !== undefined) {
+        resolved.includeUntracked = opts.includeUntracked;
+      }
+      if (Array.isArray(opts.entries) && opts.entries.length > 0) {
+        resolved.paths = await entriesToRepoPaths(opts.entries);
+      } else if (Array.isArray(opts.paths) && opts.paths.length > 0) {
+        resolved.paths = [...opts.paths];
+      }
+      return backend.stashPush(resolved);
     },
 
     async stashList() {
@@ -302,21 +410,36 @@ export const makeGit = ({ mount, backend }) => {
     },
 
     async stashApply(index) {
+      assertWritable('stashApply');
       return backend.stashApply(index);
     },
 
     async stashPop(index) {
+      assertWritable('stashPop');
       return backend.stashPop(index);
     },
 
     async stashDrop(index) {
+      assertWritable('stashDrop');
       return backend.stashDrop(index);
     },
 
     async tree(ref) {
-      return backend.tree(typeof ref === 'string' ? ref : ref.name);
+      return backend.tree(refName(ref));
+    },
+
+    readOnly() {
+      if (readOnly) {
+        return selfExo;
+      }
+      return makeGit({ mount, backend, readOnly: true });
     },
   });
+
+  gitReadOnly.set(exo, readOnly);
+  gitBackends.set(exo, backend);
+  selfExo = exo;
+  return exo;
 };
 harden(makeGit);
 
@@ -347,6 +470,8 @@ export const makeNotYetImplementedBackend = () => {
     createBranch: async () => fail('createBranch'),
     deleteBranch: async () => fail('deleteBranch'),
     renameBranch: async () => fail('renameBranch'),
+    switchBranch: async () => fail('switchBranch'),
+    detach: async () => fail('detach'),
     switch: async () => fail('switch'),
     merge: async () => fail('merge'),
     rebase: async () => fail('rebase'),
@@ -357,6 +482,8 @@ export const makeNotYetImplementedBackend = () => {
     stashPop: async () => fail('stashPop'),
     stashDrop: async () => fail('stashDrop'),
     tree: async () => fail('tree'),
+    remoteFetch: async () => fail('remoteFetch'),
+    remotePush: async () => fail('remotePush'),
   });
 };
 harden(makeNotYetImplementedBackend);

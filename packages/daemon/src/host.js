@@ -2,7 +2,7 @@
 /// <reference types="ses"/>
 
 /** @import { ERef } from '@endo/eventual-send' */
-/** @import { AgentDeferredTaskParams, ChannelDeferredTaskParams, Context, DaemonCore, DeferredTasks, EndoGuest, EndoHost, EnvRecord, EvalDeferredTaskParams, FormulaIdentifier, FormulaNumber, GitDeferredTaskParams, GitRemoteDeferredTaskParams, InvitationDeferredTaskParams, MakeCapletDeferredTaskParams, MakeCapletOptions, MakeDirectoryNode, MakeHostOrGuestOptions, MakeMailbox, MountDeferredTaskParams, Name, NameOrPath, NamePath, NodeNumber, PeerInfo, PetName, ReadableBlobDeferredTaskParams, ReadableTreeDeferredTaskParams, MarshalDeferredTaskParams, ScratchMountDeferredTaskParams, WorkerDeferredTaskParams } from './types.js' */
+/** @import { AgentDeferredTaskParams, ChannelDeferredTaskParams, Context, DaemonCore, DeferredTasks, EndoGuest, EndoHost, EnvRecord, EvalDeferredTaskParams, FormulaIdentifier, FormulaNumber, GitCredentialDeferredTaskParams, GitDeferredTaskParams, GitRemoteDeferredTaskParams, InvitationDeferredTaskParams, MakeCapletDeferredTaskParams, MakeCapletOptions, MakeDirectoryNode, MakeHostOrGuestOptions, MakeMailbox, MountDeferredTaskParams, Name, NameOrPath, NamePath, NodeNumber, PeerInfo, PetName, ReadableBlobDeferredTaskParams, ReadableTreeDeferredTaskParams, MarshalDeferredTaskParams, ScratchMountDeferredTaskParams, WorkerDeferredTaskParams } from './types.js' */
 
 import { E } from '@endo/far';
 import { makeExo } from '@endo/exo';
@@ -29,6 +29,9 @@ import { makeDeferredTasks } from './deferred-tasks.js';
 
 import { HostInterface } from './interfaces.js';
 import { hostHelp, makeHelp } from './help-text.js';
+import { isGitReadOnly } from './git.js';
+import { getGitCredentialController as getGitCredentialControllerForCap } from './git-credential.js';
+import { getGitRemoteController as getGitRemoteControllerForCap } from './git-remote.js';
 
 /**
  * @param {string} name
@@ -74,6 +77,7 @@ const normalizeHostOrGuestOptions = opts => {
  * @param {DaemonCore['formulateMount']} args.formulateMount
  * @param {DaemonCore['formulateScratchMount']} args.formulateScratchMount
  * @param {DaemonCore['formulateGit']} args.formulateGit
+ * @param {DaemonCore['formulateGitCredential']} args.formulateGitCredential
  * @param {DaemonCore['formulateGitRemote']} args.formulateGitRemote
  * @param {DaemonCore['formulateInvitation']} args.formulateInvitation
  * @param {DaemonCore['formulateDirectoryForStore']} args.formulateDirectoryForStore
@@ -111,6 +115,7 @@ export const makeHostMaker = ({
   formulateMount,
   formulateScratchMount,
   formulateGit,
+  formulateGitCredential,
   formulateGitRemote,
   formulateInvitation,
   formulateDirectoryForStore,
@@ -342,15 +347,123 @@ export const makeHostMaker = ({
     };
 
     /**
+     * @param {unknown} value
+     * @param {string} fieldName
+     * @returns {string}
+     */
+    const requireGitCredentialString = (value, fieldName) => {
+      if (typeof value !== 'string' || value.length === 0) {
+        throw makeError(X`${fieldName} must be a non-empty string`);
+      }
+      if (value.includes('\0')) {
+        throw makeError(X`${fieldName} must not contain NUL bytes`);
+      }
+      return value;
+    };
+
+    /** @type {EndoHost['provideBearerCredential']} */
+    const provideBearerCredential = async (petName, options) => {
+      const { namePath } = assertPetNamePath(namePathFrom(petName));
+      if (!options || typeof options !== 'object') {
+        throw makeError(
+          X`provideBearerCredential: options must include audience and token`,
+        );
+      }
+      const audience = requireGitCredentialString(
+        options.audience,
+        'provideBearerCredential: audience',
+      );
+      const token = requireGitCredentialString(
+        options.token,
+        'provideBearerCredential: token',
+      );
+
+      /** @type {DeferredTasks<GitCredentialDeferredTaskParams>} */
+      const tasks = makeDeferredTasks();
+      tasks.push(identifiers =>
+        E(directory).storeIdentifier(namePath, identifiers.gitCredentialId),
+      );
+
+      const { value } = await formulateGitCredential(
+        'bearer',
+        audience,
+        harden({ token }),
+        tasks,
+      );
+      return value;
+    };
+
+    /** @type {EndoHost['provideBasicCredential']} */
+    const provideBasicCredential = async (petName, options) => {
+      const { namePath } = assertPetNamePath(namePathFrom(petName));
+      if (!options || typeof options !== 'object') {
+        throw makeError(
+          X`provideBasicCredential: options must include audience, username, and password`,
+        );
+      }
+      const audience = requireGitCredentialString(
+        options.audience,
+        'provideBasicCredential: audience',
+      );
+      const username = requireGitCredentialString(
+        options.username,
+        'provideBasicCredential: username',
+      );
+      const password = requireGitCredentialString(
+        options.password,
+        'provideBasicCredential: password',
+      );
+
+      /** @type {DeferredTasks<GitCredentialDeferredTaskParams>} */
+      const tasks = makeDeferredTasks();
+      tasks.push(identifiers =>
+        E(directory).storeIdentifier(namePath, identifiers.gitCredentialId),
+      );
+
+      const { value } = await formulateGitCredential(
+        'basic',
+        audience,
+        harden({ username, password }),
+        tasks,
+      );
+      return value;
+    };
+
+    /** @type {EndoHost['getGitCredentialController']} */
+    const getGitCredentialController = async credentialCap => {
+      await null;
+      const controller = getGitCredentialControllerForCap(credentialCap);
+      if (controller === undefined) {
+        throw makeError(
+          X`getGitCredentialController: argument must be a daemon-minted Git credential cap`,
+        );
+      }
+      return controller;
+    };
+
+    /** @type {EndoHost['getGitRemoteController']} */
+    const getGitRemoteController = async remoteCap => {
+      await null;
+      const controller = getGitRemoteControllerForCap(remoteCap);
+      if (controller === undefined) {
+        throw makeError(
+          X`getGitRemoteController: argument must be a daemon-minted GitRemote cap`,
+        );
+      }
+      return controller;
+    };
+
+    /**
      * Derive a `GitRemote` capability from an existing local `Git`.
      * The remote endpoint URL and refspec/direction policy are host-
      * specified at construction; the guest receives only the remote
      * facet, not the policy controller (which the host keeps via the
      * companion `getGitRemoteController` accessor below).
      *
-     * Phase 1: structural composition only.  The remote's fetch/pull/
-     * push methods surface "not yet implemented" until the credentialed
-     * HTTPS transport lands.
+     * Phase 1: construction-time policy with native git as the bounded
+     * data plane.  Credentialed HTTPS remotes use the daemon-controlled
+     * askpass path; local-file remotes remain a deliberately explicit
+     * test transport.
      *
      * @param {unknown} gitCap - A Git cap returned by `provideGit`.
      * @param {NameOrPath} petName
@@ -364,6 +477,8 @@ export const makeHostMaker = ({
      * @param {boolean} [opts.allowForcePush]
      * @param {boolean} [opts.allowTags]
      * @param {boolean} [opts.allowDelete]
+     * @param {boolean} [opts.allowLocalFileTransport]
+     * @param {unknown} [opts.credential]
      */
     const provideGitRemote = async (gitCap, petName, opts) => {
       const { namePath } = assertPetNamePath(namePathFrom(petName));
@@ -371,6 +486,11 @@ export const makeHostMaker = ({
       if (gitId === undefined) {
         throw makeError(
           X`provideGitRemote: first argument must be a daemon-minted Git cap`,
+        );
+      }
+      if (isGitReadOnly(gitCap)) {
+        throw makeError(
+          X`provideGitRemote: cannot construct a remote from a read-only Git cap`,
         );
       }
       if (
@@ -382,6 +502,16 @@ export const makeHostMaker = ({
         throw makeError(
           X`provideGitRemote: options must include a string name and url`,
         );
+      }
+      /** @type {FormulaIdentifier | undefined} */
+      let credentialId;
+      if (opts.credential !== undefined) {
+        credentialId = getIdForRef(opts.credential);
+        if (credentialId === undefined) {
+          throw makeError(
+            X`provideGitRemote: credential must be a daemon-minted Git credential cap`,
+          );
+        }
       }
       const policy = harden({
         url: opts.url,
@@ -400,6 +530,9 @@ export const makeHostMaker = ({
         ...(opts.allowDelete !== undefined
           ? { allowDelete: opts.allowDelete }
           : {}),
+        ...(opts.allowLocalFileTransport !== undefined
+          ? { allowLocalFileTransport: opts.allowLocalFileTransport }
+          : {}),
       });
 
       /** @type {DeferredTasks<GitRemoteDeferredTaskParams>} */
@@ -410,6 +543,7 @@ export const makeHostMaker = ({
 
       const { value } = await formulateGitRemote(
         gitId,
+        credentialId,
         opts.name,
         policy,
         tasks,
@@ -1556,6 +1690,10 @@ export const makeHostMaker = ({
       provideMount,
       provideScratchMount,
       provideGit,
+      provideBearerCredential,
+      provideBasicCredential,
+      getGitCredentialController,
+      getGitRemoteController,
       provideGitRemote,
       provideHostPath,
       provideGuest,

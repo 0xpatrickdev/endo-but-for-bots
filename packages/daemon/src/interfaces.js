@@ -325,6 +325,19 @@ export const HostInterface = M.interface('EndoHost', {
     .returns(M.promise()),
   // Derive a Git capability from a physical mount
   provideGit: M.call(M.remotable(), NameOrPathShape).returns(M.promise()),
+  // Mint a host-provisioned Git credential cap
+  provideBearerCredential: M.call(
+    NameOrPathShape,
+    M.recordOf(M.string(), M.any()),
+  ).returns(M.promise()),
+  provideBasicCredential: M.call(
+    NameOrPathShape,
+    M.recordOf(M.string(), M.any()),
+  ).returns(M.promise()),
+  // Retrieve host-held Git credential controller for rotation/revocation
+  getGitCredentialController: M.call(M.remotable()).returns(M.promise()),
+  // Retrieve host-held GitRemote controller for policy/revocation
+  getGitRemoteController: M.call(M.remotable()).returns(M.promise()),
   // Derive a GitRemote from a local Git plus a host-supplied policy
   provideGitRemote: M.call(
     M.remotable(),
@@ -517,10 +530,20 @@ const PathSegmentsShape = M.arrayOf(M.string());
 // remotable.  Lineage provenance is enforced inside the methods that
 // accept entries; the interface only filters the shape.
 const PathArgShape = M.or(M.string(), PathSegmentsShape, M.remotable());
+// `has` preserves the legacy variadic path-segment form while adding
+// single-argument entry and segment-array forms.  The `.rest()` guard sees
+// the collected rest arguments as one array, so the accepted shapes are:
+// has('a', 'b') -> string[], has(['a', 'b']) -> [string[]],
+// has(entry) -> [remotable].
+const MountHasArgsShape = M.or(
+  PathSegmentsShape,
+  M.splitArray([PathSegmentsShape]),
+  M.splitArray([M.remotable()]),
+);
 
 export const MountInterface = M.interface('EndoMount', {
   // ReadableTree-compatible surface
-  has: M.call().rest(PathSegmentsShape).returns(M.promise()),
+  has: M.call().rest(MountHasArgsShape).returns(M.promise()),
   list: M.call().rest(PathSegmentsShape).returns(M.promise()),
   lookup: M.call(PathArgShape).returns(M.promise()),
   // Raw data I/O
@@ -531,6 +554,9 @@ export const MountInterface = M.interface('EndoMount', {
   remove: M.call(PathArgShape).returns(M.promise()),
   move: M.call(PathArgShape, PathArgShape).returns(M.promise()),
   makeDirectory: M.call(PathArgShape).returns(M.promise()),
+  makeFile: M.call(PathArgShape)
+    .optional(M.or(M.string(), M.byteArray()))
+    .returns(M.promise()),
   // Descriptor minting (mount-scoped logical references)
   entry: M.call(PathArgShape).returns(M.remotable()),
   // Handle-oriented navigation and creation
@@ -564,11 +590,6 @@ export const MountFileInterface = M.interface('EndoMountFile', {
 export const MountEntryInterface = M.interface('EndoMountEntry', {
   segments: M.call().returns(M.arrayOf(M.string())),
   displayPath: M.call().returns(M.string()),
-  exists: M.call().returns(M.promise()),
-  stat: M.call().returns(M.promise()),
-  lookup: M.call().returns(M.promise()),
-  openFile: M.call().returns(M.promise()),
-  openDirectory: M.call().returns(M.promise()),
   child: M.call(M.string()).returns(M.remotable()),
 });
 
@@ -603,6 +624,7 @@ export const GitRemoteControllerInterface = M.interface(
   'GitRemoteController',
   {
     inspect: M.call().returns(M.promise()),
+    audit: M.call().returns(M.promise()),
     setAllowedDirections: M.call(M.arrayOf(GitDirectionShape)).returns(
       M.promise(),
     ),
@@ -616,10 +638,18 @@ export const GitRemoteControllerInterface = M.interface(
   },
 );
 
-// Credential interfaces — Phase 1 declares the shapes; Phase 2 lands
-// the concrete bearer/basic credential formulas and a host-private
-// unsealer that the backend uses to bind the credential into native
-// git's authentication channel.
+export const GitCredentialControllerInterface = M.interface(
+  'GitCredentialController',
+  {
+    inspect: M.call().returns(M.promise()),
+    rotate: M.call(M.recordOf(M.string(), M.any())).returns(M.promise()),
+    revoke: M.call().returns(M.promise()),
+  },
+);
+
+// Credential interfaces — public facets expose only audience inspection.
+// Host-private controllers rotate/revoke the sealed backing material, and
+// trusted backend code binds it into native git's authentication channel.
 export const BearerCredentialInterface = M.interface('BearerCredential', {
   audience: M.call().returns(M.string()),
 });
@@ -654,6 +684,11 @@ export const GitInterface = M.interface('Git', {
     .optional(M.recordOf(M.string(), M.any()))
     .returns(M.promise()),
   renameBranch: M.call(M.string(), M.string()).returns(M.promise()),
+  switchBranch: M.call(M.string()).returns(M.promise()),
+  detach: M.call(RefArgShape).returns(M.promise()),
+  // Compatibility alias for the first implementation slice.  New
+  // callers should prefer switchBranch() or detach() so branch checkout
+  // and detached-HEAD checkout stay explicit.
   switch: M.call(RefArgShape).returns(M.promise()),
   // History editing and integration
   merge: M.call(RefArgShape)
@@ -671,6 +706,8 @@ export const GitInterface = M.interface('Git', {
   stashDrop: M.call().optional(M.number()).returns(M.promise()),
   // Immutable tree access
   tree: M.call(RefArgShape).returns(M.promise()),
+  // Attenuation
+  readOnly: M.call().returns(M.remotable()),
 });
 
 export const ReadableTreeInterface = M.interface('EndoReadableTree', {

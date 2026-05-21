@@ -11,6 +11,7 @@ import fsp from 'fs/promises';
 import path from 'path';
 import crypto from 'crypto';
 import fs from 'fs';
+import { Buffer } from 'node:buffer';
 import { execFile } from 'node:child_process';
 import { promisify as nodePromisify } from 'node:util';
 import { E, Far } from '@endo/far';
@@ -4527,6 +4528,34 @@ test('mount snapshot - nested directories and text files round-trip', async t =>
   t.is(await E(snap).sha256(), await E(snap2).sha256());
 });
 
+test('mount snapshot - binary file stream round-trips', async t => {
+  const { host, config } = await prepareHost(t);
+
+  const mountPath = path.join(config.statePath, '..', 'mount-test-snap-binary');
+  await fsp.mkdir(mountPath, { recursive: true });
+  await fsp.writeFile(
+    path.join(mountPath, 'bytes.bin'),
+    new Uint8Array([0x00, 0xff, 0x41, 0x42]),
+  );
+
+  await E(host).provideMount(mountPath, 'test-mount-snap-binary');
+  const mount = await E(host).lookup(['test-mount-snap-binary']);
+
+  const snap = await E(mount).snapshot();
+  const blob = await E(snap).lookup('bytes.bin');
+  const stream = await E(blob).streamBase64();
+  const actualBytes = [];
+  for (;;) {
+    // eslint-disable-next-line no-await-in-loop
+    const { done, value } = await E(stream).next();
+    if (done) {
+      break;
+    }
+    actualBytes.push(...Buffer.from(value, 'base64'));
+  }
+  t.deepEqual(actualBytes, [0x00, 0xff, 0x41, 0x42]);
+});
+
 test('mount snapshot - read-only mount can snapshot', async t => {
   const { host, config } = await prepareHost(t);
 
@@ -4578,10 +4607,24 @@ test('mount entry - mint a descriptor and read its presentation data', async t =
   const entry = await E(mount).entry(['a', 'b', 'c.txt']);
   t.deepEqual(await E(entry).segments(), ['a', 'b', 'c.txt']);
   t.is(await E(entry).displayPath(), 'a/b/c.txt');
-  t.true(await E(entry).exists());
+  t.true(await E(mount).has(entry));
 
-  const stat = await E(entry).stat();
+  const stat = await E(mount).stat(entry);
   t.deepEqual(stat, { kind: 'file' });
+
+  // Entries are value-shaped descriptors. Observation and handle-minting
+  // authority stay on the mount that consumes them.
+  // eslint-disable-next-line no-underscore-dangle
+  const methods = await E(entry).__getMethodNames__();
+  for (const forbidden of [
+    'exists',
+    'stat',
+    'lookup',
+    'openFile',
+    'openDirectory',
+  ]) {
+    t.false(methods.includes(forbidden));
+  }
 });
 
 test('mount entry - missing path is representable without creating files', async t => {
@@ -4597,8 +4640,8 @@ test('mount entry - missing path is representable without creating files', async
   const ghost = await E(mount).entry(['phantom', 'nowhere.txt']);
   t.deepEqual(await E(ghost).segments(), ['phantom', 'nowhere.txt']);
   t.is(await E(ghost).displayPath(), 'phantom/nowhere.txt');
-  t.false(await E(ghost).exists());
-  t.is(await E(ghost).stat(), undefined);
+  t.false(await E(mount).has(ghost));
+  t.is(await E(mount).stat(ghost), undefined);
 
   // The path is still not present on disk.
   const onDisk = await fs.promises
@@ -4634,7 +4677,7 @@ test('mount entry - rejects `.` and `..` at descriptor minting', async t => {
   });
 });
 
-test('mount entry - openFile and openDirectory mint typed handles', async t => {
+test('mount entry - mount lookup mints typed handles', async t => {
   const { host, config } = await prepareHost(t);
 
   const mountPath = path.join(config.statePath, '..', 'mount-test-entry-open');
@@ -4646,26 +4689,16 @@ test('mount entry - openFile and openDirectory mint typed handles', async t => {
   await E(host).provideMount(mountPath, 'test-mount-entry-open');
   const mount = await E(host).lookup(['test-mount-entry-open']);
 
-  // Open a file via its entry.
+  // Open a file through the mount using its entry.
   const fileEntry = await E(mount).entry(['src', 'index.js']);
-  const file = await E(fileEntry).openFile();
+  const file = await E(mount).lookup(fileEntry);
   t.is(await E(file).text(), 'export default 1');
 
-  // Open a directory via its entry.
+  // Open a directory through the mount using its entry.
   const dirEntry = await E(mount).entry(['src']);
-  const dir = await E(dirEntry).openDirectory();
+  const dir = await E(mount).lookup(dirEntry);
   const entries = await E(dir).list();
   t.deepEqual([...entries].sort(), ['index.js', 'lib']);
-
-  // openFile on a directory entry fails clearly.
-  await t.throwsAsync(E(dirEntry).openFile(), {
-    message: /is a directory/,
-  });
-
-  // openDirectory on a file entry fails clearly.
-  await t.throwsAsync(E(fileEntry).openDirectory(), {
-    message: /not a directory/,
-  });
 });
 
 test('mount entry - child() composes path segments', async t => {
@@ -4686,7 +4719,7 @@ test('mount entry - child() composes path segments', async t => {
 
   t.deepEqual(await E(leaf).segments(), ['a', 'b', 'c.txt']);
   t.is(await E(leaf).displayPath(), 'a/b/c.txt');
-  const leafFile = await E(leaf).openFile();
+  const leafFile = await E(mount).lookup(leaf);
   t.is(await E(leafFile).text(), 'deep');
 
   // child() also rejects traversal at compose time.
@@ -4706,9 +4739,9 @@ test('mount entry - entries from a read-only mount mint read-only handles', asyn
   });
   const mount = await E(host).lookup(['test-mount-entry-ro']);
 
-  // Reading via the entry is allowed.
+  // Reading via the mount with an entry is allowed.
   const entry = await E(mount).entry(['existing.txt']);
-  const file = await E(entry).openFile();
+  const file = await E(mount).lookup(entry);
   t.is(await E(file).text(), 'do not modify');
 
   // The minted file handle inherits read-only status so an entry cannot be
@@ -4779,6 +4812,16 @@ test('mount createFile / createDirectory are write-side handle-minters', async t
   // createFile against an existing file just returns a handle (no clobber).
   const sameHandle = await E(mount).createFile(['fresh.txt']);
   t.is(await E(sameHandle).text(), 'payload');
+
+  // makeFile is the path-form construction sibling of makeDirectory. It
+  // returns no handle and can consume an entry descriptor.
+  const made = await E(mount).entry(['made.txt']);
+  await E(mount).makeFile(made, 'made through entry');
+  t.true(await E(mount).has(made));
+  t.is(await E(mount).readText(made), 'made through entry');
+
+  await E(mount).makeFile(['empty.txt']);
+  t.is(await E(mount).readText(['empty.txt']), '');
 });
 
 test('mount stat returns the kind for present nodes, undefined for missing', async t => {
@@ -4839,6 +4882,9 @@ test('mount rejects EndoMountEntry from a different mount lineage', async t => {
     message: /different mount lineage/,
   });
   await t.throwsAsync(E(mountB).openFile(entryFromA), {
+    message: /different mount lineage/,
+  });
+  await t.throwsAsync(E(mountB).has(entryFromA), {
     message: /different mount lineage/,
   });
 
@@ -4970,6 +5016,55 @@ test('provideGit derives a Git capability from a physical worktree mount', async
   t.is(entries[0].worktree, 'untracked');
 });
 
+test('provideGit preserves read-only mount policy on Git mutation', async t => {
+  const { host, config } = await prepareHost(t);
+
+  const mountPath = path.join(config.statePath, '..', 'mount-git-readonly');
+  await createGitWorktreeFixture(mountPath);
+  await fs.promises.writeFile(path.join(mountPath, 'locked.txt'), 'locked');
+  await E(host).provideMount(mountPath, 'git-ro-mount', { readOnly: true });
+  const mount = await E(host).lookup(['git-ro-mount']);
+
+  const git = await E(host).provideGit(mount, 'git-ro');
+  const entries = await E(git).status();
+  t.true(entries.some(entry => entry.path === 'locked.txt'));
+
+  const entry = await E(mount).entry(['locked.txt']);
+  await t.throwsAsync(E(git).add([entry]), {
+    message: /read-only Git capability/,
+  });
+});
+
+test('provideGit rehydrates the long-lived Git capability after restart', async t => {
+  const { cancelled, config } = await prepareConfig(t);
+  const mountPath = path.join(config.statePath, '..', 'mount-git-restart');
+
+  {
+    const { host } = await makeHost(config, cancelled);
+    await createGitWorktreeFixture(mountPath);
+    await E(host).provideMount(mountPath, 'restart-git-mount');
+    const mount = await E(host).lookup(['restart-git-mount']);
+    await E(host).provideGit(mount, 'restart-git');
+
+    t.truthy(await E(host).identify('restart-git'));
+  }
+
+  await fs.promises.writeFile(path.join(mountPath, 'after.txt'), 'after\n');
+  await restart(config);
+
+  {
+    const { host } = await makeHost(config, cancelled);
+    t.truthy(await E(host).identify('restart-git-mount'));
+    t.truthy(await E(host).identify('restart-git'));
+    const git = await E(host).lookup(['restart-git']);
+    const worktree = await E(git).worktree();
+    t.is(await E(worktree).readText(['after.txt']), 'after\n');
+
+    const entries = await E(git).status();
+    t.true(entries.some(entry => entry.path === 'after.txt'));
+  }
+});
+
 test('provideGit rejects a mount whose root is not a git worktree', async t => {
   const { host, config } = await prepareHost(t);
 
@@ -5021,11 +5116,15 @@ test('provideGitRemote derives a GitRemote from a local Git', async t => {
   await E(host).provideMount(mountPath, 'remote-mount');
   const mount = await E(host).lookup(['remote-mount']);
   const git = await E(host).provideGit(mount, 'remote-git');
+  const remoteUrl = url.pathToFileURL(
+    path.join(config.statePath, '..', 'remote-placeholder.git'),
+  ).href;
 
   // Construct a remote bound to the local Git with a fetch-only policy.
   const remote = await E(host).provideGitRemote(git, 'origin', {
     name: 'origin',
-    url: 'https://github.com/example/repo.git',
+    url: remoteUrl,
+    allowLocalFileTransport: true,
     allowedDirections: ['fetch'],
     fetchRefspecs: ['+refs/heads/*:refs/remotes/origin/*'],
   });
@@ -5036,17 +5135,238 @@ test('provideGitRemote derives a GitRemote from a local Git', async t => {
   // inspect() reflects the host-supplied policy.
   const snapshot = await E(remote).inspect();
   t.is(snapshot.name, 'origin');
-  t.is(snapshot.url, 'https://github.com/example/repo.git');
+  t.is(snapshot.url, remoteUrl);
   t.deepEqual([...snapshot.allowedDirections], ['fetch']);
 
-  // Phase 1: every transport-using op surfaces NYI; push is blocked
-  // by the direction policy before reaching that point.
+  // Push is blocked by the direction policy before reaching the native
+  // transport path. Fetch execution is covered in git-remote.test.js
+  // with a local bare remote fixture to avoid network-dependent CI.
   await t.throwsAsync(E(remote).push({}), {
     message: /does not permit "push"/,
   });
-  await t.throwsAsync(E(remote).fetch({}), {
-    message: /not yet implemented/,
+});
+
+test('provideBearerCredential stores an audience-only Git credential cap', async t => {
+  const { host } = await prepareHost(t);
+
+  const credential = await E(host).provideBearerCredential('github-token', {
+    audience: 'https://github.com',
+    token: 'secret-token',
   });
+
+  t.is(await E(credential).audience(), 'https://github.com');
+  const sameCredential = await E(host).lookup(['github-token']);
+  t.is(credential, sameCredential);
+  const controller = await E(host).getGitCredentialController(credential);
+  t.like(await E(controller).inspect(), {
+    kind: 'bearer',
+    audience: 'https://github.com',
+    available: true,
+    revoked: false,
+  });
+  await E(controller).rotate({ token: 'replacement-secret-token' });
+  t.false(
+    JSON.stringify(await E(controller).inspect()).includes(
+      'replacement-secret-token',
+    ),
+  );
+  await E(controller).revoke();
+  t.like(await E(controller).inspect(), { revoked: true });
+
+  const basicCredential = await E(host).provideBasicCredential('github-basic', {
+    audience: 'https://github.com',
+    username: 'octo',
+    password: 'secret-password',
+  });
+  t.is(await E(basicCredential).audience(), 'https://github.com');
+});
+
+test('provideGitRemote accepts daemon Git credential caps for HTTPS remotes', async t => {
+  const { host, config } = await prepareHost(t);
+
+  const mountPath = path.join(
+    config.statePath,
+    '..',
+    'mount-git-remote-credential',
+  );
+  await createGitWorktreeFixture(mountPath);
+  await E(host).provideMount(mountPath, 'credential-remote-mount');
+  const mount = await E(host).lookup(['credential-remote-mount']);
+  const git = await E(host).provideGit(mount, 'credential-remote-git');
+  const credential = await E(host).provideBearerCredential('github-token', {
+    audience: 'https://github.com',
+    token: 'secret-token',
+  });
+
+  const remote = await E(host).provideGitRemote(git, 'origin-https', {
+    name: 'origin',
+    url: 'https://github.com/example/repo.git',
+    credential,
+    allowedDirections: ['fetch'],
+    fetchRefspecs: ['+refs/heads/*:refs/remotes/origin/*'],
+  });
+  const snapshot = await E(remote).inspect();
+  t.is(snapshot.url, 'https://github.com/example/repo.git');
+  t.false('credential' in snapshot);
+  t.false(JSON.stringify(snapshot).includes('secret-token'));
+
+  const controller = await E(host).getGitRemoteController(remote);
+  t.false((await E(controller).inspect()).revoked);
+  await E(controller).setAllowedBranches(['agent/branch']);
+  await E(controller).setAllowedDirections(['fetch', 'push']);
+  const updated = await E(remote).inspect();
+  t.deepEqual([...updated.allowedDirections].sort(), ['fetch', 'push']);
+  t.deepEqual([...updated.pushRefspecs], [
+    'refs/heads/agent/branch:refs/heads/agent/branch',
+  ]);
+});
+
+test('provideGitRemote restart preserves policy but not credential secret material', async t => {
+  const { cancelled, config } = await prepareConfig(t);
+  const remoteUrl = 'https://github.com/example/repo.git';
+
+  {
+    const { host } = await makeHost(config, cancelled);
+    const mountPath = path.join(
+      config.statePath,
+      '..',
+      'mount-git-remote-restart-credential',
+    );
+    await createGitWorktreeFixture(mountPath);
+    await E(host).provideMount(mountPath, 'restart-remote-mount');
+    const mount = await E(host).lookup(['restart-remote-mount']);
+    const git = await E(host).provideGit(mount, 'restart-remote-git');
+    const credential = await E(host).provideBearerCredential(
+      'restart-github-token',
+      {
+        audience: 'https://github.com',
+        token: 'secret-token',
+      },
+    );
+
+    const remote = await E(host).provideGitRemote(git, 'restart-origin', {
+      name: 'origin',
+      url: remoteUrl,
+      credential,
+      allowedDirections: ['fetch'],
+      fetchRefspecs: ['+refs/heads/*:refs/remotes/origin/*'],
+    });
+    const controller = await E(host).getGitRemoteController(remote);
+    await E(controller).setAllowedBranches(['agent/review']);
+    await E(controller).setAllowedDirections(['fetch', 'push']);
+  }
+
+  await restart(config);
+
+  {
+    const { host } = await makeHost(config, cancelled);
+    const remote = await E(host).lookup(['restart-origin']);
+    const snapshot = await E(remote).inspect();
+    t.like(snapshot, {
+      name: 'origin',
+      url: remoteUrl,
+      allowForcePush: false,
+      allowTags: false,
+      allowDelete: false,
+    });
+    t.deepEqual([...snapshot.allowedDirections].sort(), ['fetch', 'push']);
+    t.deepEqual([...snapshot.fetchRefspecs], [
+      '+refs/heads/*:refs/remotes/origin/*',
+    ]);
+    t.deepEqual([...snapshot.pushRefspecs], [
+      'refs/heads/agent/review:refs/heads/agent/review',
+    ]);
+    t.false(JSON.stringify(snapshot).includes('secret-token'));
+
+    const credential = await E(host).lookup(['restart-github-token']);
+    t.is(await E(credential).audience(), 'https://github.com');
+    const controller = await E(host).getGitCredentialController(credential);
+    t.like(await E(controller).inspect(), {
+      kind: 'bearer',
+      audience: 'https://github.com',
+      available: false,
+      revoked: true,
+    });
+    await E(controller).rotate({ token: 'replacement-secret-token' });
+    const view = await E(controller).inspect();
+    t.like(view, { available: true, revoked: false });
+    t.false(JSON.stringify(view).includes('replacement-secret-token'));
+    await E(controller).revoke();
+    await t.throwsAsync(E(remote).fetch(), {
+      message: /credential .* revoked/,
+    });
+  }
+});
+
+test('provideGitRemote restart preserves controller revocation', async t => {
+  const { cancelled, config } = await prepareConfig(t);
+
+  {
+    const { host } = await makeHost(config, cancelled);
+    const mountPath = path.join(
+      config.statePath,
+      '..',
+      'mount-git-remote-restart-revoked',
+    );
+    await createGitWorktreeFixture(mountPath);
+    await E(host).provideMount(mountPath, 'restart-revoked-mount');
+    const mount = await E(host).lookup(['restart-revoked-mount']);
+    const git = await E(host).provideGit(mount, 'restart-revoked-git');
+    const credential = await E(host).provideBearerCredential(
+      'restart-revoked-github-token',
+      {
+        audience: 'https://github.com',
+        token: 'secret-token',
+      },
+    );
+    const remote = await E(host).provideGitRemote(git, 'restart-revoked-origin', {
+      name: 'origin',
+      url: 'https://github.com/example/repo.git',
+      credential,
+      allowedDirections: ['fetch'],
+      fetchRefspecs: ['+refs/heads/*:refs/remotes/origin/*'],
+    });
+    const controller = await E(host).getGitRemoteController(remote);
+    await E(controller).revoke();
+  }
+
+  await restart(config);
+
+  {
+    const { host } = await makeHost(config, cancelled);
+    const remote = await E(host).lookup(['restart-revoked-origin']);
+    await t.throwsAsync(E(remote).inspect(), { message: /has been revoked/ });
+    const controller = await E(host).getGitRemoteController(remote);
+    t.like(await E(controller).inspect(), { revoked: true });
+  }
+});
+
+test('provideGitRemote rejects non-daemon Git credential caps', async t => {
+  const { host, config } = await prepareHost(t);
+
+  const mountPath = path.join(
+    config.statePath,
+    '..',
+    'mount-git-remote-fake-credential',
+  );
+  await createGitWorktreeFixture(mountPath);
+  await E(host).provideMount(mountPath, 'fake-credential-remote-mount');
+  const mount = await E(host).lookup(['fake-credential-remote-mount']);
+  const git = await E(host).provideGit(mount, 'fake-credential-remote-git');
+  const spoof = Far('FakeGitCredential', {
+    audience: () => 'https://github.com',
+  });
+
+  await t.throwsAsync(
+    E(host).provideGitRemote(git, 'origin-https', {
+      name: 'origin',
+      url: 'https://github.com/example/repo.git',
+      credential: spoof,
+      allowedDirections: ['fetch'],
+      fetchRefspecs: ['+refs/heads/*:refs/remotes/origin/*'],
+    }),
+    { message: /daemon-minted Git credential cap/ },
+  );
 });
 
 test('provideGitRemote rejects a non-daemon Git cap', async t => {
@@ -5058,6 +5378,30 @@ test('provideGitRemote rejects a non-daemon Git cap', async t => {
       url: 'https://example/x',
     }),
     { message: /daemon-minted Git cap/ },
+  );
+});
+
+test('provideGitRemote rejects a read-only Git cap', async t => {
+  const { host, config } = await prepareHost(t);
+
+  const mountPath = path.join(
+    config.statePath,
+    '..',
+    'mount-git-remote-ro',
+  );
+  await createGitWorktreeFixture(mountPath);
+  await E(host).provideMount(mountPath, 'remote-ro-mount', { readOnly: true });
+  const mount = await E(host).lookup(['remote-ro-mount']);
+  const git = await E(host).provideGit(mount, 'remote-ro-git');
+
+  await t.throwsAsync(
+    E(host).provideGitRemote(git, 'origin-ro', {
+      name: 'origin',
+      url: 'https://github.com/example/repo.git',
+      allowedDirections: ['fetch'],
+      fetchRefspecs: ['+refs/heads/*:refs/remotes/origin/*'],
+    }),
+    { message: /read-only Git cap/ },
   );
 });
 

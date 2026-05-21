@@ -8,6 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { E, Far } from '@endo/far';
+import { bytesToImmutable } from '@endo/bytes/to-immutable.js';
 
 import { makeFilePowers } from '../src/daemon-node-powers.js';
 import {
@@ -159,6 +160,8 @@ test('read-only attenuations preserve backing kind and lineage', async t => {
   // recognise the read-only view's underlying worktree.
   t.is(roBacking.kind, 'physical');
   t.is(roBacking.physicalRoot, rwBacking.physicalRoot);
+  t.false(rwBacking.readOnly);
+  t.true(roBacking.readOnly);
   t.is(lineageOf(roMount), lineageOf(mount));
 });
 
@@ -176,4 +179,24 @@ test('public mount surface does not expose the physical root', async t => {
       `EndoMount must not expose ${forbidden}() to guests`,
     );
   }
+});
+
+test('makeFile constructs text and byte files', async t => {
+  const { root, filePowers } = await provisionMount(t);
+  const mount = makeMount({ rootPath: root, readOnly: false, filePowers });
+
+  await E(mount).makeFile(['notes.txt'], 'hello');
+  t.is(
+    await fs.promises.readFile(path.join(root, 'notes.txt'), 'utf-8'),
+    'hello',
+  );
+
+  await E(mount).makeFile(
+    ['bytes.bin'],
+    bytesToImmutable(new Uint8Array([0x41, 0x42])),
+  );
+  t.deepEqual([...(await fs.promises.readFile(path.join(root, 'bytes.bin')))], [
+    0x41,
+    0x42,
+  ]);
 });

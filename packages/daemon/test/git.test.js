@@ -3,9 +3,11 @@
 
 import test from '@endo/ses-ava/prepare-endo.js';
 
+import { Buffer } from 'node:buffer';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import http from 'node:http';
 import { execFile } from 'node:child_process';
 import { promisify as nodePromisify } from 'node:util';
 
@@ -14,7 +16,10 @@ import { E, Far } from '@endo/far';
 import { makeFilePowers } from '../src/daemon-node-powers.js';
 import { makeMount } from '../src/mount.js';
 import { makeGit, makeNotYetImplementedBackend } from '../src/git.js';
-import { makeNativeGitBackend } from '../src/native-git-backend.js';
+import {
+  makeNativeGitBackend,
+  internalHelpers,
+} from '../src/native-git-backend.js';
 
 const execFileAsync = nodePromisify(execFile);
 
@@ -84,6 +89,8 @@ test('Git exo advertises the full GitInterface', async t => {
     'createBranch',
     'deleteBranch',
     'renameBranch',
+    'switchBranch',
+    'detach',
     'switch',
   ]) {
     t.true(methods.includes(name), `Git should advertise ${name}`);
@@ -109,6 +116,7 @@ test('Git exo advertises the full GitInterface', async t => {
   // Trees + worktree binding
   t.true(methods.includes('tree'));
   t.true(methods.includes('worktree'));
+  t.true(methods.includes('readOnly'));
 });
 
 test('Git.worktree() returns the bound mount cap', async t => {
@@ -118,6 +126,106 @@ test('Git.worktree() returns the bound mount cap', async t => {
   // Same identity (passes through, no wrapping).  The mount cap stays
   // the public worktree authority for any guest that holds the Git cap.
   t.is(await E(git).worktree(), mount);
+});
+
+test('Git.readOnly() attenuates mutating operations but preserves reads', async t => {
+  const repoRoot = await provisionGitWorktree(t);
+  await fs.promises.writeFile(path.join(repoRoot, 'new.txt'), 'new');
+  const filePowers = makeFilePowers({ fs, path });
+  const mount = makeMount({ rootPath: repoRoot, readOnly: false, filePowers });
+  const backend = makeNativeGitBackend({ repoRoot });
+  const git = makeGit({ mount, backend });
+
+  const readOnlyGit = await E(git).readOnly();
+  t.is(await E(readOnlyGit).worktree(), mount);
+
+  const entries = await E(readOnlyGit).status();
+  t.is(entries.length, 1);
+  t.is(entries[0].path, 'new.txt');
+
+  const entry = await E(mount).entry(['new.txt']);
+  await t.throwsAsync(E(readOnlyGit).add([entry]), {
+    message: /read-only Git capability/,
+  });
+  await t.throwsAsync(E(readOnlyGit).commit('should fail'), {
+    message: /read-only Git capability/,
+  });
+  await t.throwsAsync(E(readOnlyGit).switchBranch('main'), {
+    message: /read-only Git capability/,
+  });
+
+  t.is(await E(readOnlyGit).readOnly(), readOnlyGit);
+});
+
+test('makeGit can be constructed directly as read-only', async t => {
+  const repoRoot = await provisionGitWorktree(t);
+  await fs.promises.writeFile(path.join(repoRoot, 'blocked.txt'), 'x');
+  const filePowers = makeFilePowers({ fs, path });
+  const mount = makeMount({ rootPath: repoRoot, readOnly: true, filePowers });
+  const backend = makeNativeGitBackend({ repoRoot });
+  const git = makeGit({ mount, backend, readOnly: true });
+
+  t.is((await E(git).status()).length, 1);
+  const entry = await E(mount).entry(['blocked.txt']);
+  await t.throwsAsync(E(git).add([entry]), {
+    message: /read-only Git capability/,
+  });
+});
+
+test('NativeGitBackend.tree exposes historical blobs and subtrees', async t => {
+  const repoRoot = await provisionGitWorktree(t);
+  await fs.promises.mkdir(path.join(repoRoot, 'src'), { recursive: true });
+  await fs.promises.writeFile(path.join(repoRoot, 'README.md'), 'old\n');
+  await fs.promises.writeFile(
+    path.join(repoRoot, 'src', 'config.json'),
+    '{"ok":true}\n',
+  );
+  await execFileAsync('git', ['add', 'README.md', 'src/config.json'], {
+    cwd: repoRoot,
+  });
+  await execFileAsync('git', ['commit', '-m', 'add tree files'], {
+    cwd: repoRoot,
+  });
+  await fs.promises.writeFile(path.join(repoRoot, 'README.md'), 'new\n');
+
+  const backend = makeNativeGitBackend({ repoRoot });
+  const tree = /** @type {any} */ (await backend.tree('HEAD'));
+
+  t.deepEqual(await E(tree).list(), ['README.md', 'src']);
+  t.true(await E(tree).has('README.md'));
+  t.true(await E(tree).has('src', 'config.json'));
+  t.false(await E(tree).has('src', 'missing.json'));
+
+  const readme = await E(tree).lookup('README.md');
+  t.is(await E(readme).text(), 'old\n');
+
+  const reader = await E(readme).streamBase64();
+  const chunk = await E(reader).next();
+  t.false(chunk.done);
+  t.is(Buffer.from(chunk.value, 'base64').toString('utf8'), 'old\n');
+
+  const src = await E(tree).lookup('src');
+  t.deepEqual(await E(src).list(), ['config.json']);
+  const config = await E(tree).lookup(['src', 'config.json']);
+  t.deepEqual(await E(config).json(), { ok: true });
+});
+
+test('Git.readOnly allows immutable tree reads', async t => {
+  const repoRoot = await provisionGitWorktree(t);
+  await fs.promises.writeFile(path.join(repoRoot, 'audit.txt'), 'audit\n');
+  await execFileAsync('git', ['add', 'audit.txt'], { cwd: repoRoot });
+  await execFileAsync('git', ['commit', '-m', 'add audit file'], {
+    cwd: repoRoot,
+  });
+  const filePowers = makeFilePowers({ fs, path });
+  const mount = makeMount({ rootPath: repoRoot, readOnly: false, filePowers });
+  const backend = makeNativeGitBackend({ repoRoot });
+  const git = makeGit({ mount, backend });
+
+  const readOnlyGit = await E(git).readOnly();
+  const tree = /** @type {any} */ (await E(readOnlyGit).tree('HEAD'));
+  const blob = await E(tree).lookup('audit.txt');
+  t.is(await E(blob).text(), 'audit\n');
 });
 
 test('Git scaffold methods all surface a clear "not yet implemented"', async t => {
@@ -164,6 +272,37 @@ test('NativeGitBackend.assertRepositoryRoot rejects a non-worktree directory', a
   // operating against the user's surrounding repository.
   await t.throwsAsync(backend.assertRepositoryRoot(), {
     message: /not a git repository|repository root|rev-parse failed/i,
+  });
+});
+
+test('NativeGitBackend rejects a swapped .git directory after construction', async t => {
+  const repoRoot = await provisionGitWorktree(t);
+  const backend = makeNativeGitBackend({ repoRoot });
+  await backend.assertRepositoryRoot();
+  t.truthy(await backend.currentBranch());
+
+  await fs.promises.rm(path.join(repoRoot, '.git'), {
+    recursive: true,
+    force: true,
+  });
+  await execFileAsync('git', ['init', '-q', '-b', 'main'], { cwd: repoRoot });
+  await execFileAsync(
+    'git',
+    [
+      '-c',
+      'user.email=t@t',
+      '-c',
+      'user.name=T',
+      'commit',
+      '--allow-empty',
+      '-m',
+      'replacement root',
+    ],
+    { cwd: repoRoot },
+  );
+
+  await t.throwsAsync(backend.status(), {
+    message: /repository identity changed/,
   });
 });
 
@@ -244,6 +383,73 @@ test('NativeGitBackend.revParse rejects revisions starting with "-"', async t =>
   });
 });
 
+test('NativeGitBackend version parser enforces the documented git floor', t => {
+  const { parseGitVersion, compareVersion, assertSupportedGitVersion } =
+    internalHelpers;
+
+  t.deepEqual(parseGitVersion('git version 2.39.5 (Apple Git-154)'), [
+    2,
+    39,
+    5,
+  ]);
+  t.deepEqual(parseGitVersion('git version 2.30'), [2, 30, 0]);
+  t.true(compareVersion([2, 30, 0], [2, 30, 0]) === 0);
+  t.true(compareVersion([2, 31, 0], [2, 30, 0]) > 0);
+  t.true(compareVersion([2, 29, 9], [2, 30, 0]) < 0);
+  t.notThrows(() => assertSupportedGitVersion('git version 2.30.0'));
+  t.throws(() => assertSupportedGitVersion('git version 2.29.9'), {
+    message: /requires git >= 2\.30\.0/,
+  });
+});
+
+test('NativeGitBackend credential transport satisfies git HTTP auth challenge', async t => {
+  const repoRoot = await provisionGitWorktree(t);
+  const backend = makeNativeGitBackend({ repoRoot });
+  /** @type {string[]} */
+  const authorizations = [];
+  const server = http.createServer((req, res) => {
+    const authorization = req.headers.authorization;
+    if (authorization !== undefined) {
+      authorizations.push(authorization);
+      res.writeHead(404);
+      res.end('not a git repository');
+      return;
+    }
+    res.writeHead(401, {
+      'WWW-Authenticate': 'Basic realm="Endo Git Test"',
+    });
+    res.end('auth required');
+  });
+  await new Promise(resolve => {
+    server.listen(0, '127.0.0.1', () => resolve(undefined));
+  });
+  const address = /** @type {import('node:net').AddressInfo} */ (
+    server.address()
+  );
+  try {
+    await t.throwsAsync(
+      backend.remoteFetch({
+        url: `http://127.0.0.1:${address.port}/repo.git`,
+        refspecs: [],
+        credential: harden({
+          kind: 'bearer',
+          material: harden({ token: 'test-token' }),
+        }),
+      }),
+      { message: /git fetch failed/ },
+    );
+  } finally {
+    await new Promise(resolve => {
+      server.close(() => resolve(undefined));
+    });
+  }
+
+  const expected = `Basic ${Buffer.from(
+    'x-access-token:test-token',
+  ).toString('base64')}`;
+  t.true(authorizations.includes(expected));
+});
+
 test('NativeGitBackend.diff returns worktree changes by default', async t => {
   const repoRoot = await provisionGitWorktree(t);
   await fs.promises.writeFile(path.join(repoRoot, 'a.txt'), 'v1');
@@ -275,7 +481,7 @@ test('NativeGitBackend.diff with --cached and a path filter', async t => {
   t.notRegex(out, /unstaged\.txt/);
 });
 
-test('NativeGitBackend branch ops: create, list, rename, switch, delete', async t => {
+test('NativeGitBackend branch ops: create, list, rename, switch, detach, delete', async t => {
   const repoRoot = await provisionGitWorktree(t);
   const backend = makeNativeGitBackend({ repoRoot });
 
@@ -291,14 +497,17 @@ test('NativeGitBackend branch ops: create, list, rename, switch, delete', async 
   );
 
   // Switch then rename: the current branch should change too.
-  await backend.switch('feature/initial');
+  await backend.switchBranch('feature/initial');
   await backend.renameBranch('feature/initial', 'feature/renamed');
   const current = await backend.currentBranch();
   t.deepEqual(current, { name: 'feature/renamed', kind: 'branch' });
 
+  await backend.detach('HEAD');
+  t.is(await backend.currentBranch(), undefined);
+
   // Delete: must switch away first because you cannot delete the
   // current branch.
-  await backend.switch('main');
+  await backend.switchBranch('main');
   await backend.deleteBranch('feature/renamed', {});
   const branches2 = await backend.branches();
   t.deepEqual(
@@ -329,6 +538,150 @@ test('NativeGitBackend.createBranch with startPoint and switchAfterCreate', asyn
   // The startPoint commit is now HEAD.
   const head = await backend.revParse('HEAD');
   t.is(head.oid, startPoint);
+});
+
+test('NativeGitBackend.merge fast-forwards a local branch', async t => {
+  const repoRoot = await provisionGitWorktree(t);
+  await execFileAsync('git', ['switch', '-c', 'feature'], { cwd: repoRoot });
+  await fs.promises.writeFile(
+    path.join(repoRoot, 'feature.txt'),
+    'feature\n',
+  );
+  await execFileAsync('git', ['add', 'feature.txt'], { cwd: repoRoot });
+  await execFileAsync(
+    'git',
+    [
+      '-c',
+      'user.email=t@t',
+      '-c',
+      'user.name=T',
+      'commit',
+      '-m',
+      'feature commit',
+    ],
+    { cwd: repoRoot },
+  );
+  await execFileAsync('git', ['switch', 'main'], { cwd: repoRoot });
+
+  const backend = makeNativeGitBackend({ repoRoot });
+  const result = await backend.merge('feature', {});
+  t.regex(result, /Fast-forward|Updating/);
+  t.is(
+    await fs.promises.readFile(path.join(repoRoot, 'feature.txt'), 'utf8'),
+    'feature\n',
+  );
+});
+
+test('NativeGitBackend.rebase rebases a local branch onto upstream', async t => {
+  const repoRoot = await provisionGitWorktree(t);
+  await fs.promises.writeFile(path.join(repoRoot, 'base.txt'), 'base\n');
+  await execFileAsync('git', ['add', 'base.txt'], { cwd: repoRoot });
+  await execFileAsync(
+    'git',
+    [
+      '-c',
+      'user.email=t@t',
+      '-c',
+      'user.name=T',
+      'commit',
+      '-m',
+      'base commit',
+    ],
+    { cwd: repoRoot },
+  );
+  await execFileAsync('git', ['switch', '-c', 'feature'], { cwd: repoRoot });
+  await fs.promises.writeFile(
+    path.join(repoRoot, 'feature.txt'),
+    'feature\n',
+  );
+  await execFileAsync('git', ['add', 'feature.txt'], { cwd: repoRoot });
+  await execFileAsync(
+    'git',
+    [
+      '-c',
+      'user.email=t@t',
+      '-c',
+      'user.name=T',
+      'commit',
+      '-m',
+      'feature commit',
+    ],
+    { cwd: repoRoot },
+  );
+  await execFileAsync('git', ['switch', 'main'], { cwd: repoRoot });
+  await fs.promises.writeFile(path.join(repoRoot, 'main.txt'), 'main\n');
+  await execFileAsync('git', ['add', 'main.txt'], { cwd: repoRoot });
+  await execFileAsync(
+    'git',
+    [
+      '-c',
+      'user.email=t@t',
+      '-c',
+      'user.name=T',
+      'commit',
+      '-m',
+      'main commit',
+    ],
+    { cwd: repoRoot },
+  );
+  await execFileAsync('git', ['switch', 'feature'], { cwd: repoRoot });
+
+  const backend = makeNativeGitBackend({ repoRoot });
+  await backend.rebase({ mode: 'start', upstream: 'main' });
+  const commits = await backend.log({ maxCount: 2 });
+  t.deepEqual(
+    commits.map(commit => commit.summary),
+    ['feature commit', 'main commit'],
+  );
+});
+
+test('Git stash methods preserve path authority through EndoMountEntry', async t => {
+  const repoRoot = await provisionGitWorktree(t);
+  await fs.promises.writeFile(path.join(repoRoot, 'tracked.txt'), 'before\n');
+  await execFileAsync('git', ['add', 'tracked.txt'], { cwd: repoRoot });
+  await execFileAsync(
+    'git',
+    [
+      '-c',
+      'user.email=t@t',
+      '-c',
+      'user.name=T',
+      'commit',
+      '-m',
+      'track file',
+    ],
+    { cwd: repoRoot },
+  );
+
+  const filePowers = makeFilePowers({ fs, path });
+  const mount = makeMount({ rootPath: repoRoot, readOnly: false, filePowers });
+  const backend = makeNativeGitBackend({ repoRoot });
+  const git = makeGit({ mount, backend });
+
+  await fs.promises.writeFile(path.join(repoRoot, 'tracked.txt'), 'after\n');
+  const entry = await E(mount).entry(['tracked.txt']);
+  const result = await E(git).stashPush({
+    message: 'save tracked',
+    entries: [entry],
+  });
+  t.regex(result, /Saved working directory/);
+  t.is(
+    await fs.promises.readFile(path.join(repoRoot, 'tracked.txt'), 'utf8'),
+    'before\n',
+  );
+
+  const stashes = await E(git).stashList();
+  t.true(stashes[0].includes('save tracked'));
+  const patch = await E(git).stashShow(0);
+  t.true(patch.includes('+after'));
+
+  await E(git).stashApply(0);
+  t.is(
+    await fs.promises.readFile(path.join(repoRoot, 'tracked.txt'), 'utf8'),
+    'after\n',
+  );
+  await E(git).stashDrop(0);
+  t.deepEqual(await E(git).stashList(), []);
 });
 
 test('Git.diff routes EndoMountEntry inputs through the lineage gate', async t => {
@@ -515,6 +868,76 @@ test('NativeGitBackend.status: classifies untracked, modified, added, deleted', 
   t.is(byPath['doomed.txt'].worktree, 'deleted');
 });
 
+test('Git.status reports merge conflicts with mount entries', async t => {
+  const repoRoot = await provisionGitWorktree(t);
+  await fs.promises.writeFile(path.join(repoRoot, 'conflict.txt'), 'base\n');
+  await execFileAsync('git', ['add', 'conflict.txt'], { cwd: repoRoot });
+  await execFileAsync(
+    'git',
+    [
+      '-c',
+      'user.email=t@t',
+      '-c',
+      'user.name=T',
+      'commit',
+      '-m',
+      'add conflict base',
+    ],
+    { cwd: repoRoot },
+  );
+  await execFileAsync('git', ['switch', '-c', 'feature'], { cwd: repoRoot });
+  await fs.promises.writeFile(
+    path.join(repoRoot, 'conflict.txt'),
+    'feature\n',
+  );
+  await execFileAsync('git', ['add', 'conflict.txt'], { cwd: repoRoot });
+  await execFileAsync(
+    'git',
+    [
+      '-c',
+      'user.email=t@t',
+      '-c',
+      'user.name=T',
+      'commit',
+      '-m',
+      'feature edit',
+    ],
+    { cwd: repoRoot },
+  );
+  await execFileAsync('git', ['switch', 'main'], { cwd: repoRoot });
+  await fs.promises.writeFile(path.join(repoRoot, 'conflict.txt'), 'main\n');
+  await execFileAsync('git', ['add', 'conflict.txt'], { cwd: repoRoot });
+  await execFileAsync(
+    'git',
+    [
+      '-c',
+      'user.email=t@t',
+      '-c',
+      'user.name=T',
+      'commit',
+      '-m',
+      'main edit',
+    ],
+    { cwd: repoRoot },
+  );
+
+  const filePowers = makeFilePowers({ fs, path });
+  const mount = makeMount({ rootPath: repoRoot, readOnly: false, filePowers });
+  const backend = makeNativeGitBackend({ repoRoot });
+  const git = makeGit({ mount, backend });
+
+  await t.throwsAsync(E(git).merge('feature'), {
+    message: /CONFLICT|Automatic merge failed/,
+  });
+  const entries = await E(git).status();
+  const row = entries.find(entry => entry.path === 'conflict.txt');
+  t.truthy(row);
+  t.is(row.index, 'conflicted');
+  t.is(row.worktree, 'conflicted');
+  t.deepEqual(await E(row.entry).segments(), ['conflict.txt']);
+  t.regex(await E(row.node).text(), /<<<<<<< HEAD/);
+});
+
 test('Git.status wraps backend rows into GitStatusEntry with mount entries', async t => {
   const repoRoot = await provisionGitWorktree(t);
   await fs.promises.mkdir(path.join(repoRoot, 'src'), { recursive: true });
@@ -540,7 +963,8 @@ test('Git.status wraps backend rows into GitStatusEntry with mount entries', asy
   // The entry is an EndoMountEntry minted on the bound mount.  Its
   // segments reflect the repo-relative path split by `/`.
   t.deepEqual(await E(row.entry).segments(), ['src', 'new.js']);
-  t.true(await E(row.entry).exists());
+  t.true(await E(mount).has(row.entry));
+  t.is(await E(row.node).text(), 'export default 1');
 });
 
 test('Git accepts both string and structured GitRef arguments', async t => {
@@ -558,7 +982,10 @@ test('Git accepts both string and structured GitRef arguments', async t => {
     },
     revParse: async ref => {
       revParseCalls.push(ref);
-      return harden({ name: ref, kind: 'commit' });
+      return harden({
+        name: ref,
+        kind: /** @type {'commit'} */ ('commit'),
+      });
     },
   });
   const git = makeGit({ mount, backend });

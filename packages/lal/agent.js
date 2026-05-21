@@ -9,9 +9,10 @@ import { makeRefIterator } from '@endo/daemon/ref-reader.js';
 import { makeLocalTree } from '@endo/platform/fs/node';
 
 import { createProvider } from './providers/index.js';
+import { makeGitRemoteToolAdapter, makeGitToolAdapter } from './tools/git.js';
 
 /** @import { FarRef } from '@endo/eventual-send' */
-/** @import { GuestPowers, NameOrPath, ToolParameterProperty, ToolParameters, ToolFunction, Tool, ToolCall, ChatMessage, ToolResult, ToolCallArgs, InboxMessage, LalContext } from './agent.types.js' */
+/** @import { GuestPowers, NameOrPath, ToolParameterProperty, ToolParameters, ToolFunction, Tool, ToolAdapter, ToolCall, ChatMessage, ToolResult, ToolCallArgs, InboxMessage, LalContext, WorkerConfig } from './agent.types.js' */
 
 // ============================================================================
 // Interface Definition
@@ -786,12 +787,46 @@ before resorting to \`evaluate()\`. For unfamiliar capabilities, use
 // ============================================================================
 
 /**
+ * Build optional worker tool adapters from the manager's submitted config.
+ * Capability names are resolved through the host agent namespace, and the
+ * Git worktree is derived from the Git cap so configuration grants one root
+ * authority instead of a separate mount name. A GitRemote can be granted
+ * separately for bounded fetch/pull/push authority.
+ *
+ * @param {object} agent - Host agent capability with `lookup`.
+ * @param {WorkerConfig} config
+ * @returns {Promise<ToolAdapter[]>}
+ */
+export const makeConfiguredToolAdapters = async (agent, config) => {
+  const gitName =
+    typeof config.gitName === 'string' ? config.gitName.trim() : '';
+  const gitRemoteName =
+    typeof config.gitRemoteName === 'string'
+      ? config.gitRemoteName.trim()
+      : '';
+  /** @type {ToolAdapter[]} */
+  const adapters = [];
+  await null;
+  if (gitName !== '') {
+    const git = await E(agent).lookup(gitName);
+    const mount = await E(git).worktree();
+    adapters.push(makeGitToolAdapter({ git, mount }));
+  }
+  if (gitRemoteName !== '') {
+    const remote = await E(agent).lookup(gitRemoteName);
+    adapters.push(makeGitRemoteToolAdapter({ remote }));
+  }
+  return harden(adapters);
+};
+harden(makeConfiguredToolAdapters);
+
+/**
  * Spawn a worker loop that follows a guest's inbox and processes messages
  * using the given LLM configuration.
  *
  * @param {any} powers - Guest powers (manager's own or a sub-guest's)
  * @param {Promise<object> | object | null | undefined} context - Context for cancellation
- * @param {{ LAL_HOST?: string, LAL_MODEL?: string, LAL_AUTH_TOKEN?: string, provider?: { chat: (messages: object[], tools: object[]) => Promise<{ message: object }> } }} workerEnv - LLM provider config. Pass `provider` to inject a pre-built provider (e.g. for tests); otherwise the LAL_* env vars are used to construct one.
+ * @param {{ LAL_HOST?: string, LAL_MODEL?: string, LAL_AUTH_TOKEN?: string, provider?: { chat: (messages: object[], tools: object[]) => Promise<{ message: object }> }, toolAdapters?: ToolAdapter[] }} workerEnv - LLM provider config. Pass `provider` to inject a pre-built provider (e.g. for tests); otherwise the LAL_* env vars are used to construct one.  `toolAdapters` add granted capability-specific tools to the standard Lal tool loop.
  * @returns {Promise<void>}
  */
 export const spawnWorkerLoop = async (powers, context, workerEnv) => {
@@ -809,13 +844,37 @@ export const spawnWorkerLoop = async (powers, context, workerEnv) => {
   };
 
   const provider = workerEnv.provider || createProvider(workerEnv);
+  const toolAdapters = workerEnv.toolAdapters || [];
+  const adapterByToolName = new Map();
+  const builtInToolNames = new Set(tools.map(tool => tool.function.name));
+  for (const adapter of toolAdapters) {
+    for (const tool of adapter.tools) {
+      const toolName = tool?.function?.name;
+      if (typeof toolName !== 'string' || toolName === '') {
+        throw new Error('tool adapter supplied a tool without a function name');
+      }
+      if (builtInToolNames.has(toolName)) {
+        throw new Error(
+          `Tool adapter function name conflicts with built-in Lal tool: ${toolName}`,
+        );
+      }
+      if (adapterByToolName.has(toolName)) {
+        throw new Error(`Duplicate tool adapter function name: ${toolName}`);
+      }
+      adapterByToolName.set(toolName, adapter);
+    }
+  }
+  const chatTools = harden([
+    ...tools,
+    ...toolAdapters.flatMap(adapter => [...adapter.tools]),
+  ]);
 
   /**
    * Chat with the LLM.
    * @param {ChatMessage[]} messages
    * @returns {Promise<{message: ChatMessage}>}
    */
-  const chat = messages => provider.chat(messages, tools);
+  const chat = messages => provider.chat(messages, chatTools);
 
   // ---- Transcript Node Store ----
   // Each transcript is a linked chain of nodes. Each node stores only the
@@ -1002,6 +1061,11 @@ export const spawnWorkerLoop = async (powers, context, workerEnv) => {
    * @returns {Promise<unknown>} The result of the tool call
    */
   const executeTool = async (name, args) => {
+    if (adapterByToolName.has(name)) {
+      const adapter = adapterByToolName.get(name);
+      return adapter.execute({ function: { name, arguments: args } });
+    }
+
     switch (name) {
       // Self-documentation
       case 'help': {
@@ -1630,6 +1694,18 @@ export const make = (guestPowers, _context) => {
           example: 'sk-ant-... for Anthropic',
           secret: true,
         },
+        {
+          name: 'gitName',
+          label: 'Git capability petname',
+          default: '',
+          example: 'Leave blank, or name a host petname from provideGit',
+        },
+        {
+          name: 'gitRemoteName',
+          label: 'GitRemote capability petname',
+          default: '',
+          example: 'Leave blank, or name a host petname from provideGitRemote',
+        },
       ]),
     );
 
@@ -1693,7 +1769,7 @@ export const make = (guestPowers, _context) => {
         try {
           // Resolve the submitted values from the value message.
           const config =
-            /** @type {{ name: string, host: string, model: string, authToken: string }} */ (
+            /** @type {WorkerConfig} */ (
               await E(powers).lookupById(msg.valueId)
             );
 
@@ -1723,12 +1799,17 @@ export const make = (guestPowers, _context) => {
 
             // Ensure the sub-guest has the primer directory.
             await provisionPrimer(guest);
+            const toolAdapters = await makeConfiguredToolAdapters(
+              agent,
+              config,
+            );
 
             // Spawn a worker loop for this guest.
             const workerP = spawnWorkerLoop(guest, null, {
               LAL_HOST: config.host,
               LAL_MODEL: config.model,
               LAL_AUTH_TOKEN: config.authToken,
+              toolAdapters,
             });
             activeWorkers.set(name, workerP);
             workerP.catch(error => {

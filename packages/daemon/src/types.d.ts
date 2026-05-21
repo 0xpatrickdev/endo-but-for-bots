@@ -230,15 +230,23 @@ type GitFormula = {
   mountId: FormulaIdentifier;
 };
 
+type GitCredentialFormula = {
+  type: 'git-credential';
+  kind: 'bearer' | 'basic';
+  /** URL origin this credential may be used for. Secret material is not persisted. */
+  audience: string;
+};
+
 type GitRemoteFormula = {
   type: 'git-remote';
   /** Formula identifier of the local `Git` this remote is bound to. */
   gitId: FormulaIdentifier;
+  /** Optional formula identifier of the credential this remote composes with. */
+  credentialId?: FormulaIdentifier;
   /** Remote name, typically 'origin'. */
   name: string;
-  /** Host-controlled policy.  Persisted in the formula so it survives
-   *  daemon restarts; the controller updates the in-memory snapshot
-   *  but the formula record is the source of truth for reincarnation. */
+  /** Host-controlled policy.  Persisted in the formula so controller
+   *  updates survive daemon restarts. */
   policy: {
     url: string;
     allowedDirections: Array<'fetch' | 'push'>;
@@ -248,7 +256,10 @@ type GitRemoteFormula = {
     allowForcePush?: boolean;
     allowTags?: boolean;
     allowDelete?: boolean;
+    allowLocalFileTransport?: boolean;
   };
+  /** Persisted controller revocation flag. */
+  revoked?: boolean;
 };
 
 export type MountDeferredTaskParams = {
@@ -261,6 +272,10 @@ export type ScratchMountDeferredTaskParams = {
 
 export type GitDeferredTaskParams = {
   gitId: FormulaIdentifier;
+};
+
+export type GitCredentialDeferredTaskParams = {
+  gitCredentialId: FormulaIdentifier;
 };
 
 export type GitRemoteDeferredTaskParams = {
@@ -449,6 +464,7 @@ export type Formula =
   | MountFormula
   | ScratchMountFormula
   | GitFormula
+  | GitCredentialFormula
   | GitRemoteFormula
   | LookupFormula
   | MakeUnconfinedFormula
@@ -1014,6 +1030,8 @@ export interface EndoHost extends EndoAgent {
       allowForcePush?: boolean;
       allowTags?: boolean;
       allowDelete?: boolean;
+      allowLocalFileTransport?: boolean;
+      credential?: unknown;
     },
   ): Promise<unknown>;
   provideHostPath(cap: unknown): Promise<string>;
@@ -1084,6 +1102,16 @@ export interface EndoHost extends EndoAgent {
     intervalMs: number,
     label?: string,
   ): Promise<unknown>;
+  provideBearerCredential(
+    petName: string | string[],
+    options: { audience: string; token: string },
+  ): Promise<unknown>;
+  provideBasicCredential(
+    petName: string | string[],
+    options: { audience: string; username: string; password: string },
+  ): Promise<unknown>;
+  getGitCredentialController(credential: unknown): Promise<unknown>;
+  getGitRemoteController(remote: unknown): Promise<unknown>;
   /** Locate a formula with connection hints for sharing with remote peers. */
   locateForSharing(...petNamePath: string[]): Promise<string | undefined>;
   /** Adopt a value from a locator that includes connection hints. */
@@ -1731,8 +1759,16 @@ export interface DaemonCore {
     deferredTasks: DeferredTasks<GitDeferredTaskParams>,
   ) => FormulateResult<unknown>;
 
+  formulateGitCredential: (
+    kind: GitCredentialFormula['kind'],
+    audience: string,
+    material: Record<string, string>,
+    deferredTasks: DeferredTasks<GitCredentialDeferredTaskParams>,
+  ) => FormulateResult<unknown>;
+
   formulateGitRemote: (
     gitId: FormulaIdentifier,
+    credentialId: FormulaIdentifier | undefined,
     name: string,
     policy: GitRemoteFormula['policy'],
     deferredTasks: DeferredTasks<GitRemoteDeferredTaskParams>,
