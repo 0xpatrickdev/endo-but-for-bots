@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Created** | 2026-05-18 |
-| **Updated** | 2026-05-20 |
+| **Updated** | 2026-05-21 |
 | **Author** | 0xPatrick (prompted) |
 | **Status** | In Progress |
 
@@ -555,6 +555,75 @@ This plan does not require renaming the current daemon interfaces first.
 Instead, it requires every new method to move toward the shared shape so a
 later adapter or migration is mostly mechanical.
 
+### Convergence shape: specialization, not wrapping
+
+The convergence is implemented as **specialization**: `EndoMount` *is* a
+`Directory` (its `M.interface('EndoMount', ...)` guard's overlapping
+methods exactly match `DirectoryInterface`'s method shapes), and
+`EndoMountFile` *is* a `File` in the same way.  There is no wrapping Exo
+between `EndoMount` and a platform-side `Directory` Exo, and there is no
+separate adapter object.  The `makeMountExo` factory in
+`packages/daemon/src/mount.js` continues to mint one Exo per mount; that
+Exo simply gains the methods required to satisfy `DirectoryInterface`
+(see § *Phase 5* below for the concrete additions).
+
+Rationale, in one breath: the platform-fs `Directory` Exo does not exist
+in tree today — `packages/platform/src/fs/interfaces.js` declares
+`DirectoryInterface` but no `makeDirectory(...)`-style factory
+materializes that contract (`packages/platform/src/fs-node/` ships only
+`makeTreeWriter`, the narrower push interface).  `EndoMount` is already
+the only `Directory`-shaped capability in the codebase; the read surface
+is structurally satisfied today (`checkinTree` consumes an `EndoMount`
+via `list` / `lookup` / `streamBase64` alone, with no other knowledge of
+the type).  Specializing keeps a single Exo, a single confinement check
+per method, and a single set of mount-specific extensions (`entry`,
+`stat(entry)`, `displayPath`, `EndoMountBacking`, symlink-confined
+realpath checks) co-located with the methods they constrain.  A wrapper
+shape would need a Platform `Directory` Exo built first, then a daemon
+Exo around it; would split the confinement boundary across two facets
+(opening the question "does the inner `Directory.write` bypass mount
+confinement?"); and would buy no semantic separation, because every
+mount-specific concern needs to live on the outer facet anyway.
+
+A future generic `Directory` Exo in `@endo/platform/fs-node/` (the
+platform-fs Phase 4 work) is **not** a prerequisite for `EndoMount` Phase
+5.  The `Directory` *contract* (the interface guard) is the prerequisite;
+the *implementation* of that contract for the daemon's mount is what this
+plan delivers.  A separate platform-side `Directory` Exo can be added
+later for in-memory, zip-backed, or remote-only directories without
+disturbing `EndoMount`.
+
+### Naming-collision discipline
+
+Three names in adjacent regions of the codebase are easy to confuse:
+
+- `EndoDirectory` (in `packages/daemon/src/interfaces.js` and
+  `packages/daemon/src/directory.js`) is the daemon's formula-graph
+  **naming hub** — `identify`, `locate`, `followNameChanges`, `lookup` by
+  pet name.  It is *not* a filesystem directory.  Its `M.interface`
+  label is `'EndoDirectory'`.
+- `Directory` (in `packages/platform/src/fs/interfaces.js`) is the
+  shared filesystem contract — `write`, `remove`, `move`, `copy`,
+  `makeDirectory`, `readOnly() → ReadableTree`, `snapshot() → SnapshotTree`.
+  Its `M.interface` label is `'Directory'`.
+- `EndoMount` (in `packages/daemon/src/mount.js`) is the daemon's
+  specialization of `Directory` for a confined physical subtree.  Its
+  `M.interface` label is `'EndoMount'`.
+
+Both `packages/platform/src/fs/interfaces.js` and
+`packages/daemon/src/interfaces.js` already export a binding named
+`DirectoryInterface`, with structurally different shapes.  Phase 5
+import sites that touch both must disambiguate at the import keyword,
+typically as:
+
+```js
+import { DirectoryInterface as PlatformDirectoryInterface } from '@endo/platform/fs';
+import { DirectoryInterface as EndoDirectoryInterface } from './interfaces.js';
+```
+
+`EndoDirectory` is not renamed by this plan; renaming the formula-graph
+hub is a separate decision with wide blast radius.
+
 ## Security Considerations
 
 - **No public physical path leak.**  `displayPath()` is mount-relative only.
@@ -627,22 +696,156 @@ later adapter or migration is mostly mechanical.
 
 ### Phase 5: Converge with Shared Filesystem Types
 
-- [ ] Add adapters or aliases to make `EndoMount` / `EndoMountFile` satisfy the
-  `Directory` / `File` contracts where practical.
-- [ ] Decide whether `EndoMount` remains a daemon-specific wrapper around
-  `Directory` or becomes a daemon-local specialization.
-- [ ] Keep `ReadableTree` / `ReadableBlob` compatibility tests in place during
-  migration.
+Convergence shape is **specialization** (see § *Convergence shape:
+specialization, not wrapping* above): `EndoMount` *is-a* `Directory` and
+`EndoMountFile` *is-a* `File`.  No wrapping Exo, no adapter module.  The
+`makeMountExo` factory in `packages/daemon/src/mount.js` and the
+`makeMountFileExo` factory in the same file gain the missing methods;
+the interface guards in `packages/daemon/src/interfaces.js` gain the
+overlapping `Directory` / `File` method shapes; a conformance test
+asserts the result against `PlatformDirectoryInterface` /
+`PlatformFileInterface`.
+
+#### 5a. Method additions on `EndoMount` to satisfy `DirectoryInterface`
+
+`DirectoryInterface` has nine methods.  Today `EndoMount` covers six of
+them with matching shapes (`has`, `list`, `lookup`, `remove`, `move`,
+`makeDirectory`, `snapshot`).  The gap is three methods plus two
+return-type narrowings:
+
+- [ ] Add `write(path: string[] | EndoMountEntry, value: ReadableBlob | ReadableTree): Promise<void>`.
+  - `value` is detected via `__getMethodNames__` (the same shape-test
+    `checkinTree` already uses): a `streamBase64`-bearing remotable
+    materializes through `writeBytes` semantics; a `list` / `lookup`-
+    bearing remotable materializes recursively through `makeDirectory` +
+    child `write`.  The path target is normalized through
+    `segmentsFromPathArg` / `resolvePathArg` so confinement, symlink
+    realpath, and `..`-clamping all apply uniformly.
+  - The `M.interface` shape lands as
+    `write: M.call(PathArgShape, M.remotable()).returns(M.promise())`.
+- [ ] Add `copy(from: string[] | EndoMountEntry, to: string[] | EndoMountEntry): Promise<void>`.
+  - Within-mount copy.  Resolves `from` via the existing
+    `openExisting` path and rewrites it through `write(to, source)`;
+    the same confinement check applies to both endpoints.  Cross-mount
+    copy is out of scope for Phase 5 (it requires the namespace
+    layer in `daemon-capability-filesystem`).
+  - The `M.interface` shape lands as
+    `copy: M.call(PathArgShape, PathArgShape).returns(M.promise())`.
+- [ ] Change `makeDirectory(path)`'s return type from `Promise<void>` to
+  `Promise<EndoMount>` so it is a subtype of
+  `Directory.makeDirectory(path): Promise<Directory>`.
+  - The implementation already produces the new subdirectory's
+    confined path; the change is to return `openExisting(target, segments)`
+    on the freshly-made path rather than dropping the result.  Existing
+    callers of `mount.makeDirectory(path)` that ignore the return value
+    are source-compatible.  Both the runtime guard
+    (`MountInterface.makeDirectory`) and the TypeScript declaration in
+    `packages/daemon/src/types.d.ts` update together.
+- [ ] Change `readOnly()` from the same-named-throwing convention
+  (Decision 6 initial form) to a **structural-narrowing** form: return a
+  separate Exo whose `M.interface` guard is `ReadableTreeInterface`
+  (from `@endo/platform/fs`), not `MountInterface`.
+  - The returned Exo holds the same `MountContext` but exposes only
+    `has`, `list`, `lookup` (the three methods on
+    `ReadableTreeInterface`).  Mount-specific extensions (`entry`,
+    `stat`, `displayPath`, `readText`) are removed from the read-only
+    surface.  Callers that today receive a read-only `EndoMount` and
+    call those extensions will fail to type-check after Phase 5; the
+    fixer dispatch surveys those call sites with
+    `grep -rn '\.readOnly().*\.\(entry\|stat\|displayPath\|readText\)' packages/`.
+
+#### 5b. Method additions on `EndoMountFile` to satisfy `FileInterface`
+
+`FileInterface` has eight methods.  Today `EndoMountFile` covers seven
+of them with matching shapes (`streamBase64`, `text`, `json`,
+`writeText`, `writeBytes`, `append`, `snapshot`).  The gap is one
+return-type narrowing:
+
+- [ ] Change `EndoMountFile.readOnly()` from returning `EndoMountFile`
+  to returning a structural-narrowed Exo whose `M.interface` guard is
+  `ReadableBlobInterface`.  Same shape as 5a's `readOnly()` change:
+  a separate Exo holding the same `(filePath, confinementRoot,
+  filePowers)` tuple, exposing only `streamBase64`, `text`, `json`.
+  Mount-specific surface (`stat`, `snapshot`) is removed from the
+  read-only file surface.
+
+#### 5c. Interface-guard alignment in `packages/daemon/src/interfaces.js`
+
+- [ ] Import `DirectoryInterface as PlatformDirectoryInterface` and
+  `FileInterface as PlatformFileInterface` from `@endo/platform/fs`.
+- [ ] Update `MountInterface` so the methods that overlap
+  `PlatformDirectoryInterface` use literally the same `M.call(...)`
+  shapes.  Where `EndoMount` extends `Directory` (the entry-arg
+  overloads, `stat`, `entry`, `readText`, `maybeReadText`,
+  `writeText`, `makeFile`, `help`), the additions live alongside; they
+  are extensions of `Directory`, not redefinitions.
+- [ ] Update `MountFileInterface` similarly against
+  `PlatformFileInterface`.
+- [ ] Update `MountEntryInterface` — no change; entries remain a
+  daemon-only value type.
+
+#### 5d. Conformance test
+
+- [ ] Add `packages/daemon/test/mount-platform-fs-conformance.test.js`.
+  - Construct an `EndoMount` via `makeMount({ rootPath, readOnly: false,
+    filePowers, snapshotTree, snapshotFile })` against a temp directory.
+  - Call each of the nine `Directory` methods (`has`, `list`, `lookup`,
+    `write`, `remove`, `move`, `copy`, `makeDirectory`, `readOnly`,
+    `snapshot`) with shapes that the `PlatformDirectoryInterface`
+    guard would accept, and assert no `M.interface` violation.
+  - Mirror the same for `EndoMountFile` against
+    `PlatformFileInterface`.
+  - Assert `readOnly()` returns an Exo whose
+    `__getMethodNames__` matches the `ReadableTree` / `ReadableBlob`
+    method set (i.e., the structural narrowing actually narrowed).
+  - The test is the Phase 5 conformance enforcement: drift in either
+    direction (an `EndoMount` method whose shape changes without the
+    `Directory` interface tracking it, or a future `Directory`
+    interface change that the mount does not absorb) breaks this test.
+
+#### 5e. TypeScript declarations
+
+- [ ] Re-export `Directory` and `File` from
+  `packages/platform/src/fs/types.js` (already present) so
+  `packages/daemon/src/types.d.ts` can `@import` them and declare
+  `interface EndoMount extends Directory` /
+  `interface EndoMountFile extends File`.  This is the static-type
+  expression of the runtime conformance test, and it surfaces drift in
+  `yarn docs` runs.
+
+#### 5f. Compatibility tests in place during migration
+
+- [ ] Keep `ReadableTree` / `ReadableBlob` compatibility tests in place;
+  they continue to pass without modification, because the
+  specialization preserves the existing read surface.
 
 ## Migration Notes
 
 - Existing users of `list`, `lookup`, `readText`, `writeText`,
   `remove`, `move`, and `makeDirectory` continue to work with their
-  current signatures.  `makeDirectory` keeps its name and shape; it is
-  the established convention across `daemon-mount`, `platform-fs`,
-  `daemon-weblet-application`, `filesystem-watchers`, the implemented
-  `packages/platform/src/fs` surface, and its consumers in
-  `packages/chat`, `packages/fae`, and `packages/lal`.
+  current signatures through Phases 1–4.  `makeDirectory` keeps its
+  name and shape; it is the established convention across
+  `daemon-mount`, `platform-fs`, `daemon-weblet-application`,
+  `filesystem-watchers`, the implemented `packages/platform/src/fs`
+  surface, and its consumers in `packages/chat`, `packages/fae`, and
+  `packages/lal`.
+- Phase 5 changes the **return type** of `EndoMount.makeDirectory(path)`
+  from `Promise<void>` to `Promise<EndoMount>` so the method satisfies
+  the `Directory.makeDirectory(path): Promise<Directory>` contract.
+  Callers that ignore the return value are source-compatible; callers
+  that assert `void` (e.g. `t.is(await mount.makeDirectory(p), undefined)`)
+  update to consume or ignore the returned subdirectory handle.
+- Phase 5 also narrows the **return type** of `EndoMount.readOnly()`
+  from `EndoMount` to a structural `ReadableTree` view (and
+  `EndoMountFile.readOnly()` from `EndoMountFile` to a structural
+  `ReadableBlob` view).  Callers that today receive a read-only
+  `EndoMount` and call mount-specific extensions (`entry`, `stat`,
+  `displayPath`, `readText`, `makeFile`) on it must either keep a
+  reference to the un-attenuated mount and attenuate per call site,
+  or be rewritten to use only the `ReadableTree` surface.  A pre-Phase-5
+  call-site survey (`grep -rn '\.readOnly()' packages/daemon/src/
+  packages/daemon/test/ packages/chat/ packages/fae/ packages/lal/`)
+  scopes the update.
 - `makeFile(path, content?)` is the new path-form sibling of
   `makeDirectory`.  It is additive: no existing method is renamed,
   removed, or re-typed.  `writeText(path, content)` remains the
@@ -678,6 +881,8 @@ live in *Design Decisions* below.
 - `entry(path)` accepting both arrays and slash strings — already in the
   `EndoMount` interface (`string | string[]`).
 - `displayPath()` public — decision 7.
+- `EndoMount` wrapper-vs-specialization for the `Directory` convergence
+  — decision 8.
 
 ### Spike Tasks
 
@@ -716,13 +921,35 @@ its associated phase.
    key.
 5. **Snapshot consistency is per-file, best-effort per-tree.**  Stronger
    modes are a future addition gated on a real consumer.
-6. **`readOnly()` keeps the same-named-throwing-Exo convention initially.**
-   The structural-narrowing form (returning a `ReadableTree` /
-   `ReadableBlob` that has no mutation methods at all) lands in Phase 5
-   alongside the shared `Directory` / `File` adoption; the initial form
-   preserves source compatibility for the existing daemon callers.
+6. **`readOnly()` keeps the same-named-throwing-Exo convention initially,
+   then narrows structurally in Phase 5.**  The initial form preserved
+   source compatibility for the existing daemon callers; Phase 5 § 5a /
+   5b replace it with the structural-narrowing form — `EndoMount.readOnly()`
+   returns an Exo whose `M.interface` is `ReadableTreeInterface`, and
+   `EndoMountFile.readOnly()` returns an Exo whose `M.interface` is
+   `ReadableBlobInterface`.  Mount-specific surface (`entry`, `stat`,
+   `displayPath`) is removed from the read-only view; callers that need
+   those on a read-only handle keep a reference to the un-attenuated
+   mount and call `readOnly()` lazily on the children they hand out.
 7. **`displayPath()` is public.**  The data is mount-relative-only (no
    host-path leak) and the convenience is worth more than the
    alternative "callers carry their own presentation string"; treating
    presentation as a property of the capability keeps the rendering
    consistent across consumers.
+8. **`EndoMount` is a daemon-local specialization of `Directory`, not a
+   wrapper.**  A single Exo per mount satisfies both `EndoMount`'s
+   daemon-specific extensions (`entry`, `stat`, `displayPath`,
+   `makeFile`, the entry-arg overloads, `EndoMountBacking`) and the
+   shared `Directory` contract from `@endo/platform/fs`.  The
+   interface-guard overlap is enforced by literal equality of method
+   shapes between `MountInterface` and `PlatformDirectoryInterface`,
+   verified at test time via a conformance test (Phase 5 § 5d), and
+   expressed in TypeScript via `interface EndoMount extends Directory`
+   (Phase 5 § 5e).  Wrapping was rejected because the platform-fs
+   `Directory` Exo does not exist in tree (only the interface guard
+   does); wrapping would require building a generic platform `Directory`
+   first, splitting confinement across two facets, and would not isolate
+   any mount-specific concern since all of them live on the outer facet
+   anyway.  A future generic `Directory` Exo in
+   `@endo/platform/fs-node/` (the platform-fs Phase 4 work) is not a
+   prerequisite for this convergence and is not blocked by it.
