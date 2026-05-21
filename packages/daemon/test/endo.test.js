@@ -1,5 +1,5 @@
 // @ts-nocheck
-/* global process, setTimeout */
+/* global Buffer, process, setTimeout */
 
 // Establish a perimeter:
 // eslint-disable-next-line import/order
@@ -4222,16 +4222,25 @@ test('mount readOnly() attenuation', async t => {
   await E(host).provideMount(mountPath, 'test-mount-attenuate');
   const mount = await E(host).lookup(['test-mount-attenuate']);
 
-  const roMount = await E(mount).readOnly();
+  const roTree = await E(mount).readOnly();
 
-  // Reading should work through attenuated view.
-  const entries = await E(roMount).list();
+  // The structural narrowing returns a ReadableTree view, not an
+  // EndoMount.  Reading through the platform surface (has, list,
+  // lookup) still works.
+  const entries = await E(roTree).list();
   t.deepEqual(entries, ['file.txt']);
+  t.true(await E(roTree).has('file.txt'));
 
-  // Writing should fail through attenuated view.
-  await t.throwsAsync(E(roMount).writeText(['new.txt'], 'fail'), {
-    message: /read-only/,
-  });
+  // Mount-specific extensions are not on the read-only view; the
+  // method names are constrained to the ReadableTree surface
+  // (filtering Exo introspection helpers).
+  // eslint-disable-next-line no-underscore-dangle
+  const methods = await E(roTree).__getMethodNames__();
+  t.deepEqual(methods.filter(name => !name.startsWith('__')).sort(), [
+    'has',
+    'list',
+    'lookup',
+  ]);
 });
 
 test('mount dot-dot navigation clamped at root', async t => {
@@ -4839,6 +4848,26 @@ test('Phase 8: stageTree materialises a ReadableTree into a scratch mount', asyn
   // The staged mount has the same compartment-map.json content.
   const text = await E(scratch).readText('compartment-map.json');
   t.regex(text, /"entry"/);
+});
+
+test('Phase 8: stageTree preserves binary blobs in a scratch mount', async t => {
+  const { host, config } = await prepareHost(t);
+
+  const srcDir = path.join(config.statePath, '..', 'stage-tree-binary-src');
+  fs.mkdirSync(srcDir, { recursive: true });
+  const expected = Buffer.from([0, 159, 146, 150, 255, 65, 10]);
+  fs.writeFileSync(path.join(srcDir, 'bytes.bin'), expected);
+  await E(host).provideMount(srcDir, 'binary-src-mount', { readOnly: true });
+
+  const scratch = await E(host).stageTree('binary-src-mount', 'binary-staged');
+  const file = await E(scratch).lookup('bytes.bin');
+  const reader = makeRefIterator(await E(file).streamBase64());
+  const chunks = [];
+  for await (const chunk of reader) {
+    chunks.push(Buffer.from(chunk, 'base64'));
+  }
+  const actual = Buffer.concat(chunks);
+  t.deepEqual([...actual], [...expected]);
 });
 
 testNeedsNodeWorker(

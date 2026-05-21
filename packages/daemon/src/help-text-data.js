@@ -226,14 +226,17 @@ export const helpTextEntries = harden([
         'remove(path) -> Promise<void>\nRemove a file or empty directory.\npath: string | string[] — Name or path segments.',
       move: 'move(from, to) -> Promise<void>\nRename an entry within the mount.\nfrom: string | string[] — Source name or path segments.\nto: string | string[] — Destination name or path segments.',
       makeDirectory:
-        'makeDirectory(path) -> Promise<void>\nCreate a directory (and missing parents) at the given path.\npath: string | string[] | EndoMountEntry — Name, path segments, or mount entry.',
+        'makeDirectory(path) -> Promise<EndoMount>\nCreate a directory (and missing parents) at the given path; returns a sub-mount.\npath: string | string[] | EndoMountEntry — Name, path segments, or mount entry.',
       makeFile:
         'makeFile(path, content?) -> Promise<void>\nCreate a file at the given path, with optional initial content.\npath: string | string[] | EndoMountEntry — Name, path segments, or mount entry.\ncontent: string | Uint8Array (optional) — Initial bytes. An existing file is truncated when content is provided.',
+      write:
+        'write(path, value) -> Promise<void>\nMaterialize a ReadableBlob or ReadableTree at the given path.\npath: string | string[] | EndoMountEntry — Name, path segments, or mount entry.\nvalue: ReadableBlob | ReadableTree — Source remotable; blobs are written as bytes, trees recurse.',
+      copy: 'copy(from, to) -> Promise<void>\nCopy a node within the mount.\nfrom: string | string[] | EndoMountEntry — Source name, path segments, or mount entry.\nto: string | string[] | EndoMountEntry — Destination name, path segments, or mount entry.\nBoth endpoints are confinement-checked.',
       stat: 'stat(path) -> Promise<EndoMountStat | undefined>\nQuery metadata for a path within the mount.\npath: string | string[] | EndoMountEntry — Name, path segments, or mount entry.\nReturns undefined when the path is missing or escapes the mount.',
       readOnly:
-        'readOnly() -> EndoMount\nReturns a read-only view of this mount.',
+        'readOnly() -> ReadableTree\nReturns a structural ReadableTree view (has, list, lookup) of this mount.\nMount-specific extensions (entry, stat, readText, makeFile) are not on the view.',
       snapshot:
-        'snapshot() -> Promise<SnapshotTree>\nCapture current state as an immutable readable-tree.\n(Not yet implemented.)',
+        'snapshot() -> Promise<SnapshotTree>\nCapture current state as an immutable readable-tree.',
     },
   ],
   [
@@ -252,7 +255,7 @@ export const helpTextEntries = harden([
       writeBytes:
         'writeBytes(readableRef) -> Promise<void>\nWrite bytes from an async iterator. Throws if read-only.',
       readOnly:
-        'readOnly() -> EndoMountFile\nReturns a read-only view of this file.',
+        'readOnly() -> ReadableBlob\nReturns a structural ReadableBlob view (streamBase64, text, json) of this file.\nMount-specific extensions (stat, snapshot) are not on the view.',
     },
   ],
 ]);

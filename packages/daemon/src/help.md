@@ -705,9 +705,9 @@ Rename an entry within the mount.
 from: string | string[] — Source name or path segments.
 to: string | string[] — Destination name or path segments.
 
-## makeDirectory(path) -> Promise<void>
+## makeDirectory(path) -> Promise<EndoMount>
 
-Create a directory (and missing parents) at the given path.
+Create a directory (and missing parents) at the given path; returns a sub-mount.
 path: string | string[] | EndoMountEntry — Name, path segments, or mount entry.
 
 ## makeFile(path, content?) -> Promise<void>
@@ -716,20 +716,33 @@ Create a file at the given path, with optional initial content.
 path: string | string[] | EndoMountEntry — Name, path segments, or mount entry.
 content: string | Uint8Array (optional) — Initial bytes. An existing file is truncated when content is provided.
 
+## write(path, value) -> Promise<void>
+
+Materialize a ReadableBlob or ReadableTree at the given path.
+path: string | string[] | EndoMountEntry — Name, path segments, or mount entry.
+value: ReadableBlob | ReadableTree — Source remotable; blobs are written as bytes, trees recurse.
+
+## copy(from, to) -> Promise<void>
+
+Copy a node within the mount.
+from: string | string[] | EndoMountEntry — Source name, path segments, or mount entry.
+to: string | string[] | EndoMountEntry — Destination name, path segments, or mount entry.
+Both endpoints are confinement-checked.
+
 ## stat(path) -> Promise<EndoMountStat | undefined>
 
 Query metadata for a path within the mount.
 path: string | string[] | EndoMountEntry — Name, path segments, or mount entry.
 Returns undefined when the path is missing or escapes the mount.
 
-## readOnly() -> EndoMount
+## readOnly() -> ReadableTree
 
-Returns a read-only view of this mount.
+Returns a structural ReadableTree view (has, list, lookup) of this mount.
+Mount-specific extensions (entry, stat, readText, makeFile) are not on the view.
 
 ## snapshot() -> Promise<SnapshotTree>
 
 Capture current state as an immutable readable-tree.
-(Not yet implemented.)
 
 # EndoMountFile - A file within a mounted directory.
 
@@ -761,6 +774,7 @@ Append a string to the file. Throws if read-only.
 
 Write bytes from an async iterator. Throws if read-only.
 
-## readOnly() -> EndoMountFile
+## readOnly() -> ReadableBlob
 
-Returns a read-only view of this file.
+Returns a structural ReadableBlob view (streamBase64, text, json) of this file.
+Mount-specific extensions (stat, snapshot) are not on the view.
