@@ -1067,6 +1067,12 @@ export interface EndoHost extends EndoAgent {
     opts?: { readOnly?: boolean },
   ): Promise<EndoMount>;
   provideScratchMount(petName: string | string[]): Promise<EndoMount>;
+  /**
+   * Privileged bridge from a daemon-minted top-level Mount cap to its
+   * host filesystem path. EndoHost is a fully privileged authority;
+   * callers that should not learn host paths must receive an
+   * attenuated guest or narrower powers object instead.
+   */
   provideHostPath(cap: unknown): Promise<string>;
   provideGuest(
     petName?: string,

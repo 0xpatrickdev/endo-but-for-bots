@@ -327,9 +327,11 @@ export const HostInterface = M.interface('EndoHost', {
   provideScratchMount: M.call(NameOrPathShape)
     .optional(M.splitRecord({}, { readOnly: M.boolean() }))
     .returns(M.promise()),
-  // Resolve a Mount capability to its host filesystem path. Used by
-  // the @endo/sandbox factory (and similar make-unconfined plugins)
-  // to translate granted Mount caps into bind-mount source paths.
+  // Resolve a Mount capability to its host filesystem path. This is
+  // deliberately part of the fully privileged EndoHost surface used
+  // by the @endo/sandbox factory (and similar make-unconfined
+  // plugins); do not hand an EndoHost cap to code that should not be
+  // able to recover host paths for daemon-minted top-level mounts.
   provideHostPath: M.call(M.any()).returns(M.promise()),
   // Provide a guest
   provideGuest: M.call().optional(NameShape, M.record()).returns(M.promise()),

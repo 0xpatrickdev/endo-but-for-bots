@@ -393,6 +393,40 @@ test('EndoMount.write accepts a ReadableTree and materializes recursively', asyn
   );
 });
 
+test('EndoMount.write rejects traversal-like ReadableTree child names', async t => {
+  const { mount } = makeConfiguredMount(t);
+  const blob = makeExo('LeafBlob', ReadableBlobInterface, {
+    streamBase64() {
+      return makeReaderRef([new TextEncoder().encode('leaf')]);
+    },
+    async text() {
+      return 'leaf';
+    },
+    async json() {
+      return null;
+    },
+  });
+
+  for (const name of ['.', '..', 'a/b', 'a\\b', 'a\0b']) {
+    const tree = makeExo('InvalidTree', ReadableTreeInterface, {
+      async has() {
+        return true;
+      },
+      async list() {
+        return harden([name]);
+      },
+      async lookup() {
+        return blob;
+      },
+    });
+
+    // eslint-disable-next-line no-await-in-loop
+    await t.throwsAsync(() => E(mount).write(['target'], tree), {
+      message: /Tree entry name|Path segment/,
+    });
+  }
+});
+
 test('EndoMount.copy within-mount copies a file', async t => {
   const { mount } = makeConfiguredMount(t);
   await E(mount).writeText(['src.txt'], 'src-content');
@@ -486,6 +520,30 @@ test('EndoMountFile.readOnly() returns a structural ReadableBlob view', async t 
     'rb-data',
     'read-only blob view streams through the platform surface',
   );
+});
+
+test('EndoMountFile json and streamBase64 re-check confinement on use', async t => {
+  const { mount, rootPath } = makeConfiguredMount(t);
+  const outsideRoot = makeTempRoot(t);
+  const outsideFile = path.join(outsideRoot, 'outside.json');
+  fs.writeFileSync(outsideFile, '{"secret":true}');
+
+  const fileName = 'confined.json';
+  const mountFile = path.join(rootPath, fileName);
+  await E(mount).writeText([fileName], '{"ok":true}');
+  const file = await E(mount).lookup(fileName);
+
+  fs.rmSync(mountFile);
+  fs.symlinkSync(outsideFile, mountFile);
+
+  await t.throwsAsync(() => E(file).json(), {
+    message: /escapes mount root/,
+  });
+
+  const reader = await E(file).streamBase64();
+  await t.throwsAsync(() => E(reader).next(), {
+    message: /escapes mount root/,
+  });
 });
 
 test('EndoMount.snapshot returns a SnapshotTree-shaped capability', async t => {

@@ -48,6 +48,21 @@ const assertValidSegment = segment => {
 harden(assertValidSegment);
 
 /**
+ * Validate a child name advertised by a remote ReadableTree. Unlike
+ * path arguments, tree child names are literal directory entries, so
+ * "." and ".." must not be interpreted.
+ *
+ * @param {string} name
+ */
+const assertValidTreeEntryName = name => {
+  assertValidSegment(name);
+  if (name === '.' || name === '..') {
+    throw new Error(`Tree entry name must not be "." or "..": ${q(name)}`);
+  }
+};
+harden(assertValidTreeEntryName);
+
+/**
  * Resolve path segments relative to a current directory, clamped to a
  * confinement root.  '.' skips, '..' pops (clamped at root).
  *
@@ -541,6 +556,7 @@ const makeMountExo = ctx => {
         await filePowers.makePath(target);
         const names = await E(value).list();
         for (const name of names) {
+          assertValidTreeEntryName(name);
           // eslint-disable-next-line no-await-in-loop
           const child = await E(value).lookup(name);
           // eslint-disable-next-line no-await-in-loop
@@ -674,12 +690,31 @@ const makeMountFileExo = (
     },
 
     streamBase64() {
-      const reader = filePowers.makeFileReader(filePath);
-      return makeReaderRef(reader);
+      /** @returns {AsyncGenerator<Uint8Array>} */
+      const readConfined = async function* readConfinedFile() {
+        await assertConfined(filePath, confinementRoot, filePowers);
+        const reader = filePowers.makeFileReader(filePath);
+        try {
+          for (;;) {
+            // eslint-disable-next-line no-await-in-loop
+            const result = await reader.next();
+            if (result.done) {
+              return;
+            }
+            yield result.value;
+          }
+        } finally {
+          if (reader.return !== undefined) {
+            await reader.return(undefined);
+          }
+        }
+      };
+      return makeReaderRef(readConfined());
     },
 
     async json() {
       await null;
+      await assertConfined(filePath, confinementRoot, filePowers);
       const text = await filePowers.readFileText(filePath);
       return JSON.parse(text);
     },

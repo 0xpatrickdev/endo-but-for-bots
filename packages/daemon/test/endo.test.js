@@ -1,5 +1,5 @@
 // @ts-nocheck
-/* global process, setTimeout */
+/* global Buffer, process, setTimeout */
 
 // Establish a perimeter:
 // eslint-disable-next-line import/order
@@ -4848,6 +4848,26 @@ test('Phase 8: stageTree materialises a ReadableTree into a scratch mount', asyn
   // The staged mount has the same compartment-map.json content.
   const text = await E(scratch).readText('compartment-map.json');
   t.regex(text, /"entry"/);
+});
+
+test('Phase 8: stageTree preserves binary blobs in a scratch mount', async t => {
+  const { host, config } = await prepareHost(t);
+
+  const srcDir = path.join(config.statePath, '..', 'stage-tree-binary-src');
+  fs.mkdirSync(srcDir, { recursive: true });
+  const expected = Buffer.from([0, 159, 146, 150, 255, 65, 10]);
+  fs.writeFileSync(path.join(srcDir, 'bytes.bin'), expected);
+  await E(host).provideMount(srcDir, 'binary-src-mount', { readOnly: true });
+
+  const scratch = await E(host).stageTree('binary-src-mount', 'binary-staged');
+  const file = await E(scratch).lookup('bytes.bin');
+  const reader = makeRefIterator(await E(file).streamBase64());
+  const chunks = [];
+  for await (const chunk of reader) {
+    chunks.push(Buffer.from(chunk, 'base64'));
+  }
+  const actual = Buffer.concat(chunks);
+  t.deepEqual([...actual], [...expected]);
 });
 
 testNeedsNodeWorker(
