@@ -210,6 +210,35 @@ test('NativeGitBackend.tree exposes historical blobs and subtrees', async t => {
   t.deepEqual(await E(config).json(), { ok: true });
 });
 
+test('NativeGitBackend.tree streams blobs larger than the exec buffer cap', async t => {
+  const repoRoot = await provisionGitWorktree(t);
+  const size = internalHelpers.GIT_MAX_BUFFER + 8192;
+  await fs.promises.writeFile(
+    path.join(repoRoot, 'large.bin'),
+    Buffer.alloc(size, 7),
+  );
+  await execFileAsync('git', ['add', 'large.bin'], { cwd: repoRoot });
+  await execFileAsync('git', ['commit', '-m', 'add large blob'], {
+    cwd: repoRoot,
+  });
+
+  const backend = makeNativeGitBackend({ repoRoot });
+  const tree = /** @type {any} */ (await backend.tree('HEAD'));
+  const blob = await E(tree).lookup('large.bin');
+  const reader = await E(blob).streamBase64();
+
+  let bytesRead = 0;
+  for (;;) {
+    // eslint-disable-next-line no-await-in-loop
+    const chunk = await E(reader).next();
+    if (chunk.done) {
+      break;
+    }
+    bytesRead += Buffer.from(chunk.value, 'base64').byteLength;
+  }
+  t.is(bytesRead, size);
+});
+
 test('Git.readOnly allows immutable tree reads', async t => {
   const repoRoot = await provisionGitWorktree(t);
   await fs.promises.writeFile(path.join(repoRoot, 'audit.txt'), 'audit\n');

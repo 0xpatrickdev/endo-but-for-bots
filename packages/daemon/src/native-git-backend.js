@@ -1,11 +1,12 @@
 // @ts-check
 /// <reference types="ses"/>
 
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { Buffer } from 'node:buffer';
 import crypto from 'node:crypto';
 import { promisify } from 'node:util';
 import process from 'node:process';
+import { setTimeout, clearTimeout } from 'node:timers';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -904,6 +905,64 @@ export const makeNativeGitBackend = ({ repoRoot }) => {
   };
 
   /**
+   * Run a sanitized git invocation and stream binary stdout chunks.
+   *
+   * @param {string[]} args
+   * @returns {AsyncGenerator<Uint8Array>}
+   */
+  const streamGitBuffer = async function* streamGitBuffer(args) {
+    await verifyRepositoryIdentity();
+    const child = spawn('git', [...GIT_BASE_ARGS, ...args], {
+      cwd: repoRoot,
+      env: makeGitEnv(repoRoot),
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stderr = '';
+    if (child.stderr !== null) {
+      child.stderr.setEncoding('utf8');
+      child.stderr.on('data', chunk => {
+        stderr = truncateOutput(`${stderr}${chunk}`);
+      });
+    }
+    const timeout = setTimeout(() => {
+      child.kill('SIGTERM');
+    }, GIT_TIMEOUT_MS);
+    timeout.unref();
+    const closed = new Promise((resolve, reject) => {
+      child.once('error', error => {
+        clearTimeout(timeout);
+        reject(error);
+      });
+      child.once('close', (code, signal) => {
+        clearTimeout(timeout);
+        resolve({ code, signal });
+      });
+    });
+    try {
+      if (child.stdout === null) {
+        throw new Error('git stdout stream was not available');
+      }
+      for await (const chunk of child.stdout) {
+        yield new Uint8Array(/** @type {Buffer} */ (chunk));
+      }
+      const { code, signal } =
+        /** @type {{ code: number | null, signal: string | null }} */ (
+          await closed
+        );
+      if (code !== 0) {
+        throw new Error(
+          `git ${gitCommandName(args)} failed (exit ${code ?? signal ?? 'unknown'}):\n${truncateOutput((stderr || 'unknown git error').trim())}`,
+        );
+      }
+    } finally {
+      clearTimeout(timeout);
+      if (child.exitCode === null && !child.killed) {
+        child.kill('SIGTERM');
+      }
+    }
+  };
+
+  /**
    * Run a sanitized git invocation.  Always preceded by a
    * verification of the repository root.  Returns trimmed stdout
    * (or '(no output)' if nothing was printed) on success; raises a
@@ -1250,16 +1309,18 @@ export const makeNativeGitBackend = ({ repoRoot }) => {
 
   /**
    * @param {string} blobOid
+   */
+  const streamBlobBytes = blobOid =>
+    streamGitBuffer(['cat-file', 'blob', blobOid]);
+
+  /**
+   * @param {string} blobOid
    * @returns {unknown}
    */
   const makeGitBlob = blobOid =>
     makeExo('GitBlob', ReadableBlobInterface, {
       streamBase64() {
-        return makeReaderRef(
-          (async function* blobReader() {
-            yield await readBlobBytes(blobOid);
-          })(),
-        );
+        return makeReaderRef(streamBlobBytes(blobOid));
       },
 
       async text() {
@@ -1918,6 +1979,7 @@ harden(makeNativeGitBackend);
 export const internalHelpers = harden({
   GIT_BASE_ARGS,
   GIT_TIMEOUT_MS,
+  GIT_MAX_BUFFER,
   TOOL_OUTPUT_LIMIT,
   makeGitEnv,
   truncateOutput,
