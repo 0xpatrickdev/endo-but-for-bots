@@ -450,6 +450,38 @@ test('NativeGitBackend credential transport satisfies git HTTP auth challenge', 
   t.true(authorizations.includes(expected));
 });
 
+test('NativeGitBackend.remoteFetch rejects repo-local URL rewrites', async t => {
+  const sourceRepo = await provisionGitWorktree(t);
+  const remoteParent = await fs.promises.mkdtemp(
+    path.join(os.tmpdir(), 'native-git-remote-'),
+  );
+  t.teardown(() =>
+    fs.promises.rm(remoteParent, { recursive: true, force: true }),
+  );
+  const remoteRoot = path.join(remoteParent, 'remote.git');
+  await execFileAsync('git', ['clone', '--bare', sourceRepo, remoteRoot]);
+
+  const repoRoot = await provisionGitWorktree(t);
+  await execFileAsync(
+    'git',
+    [
+      'config',
+      `url.file://${remoteRoot}.insteadOf`,
+      'https://trusted.example/repo',
+    ],
+    { cwd: repoRoot },
+  );
+
+  const backend = makeNativeGitBackend({ repoRoot });
+  await t.throwsAsync(
+    backend.remoteFetch({
+      url: 'https://trusted.example/repo',
+      refspecs: ['refs/heads/main:refs/remotes/origin/main'],
+    }),
+    { message: /repository config can alter remote transport.*url\./ },
+  );
+});
+
 test('NativeGitBackend.diff returns worktree changes by default', async t => {
   const repoRoot = await provisionGitWorktree(t);
   await fs.promises.writeFile(path.join(repoRoot, 'a.txt'), 'v1');

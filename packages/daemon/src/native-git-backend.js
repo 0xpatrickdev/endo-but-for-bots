@@ -10,6 +10,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import net from 'node:net';
+import { URL } from 'node:url';
 
 import { q } from '@endo/errors';
 import { makeExo } from '@endo/exo';
@@ -180,6 +181,25 @@ const truncateOutput = output => {
 };
 
 /**
+ * Find the porcelain command name in an argv vector that may include
+ * command-scoped `-c key=value` config pairs before the command.
+ *
+ * @param {readonly string[]} args
+ */
+const gitCommandName = args => {
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === '-c') {
+      index += 1;
+    } else if (!arg.startsWith('-')) {
+      return arg;
+    }
+  }
+  return args[0] || 'git';
+};
+harden(gitCommandName);
+
+/**
  * Reject empty, non-string, or NUL-containing values at the public
  * boundary so they cannot reach exec arguments.
  *
@@ -272,6 +292,13 @@ harden(normalizeTreePath);
 // Repository-local configurations that can execute code on read/write
 // paths and must be refused before any user-facing op runs.
 const EXECUTABLE_REPO_CONFIG = /^(filter\..*\.(clean|smudge|process)|merge\..*\.driver)$/u;
+
+// Repository-local configurations that can redirect or alter an
+// explicitly-policy-bound remote URL. Remote operations pass a URL
+// selected by GitRemote policy; local `.git/config` must not rewrite
+// that endpoint, inject headers/credentials, loosen protocol controls,
+// or route it through a configured proxy.
+const REMOTE_TRANSPORT_REPO_CONFIG = /^(url\..*\.(insteadof|pushinsteadof)|protocol\..*|https?\..*|credential(\.|$)|core\.(sshcommand|gitproxy)|ssh\..*|include(\.|if\.))/u;
 
 /**
  * @param {string} name
@@ -834,7 +861,7 @@ export const makeNativeGitBackend = ({ repoRoot }) => {
       const detail =
         error.stderr || error.stdout || error.message || 'unknown git error';
       throw new Error(
-        `git ${args[0]} failed (exit ${error.code ?? 'unknown'}):\n${truncateOutput(detail.trim())}`,
+        `git ${gitCommandName(args)} failed (exit ${error.code ?? 'unknown'}):\n${truncateOutput(detail.trim())}`,
       );
     }
   };
@@ -871,7 +898,7 @@ export const makeNativeGitBackend = ({ repoRoot }) => {
         error.stderr || error.stdout || error.message || 'unknown git error',
       );
       throw new Error(
-        `git ${args[0]} failed (exit ${error.code ?? 'unknown'}):\n${truncateOutput(detail.trim())}`,
+        `git ${gitCommandName(args)} failed (exit ${error.code ?? 'unknown'}):\n${truncateOutput(detail.trim())}`,
       );
     }
   };
@@ -914,7 +941,7 @@ export const makeNativeGitBackend = ({ repoRoot }) => {
       const detail =
         error.stderr || error.stdout || error.message || 'unknown git error';
       throw new Error(
-        `git ${args[0]} failed (exit ${error.code ?? 'unknown'}):\n${truncateOutput(detail.trim())}`,
+        `git ${gitCommandName(args)} failed (exit ${error.code ?? 'unknown'}):\n${truncateOutput(detail.trim())}`,
       );
     }
   };
@@ -949,6 +976,81 @@ export const makeNativeGitBackend = ({ repoRoot }) => {
 
   // Surface the assertion so phases that add mutation can call it.
   // Kept on the returned backend record below.
+
+  /**
+   * Refuse repository-local configuration that can redirect or modify
+   * an explicit remote URL. Unlike ordinary local branch metadata, these
+   * keys apply even when the daemon invokes `git fetch <url>` or
+   * `git push <url>` with a policy-controlled URL.
+   */
+  const assertNoRemoteTransportRepoConfig = async () => {
+    await verifyRepositoryIdentity();
+    const { stdout } = await execFileAsync(
+      'git',
+      [...GIT_BASE_ARGS, 'config', '--local', '--name-only', '--list'],
+      {
+        cwd: repoRoot,
+        env: makeGitEnv(repoRoot),
+        timeout: GIT_TIMEOUT_MS,
+        maxBuffer: GIT_MAX_BUFFER,
+      },
+    );
+    const offending = stdout
+      .split('\n')
+      .map(name => name.trim())
+      .filter(name =>
+        REMOTE_TRANSPORT_REPO_CONFIG.test(name.toLowerCase()),
+      );
+    if (offending.length > 0) {
+      throw new Error(
+        `Refusing remote git operation because repository config can alter remote transport: ${offending.join(', ')}`,
+      );
+    }
+  };
+
+  /**
+   * Add command-line protocol policy for explicit URL remote operations.
+   * The URL itself still comes from GitRemote policy; these flags ensure
+   * the protocol selected for that URL is the only protocol git may use
+   * after its normal URL handling.
+   *
+   * @param {string} urlText
+   * @returns {string[]}
+   */
+  const remoteProtocolArgs = urlText => {
+    let protocol;
+    try {
+      protocol = new URL(urlText).protocol;
+    } catch {
+      throw new Error(`remote URL is not a valid URL: ${q(urlText)}`);
+    }
+    if (protocol === 'https:') {
+      return harden([
+        '-c',
+        'protocol.allow=never',
+        '-c',
+        'protocol.https.allow=always',
+      ]);
+    }
+    if (protocol === 'http:') {
+      return harden([
+        '-c',
+        'protocol.allow=never',
+        '-c',
+        'protocol.http.allow=always',
+      ]);
+    }
+    if (protocol === 'file:') {
+      return harden([
+        '-c',
+        'protocol.allow=never',
+        '-c',
+        'protocol.file.allow=always',
+      ]);
+    }
+    throw new Error(`remote URL protocol is not supported: ${q(protocol)}`);
+  };
+  harden(remoteProtocolArgs);
 
   /**
    * @param {string[]} selectors
@@ -1745,9 +1847,10 @@ export const makeNativeGitBackend = ({ repoRoot }) => {
           )
         : [];
       await assertNoExecutableRepoConfig();
+      await assertNoRemoteTransportRepoConfig();
       const selectors = selectorsForFetchRefspecs(refspecs);
       const before = await readRefMap([...selectors]);
-      const args = ['fetch'];
+      const args = [...remoteProtocolArgs(url), 'fetch'];
       if (opts.prune) {
         args.push('--prune');
       }
@@ -1785,7 +1888,8 @@ export const makeNativeGitBackend = ({ repoRoot }) => {
         throw new Error('remotePush.refspecs must not be empty');
       }
       await assertNoExecutableRepoConfig();
-      const args = ['push', '--porcelain'];
+      await assertNoRemoteTransportRepoConfig();
+      const args = [...remoteProtocolArgs(url), 'push', '--porcelain'];
       if (opts.setUpstream) {
         args.push('--set-upstream');
       }
