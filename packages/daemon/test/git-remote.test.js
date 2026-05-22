@@ -759,6 +759,48 @@ test('GitRemote enforces tag and prune policy at the call boundary', async t => 
   });
 });
 
+test('GitRemote wildcard push policy binds source and destination names', async t => {
+  const { mount } = await provisionGitContext(t);
+  /** @type {unknown[]} */
+  const pushCalls = [];
+  const backend = harden({
+    ...makeNotYetImplementedBackend(),
+    remotePush: async input => {
+      pushCalls.push(input);
+      return harden({ updatedRefs: [] });
+    },
+  });
+  const git = makeGit({ mount, backend });
+  const { remote } = makeGitRemote({
+    git,
+    name: 'origin',
+    credential: exampleCredential(),
+    policy: {
+      url: 'https://github.com/example/repo.git',
+      allowedDirections: ['push'],
+      fetchRefspecs: [],
+      pushRefspecs: ['refs/heads/safe/*:refs/heads/safe/*'],
+    },
+  });
+
+  await t.throwsAsync(
+    E(remote).push({
+      source: 'refs/heads/safe/topic-a',
+      destination: 'refs/heads/safe/topic-b',
+    }),
+    { message: /outside policy/ },
+  );
+  t.deepEqual(pushCalls, []);
+
+  await E(remote).push({
+    source: 'refs/heads/safe/topic-a',
+    destination: 'refs/heads/safe/topic-a',
+  });
+  t.like(/** @type {{ refspecs?: string[] }} */ (pushCalls[0]), {
+    refspecs: ['refs/heads/safe/topic-a:refs/heads/safe/topic-a'],
+  });
+});
+
 test('makeGitRemote rejects a read-only Git cap', async t => {
   const { git } = await provisionGitContext(t);
   const readOnlyGit = await E(git).readOnly();

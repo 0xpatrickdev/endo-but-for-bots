@@ -688,13 +688,38 @@ export const makeGitRemote = ({
   /**
    * @param {string} ref
    * @param {string} pattern
+   * @returns {string | undefined}
    */
-  const refMatchesPattern = (ref, pattern) => {
+  const refPatternCapture = (ref, pattern) => {
     if (!pattern.includes('*')) {
-      return ref === pattern;
+      return ref === pattern ? '' : undefined;
     }
     const [prefix, suffix] = pattern.split('*');
-    return ref.startsWith(prefix) && ref.endsWith(suffix);
+    if (!ref.startsWith(prefix) || !ref.endsWith(suffix)) {
+      return undefined;
+    }
+    return ref.slice(
+      prefix.length,
+      suffix.length === 0 ? undefined : -suffix.length,
+    );
+  };
+
+  /**
+   * @param {{ src: string, dst: string }} parsed
+   * @param {{ src: string, dst: string }} policyRefspec
+   */
+  const refspecMatchesPattern = (parsed, policyRefspec) => {
+    const srcCapture = refPatternCapture(parsed.src, policyRefspec.src);
+    if (srcCapture === undefined) {
+      return false;
+    }
+    const dstCapture = refPatternCapture(parsed.dst, policyRefspec.dst);
+    if (dstCapture === undefined) {
+      return false;
+    }
+    const policyHasWildcard =
+      policyRefspec.src.includes('*') || policyRefspec.dst.includes('*');
+    return !policyHasWildcard || srcCapture === dstCapture;
   };
 
   /**
@@ -710,10 +735,7 @@ export const makeGitRemote = ({
         refspec,
         'GitRemote policy.pushRefspecs[]',
       );
-      return (
-        refMatchesPattern(parsed.src, policyRefspec.src) &&
-        refMatchesPattern(parsed.dst, policyRefspec.dst)
-      );
+      return refspecMatchesPattern(parsed, policyRefspec);
     });
     if (!allowed) {
       throw new Error(
