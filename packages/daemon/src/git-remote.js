@@ -769,6 +769,22 @@ export const makeGitRemote = ({
     return parseRefspec(concreteFetch, 'GitRemote.pull fetchRefspec').dst;
   };
 
+  /**
+   * @param {unknown} options
+   */
+  const fetchOptionsFromOptions = options => {
+    const opts = /** @type {{ prune?: boolean, tags?: boolean }} */ (
+      options || {}
+    );
+    if (opts.tags && !currentPolicy.allowTags) {
+      throw new Error('GitRemote fetch tags require allowTags: true');
+    }
+    if (opts.prune && !currentPolicy.allowDelete) {
+      throw new Error('GitRemote fetch prune requires allowDelete: true');
+    }
+    return harden({ prune: !!opts.prune, tags: !!opts.tags });
+  };
+
   const remote = makeExo('GitRemote', GitRemoteInterface, {
     async inspect() {
       ensureLive();
@@ -780,19 +796,17 @@ export const makeGitRemote = ({
       let fence;
       try {
         ensureDirection('fetch');
+        const fetchOptions = fetchOptionsFromOptions(options);
         fence = captureOperationFence();
         const transportCredential = ensureCredentialUsable();
         const activeOperation = beginOperation();
-        const opts = /** @type {{ prune?: boolean, tags?: boolean }} */ (
-          options
-        );
         let result;
         try {
           result = await backend.remoteFetch({
             url: currentPolicy.url,
             refspecs: currentPolicy.fetchRefspecs,
-            prune: !!opts.prune,
-            tags: !!opts.tags,
+            prune: fetchOptions.prune,
+            tags: fetchOptions.tags,
             credential: transportCredential,
             signal: activeOperation.signal,
           });
@@ -815,10 +829,11 @@ export const makeGitRemote = ({
       let fence;
       try {
         ensureDirection('fetch');
+        const fetchOptions = fetchOptionsFromOptions(options);
         fence = captureOperationFence();
         const transportCredential = ensureCredentialUsable();
         const opts =
-          /** @type {{ branch?: unknown, strategy?: 'merge' | 'rebase' | 'ff-only', prune?: boolean, tags?: boolean }} */ (
+          /** @type {{ branch?: unknown, strategy?: 'merge' | 'rebase' | 'ff-only' }} */ (
             options
           );
         const activeOperation = beginOperation();
@@ -827,8 +842,8 @@ export const makeGitRemote = ({
           fetch = await backend.remoteFetch({
             url: currentPolicy.url,
             refspecs: currentPolicy.fetchRefspecs,
-            prune: !!opts.prune,
-            tags: !!opts.tags,
+            prune: fetchOptions.prune,
+            tags: fetchOptions.tags,
             credential: transportCredential,
             signal: activeOperation.signal,
           });

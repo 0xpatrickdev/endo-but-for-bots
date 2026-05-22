@@ -603,6 +603,7 @@ test('GitRemote fetch / pull / push use the bounded native data plane', async t 
       allowedDirections: ['fetch', 'push'],
       fetchRefspecs: ['+refs/heads/main:refs/remotes/origin/main'],
       pushRefspecs: ['refs/heads/agent/*:refs/heads/agent/*'],
+      allowDelete: true,
     },
   });
 
@@ -715,6 +716,47 @@ test('GitRemote enforces allowedDirections at the call boundary', async t => {
   );
   t.like(audit[1], { type: 'push', outcome: 'error' });
   t.regex(audit[1].message, /does not permit "push"/);
+});
+
+test('GitRemote enforces tag and prune policy at the call boundary', async t => {
+  const { mount } = await provisionGitContext(t);
+  /** @type {unknown[]} */
+  const fetchCalls = [];
+  const backend = harden({
+    ...makeNotYetImplementedBackend(),
+    remoteFetch: async input => {
+      fetchCalls.push(input);
+      return harden({ updatedRefs: [] });
+    },
+  });
+  const git = makeGit({ mount, backend });
+  const { remote, controller } = makeGitRemote({
+    git,
+    name: 'origin',
+    credential: exampleCredential(),
+    policy: {
+      url: 'https://github.com/example/repo.git',
+      allowedDirections: ['fetch'],
+      fetchRefspecs: ['+refs/heads/*:refs/remotes/origin/*'],
+      pushRefspecs: [],
+    },
+  });
+
+  await t.throwsAsync(E(remote).fetch({ tags: true }), {
+    message: /tags require allowTags/,
+  });
+  await t.throwsAsync(E(remote).pull({ prune: true }), {
+    message: /prune requires allowDelete/,
+  });
+  t.deepEqual(fetchCalls, []);
+
+  await E(controller).setAllowTags(true);
+  await E(controller).setAllowDelete(true);
+  await E(remote).fetch({ tags: true, prune: true });
+  t.like(/** @type {{ tags?: boolean, prune?: boolean }} */ (fetchCalls[0]), {
+    tags: true,
+    prune: true,
+  });
 });
 
 test('makeGitRemote rejects a read-only Git cap', async t => {
