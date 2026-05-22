@@ -327,6 +327,23 @@ export const HostInterface = M.interface('EndoHost', {
   provideScratchMount: M.call(NameOrPathShape)
     .optional(M.splitRecord({}, { readOnly: M.boolean() }))
     .returns(M.promise()),
+  // Derive local and remote Git capabilities
+  provideGit: M.call(M.remotable(), NameOrPathShape).returns(M.promise()),
+  provideGitRemote: M.call(
+    M.remotable(),
+    NameOrPathShape,
+    M.recordOf(M.string(), M.any()),
+  ).returns(M.promise()),
+  provideBearerCredential: M.call(
+    NameOrPathShape,
+    M.recordOf(M.string(), M.any()),
+  ).returns(M.promise()),
+  provideBasicCredential: M.call(
+    NameOrPathShape,
+    M.recordOf(M.string(), M.any()),
+  ).returns(M.promise()),
+  getGitCredentialController: M.call(M.remotable()).returns(M.promise()),
+  getGitRemoteController: M.call(M.remotable()).returns(M.promise()),
   // Resolve a Mount capability to its host filesystem path. This is
   // deliberately part of the fully privileged EndoHost surface used
   // by the @endo/sandbox factory (and similar make-unconfined
@@ -590,6 +607,97 @@ export const MountEntryInterface = M.interface('EndoMountEntry', {
   displayPath: M.call().returns(M.string()),
   child: M.call(M.string()).returns(MountEntryShape),
   help: M.call().returns(M.string()),
+});
+
+const RefArgShape = M.or(M.string(), M.recordOf(M.string(), M.any()));
+const GitDirectionShape = M.or(M.eq('fetch'), M.eq('push'));
+
+export const GitInterface = M.interface('Git', {
+  worktree: M.call().returns(M.remotable()),
+  status: M.call().returns(M.promise()),
+  diff: M.call().optional(M.recordOf(M.string(), M.any())).returns(M.promise()),
+  log: M.call().optional(M.recordOf(M.string(), M.any())).returns(M.promise()),
+  show: M.call(RefArgShape).returns(M.promise()),
+  revParse: M.call(RefArgShape).returns(M.promise()),
+  add: M.call(M.arrayOf(M.remotable())).returns(M.promise()),
+  restore: M.call(M.arrayOf(M.remotable()))
+    .optional(M.recordOf(M.string(), M.any()))
+    .returns(M.promise()),
+  commit: M.call(M.string()).returns(M.promise()),
+  currentBranch: M.call().returns(M.promise()),
+  branches: M.call().returns(M.promise()),
+  createBranch: M.call(M.string())
+    .optional(M.recordOf(M.string(), M.any()))
+    .returns(M.promise()),
+  deleteBranch: M.call(M.string())
+    .optional(M.recordOf(M.string(), M.any()))
+    .returns(M.promise()),
+  renameBranch: M.call(M.string(), M.string()).returns(M.promise()),
+  switchBranch: M.call(M.string()).returns(M.promise()),
+  detach: M.call(RefArgShape).returns(M.promise()),
+  switch: M.call(RefArgShape).returns(M.promise()),
+  merge: M.call(RefArgShape)
+    .optional(M.recordOf(M.string(), M.any()))
+    .returns(M.promise()),
+  rebase: M.call(M.recordOf(M.string(), M.any())).returns(M.promise()),
+  stashPush: M.call()
+    .optional(M.recordOf(M.string(), M.any()))
+    .returns(M.promise()),
+  stashList: M.call().returns(M.promise()),
+  stashShow: M.call().optional(M.number()).returns(M.promise()),
+  stashApply: M.call().optional(M.number()).returns(M.promise()),
+  stashPop: M.call().optional(M.number()).returns(M.promise()),
+  stashDrop: M.call().optional(M.number()).returns(M.promise()),
+  tree: M.call(RefArgShape).returns(M.promise()),
+  readOnly: M.call().returns(M.remotable()),
+});
+
+export const GitRemoteInterface = M.interface('GitRemote', {
+  inspect: M.call().returns(M.promise()),
+  fetch: M.call()
+    .optional(M.recordOf(M.string(), M.any()))
+    .returns(M.promise()),
+  pull: M.call()
+    .optional(M.recordOf(M.string(), M.any()))
+    .returns(M.promise()),
+  push: M.call()
+    .optional(M.recordOf(M.string(), M.any()))
+    .returns(M.promise()),
+});
+
+export const GitRemoteControllerInterface = M.interface(
+  'GitRemoteController',
+  {
+    inspect: M.call().returns(M.promise()),
+    audit: M.call().returns(M.promise()),
+    setAllowedDirections: M.call(M.arrayOf(GitDirectionShape)).returns(
+      M.promise(),
+    ),
+    setFetchRefspecs: M.call(M.arrayOf(M.string())).returns(M.promise()),
+    setPushRefspecs: M.call(M.arrayOf(M.string())).returns(M.promise()),
+    setAllowedBranches: M.call(M.arrayOf(M.string())).returns(M.promise()),
+    setAllowForcePush: M.call(M.boolean()).returns(M.promise()),
+    setAllowTags: M.call(M.boolean()).returns(M.promise()),
+    setAllowDelete: M.call(M.boolean()).returns(M.promise()),
+    revoke: M.call().returns(M.promise()),
+  },
+);
+
+export const GitCredentialControllerInterface = M.interface(
+  'GitCredentialController',
+  {
+    inspect: M.call().returns(M.promise()),
+    rotate: M.call(M.recordOf(M.string(), M.any())).returns(M.promise()),
+    revoke: M.call().returns(M.promise()),
+  },
+);
+
+export const BearerCredentialInterface = M.interface('BearerCredential', {
+  audience: M.call().returns(M.string()),
+});
+
+export const BasicCredentialInterface = M.interface('BasicCredential', {
+  audience: M.call().returns(M.string()),
 });
 
 export const ReadableTreeInterface = M.interface('EndoReadableTree', {

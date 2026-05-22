@@ -224,12 +224,54 @@ type ScratchMountFormula = {
   readOnly: boolean;
 };
 
+export type GitFormula = {
+  type: 'git';
+  mountId: FormulaIdentifier;
+};
+
+export type GitCredentialFormula = {
+  type: 'git-credential';
+  kind: 'bearer' | 'basic';
+  audience: string;
+};
+
+export type GitRemoteFormula = {
+  type: 'git-remote';
+  gitId: FormulaIdentifier;
+  credentialId?: FormulaIdentifier;
+  name: string;
+  policy: {
+    url: string;
+    allowedDirections: Array<'fetch' | 'push'>;
+    fetchRefspecs: string[];
+    pushRefspecs: string[];
+    allowedBranches?: string[];
+    allowForcePush?: boolean;
+    allowTags?: boolean;
+    allowDelete?: boolean;
+    allowLocalFileTransport?: boolean;
+  };
+  revoked?: boolean;
+};
+
 export type MountDeferredTaskParams = {
   mountId: FormulaIdentifier;
 };
 
 export type ScratchMountDeferredTaskParams = {
   scratchMountId: FormulaIdentifier;
+};
+
+export type GitDeferredTaskParams = {
+  gitId: FormulaIdentifier;
+};
+
+export type GitCredentialDeferredTaskParams = {
+  gitCredentialId: FormulaIdentifier;
+};
+
+export type GitRemoteDeferredTaskParams = {
+  gitRemoteId: FormulaIdentifier;
 };
 
 type LookupFormula = {
@@ -411,6 +453,9 @@ export type Formula =
   | ReadableTreeFormula
   | MountFormula
   | ScratchMountFormula
+  | GitFormula
+  | GitCredentialFormula
+  | GitRemoteFormula
   | LookupFormula
   | MakeUnconfinedFormula
   | MakeArchiveFormula
@@ -1067,6 +1112,34 @@ export interface EndoHost extends EndoAgent {
     opts?: { readOnly?: boolean },
   ): Promise<EndoMount>;
   provideScratchMount(petName: string | string[]): Promise<EndoMount>;
+  provideGit(mountCap: unknown, petName: string | string[]): Promise<unknown>;
+  provideGitRemote(
+    gitCap: unknown,
+    petName: string | string[],
+    opts: {
+      name: string;
+      url: string;
+      allowedDirections?: Array<'fetch' | 'push'>;
+      fetchRefspecs?: string[];
+      pushRefspecs?: string[];
+      allowedBranches?: string[];
+      allowForcePush?: boolean;
+      allowTags?: boolean;
+      allowDelete?: boolean;
+      allowLocalFileTransport?: boolean;
+      credential?: unknown;
+    },
+  ): Promise<unknown>;
+  provideBearerCredential(
+    petName: string | string[],
+    options: { audience: string; token: string },
+  ): Promise<unknown>;
+  provideBasicCredential(
+    petName: string | string[],
+    options: { audience: string; username: string; password: string },
+  ): Promise<unknown>;
+  getGitCredentialController(credential: unknown): Promise<unknown>;
+  getGitRemoteController(remote: unknown): Promise<unknown>;
   /**
    * Privileged bridge from a daemon-minted top-level Mount cap to its
    * host filesystem path. EndoHost is a fully privileged authority;
@@ -1790,6 +1863,26 @@ export interface DaemonCore {
     readOnly: boolean,
     deferredTasks: DeferredTasks<ScratchMountDeferredTaskParams>,
   ) => FormulateResult<EndoMount>;
+
+  formulateGit: (
+    mountId: FormulaIdentifier,
+    deferredTasks: DeferredTasks<GitDeferredTaskParams>,
+  ) => FormulateResult<unknown>;
+
+  formulateGitCredential: (
+    kind: GitCredentialFormula['kind'],
+    audience: string,
+    material: Record<string, string>,
+    deferredTasks: DeferredTasks<GitCredentialDeferredTaskParams>,
+  ) => FormulateResult<unknown>;
+
+  formulateGitRemote: (
+    gitId: FormulaIdentifier,
+    credentialId: FormulaIdentifier | undefined,
+    name: string,
+    policy: GitRemoteFormula['policy'],
+    deferredTasks: DeferredTasks<GitRemoteDeferredTaskParams>,
+  ) => FormulateResult<unknown>;
 
   formulateInvitation: (
     hostAgentId: FormulaIdentifier,
