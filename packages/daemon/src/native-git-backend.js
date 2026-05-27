@@ -15,11 +15,9 @@ import { URL } from 'node:url';
 
 import { q } from '@endo/errors';
 import { makeExo } from '@endo/exo';
-import {
-  ReadableBlobInterface,
-  ReadableTreeInterface,
-} from '@endo/platform/fs/lite';
+import { ReadableBlobInterface } from '@endo/platform/fs/lite';
 
+import { GitTreeInterface } from './interfaces.js';
 import { makeReaderRef } from './reader-ref.js';
 
 /** @import { GitBackend, GitCommit, GitRef } from './git.js' */
@@ -1380,7 +1378,13 @@ export const makeNativeGitBackend = ({ repoRoot }) => {
       return self;
     };
 
-    self = makeExo('GitTree', ReadableTreeInterface, {
+    self = makeExo('GitTree', GitTreeInterface, {
+      archiveTar() {
+        return makeReaderRef(
+          streamGitBuffer(['archive', '--format=tar', treeOid]),
+        );
+      },
+
       async has(...pathArgs) {
         const segments = normalizeTreePath(pathArgs);
         if (segments.length === 0) {

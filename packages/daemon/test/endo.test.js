@@ -11,6 +11,8 @@ import fsp from 'fs/promises';
 import path from 'path';
 import crypto from 'crypto';
 import fs from 'fs';
+import { execFile } from 'child_process';
+import { promisify as nodePromisify } from 'util';
 import { E, Far } from '@endo/far';
 import { makeExo } from '@endo/exo';
 import { M } from '@endo/patterns';
@@ -44,6 +46,7 @@ import {
  */
 
 const cryptoPowers = makeCryptoPowers(crypto);
+const execFileAsync = nodePromisify(execFile);
 
 const { raw } = String;
 
@@ -3935,6 +3938,162 @@ const createMountFixture = async (basePath, files) => {
     await fs.promises.writeFile(fullPath, content, 'utf-8');
   }
 };
+
+/**
+ * @param {string} repoPath
+ * @param {string[]} args
+ */
+const git = (repoPath, args) => execFileAsync('git', args, { cwd: repoPath });
+
+/**
+ * @param {string} repoPath
+ */
+const createGitFixture = async repoPath => {
+  await fs.promises.rm(repoPath, { recursive: true, force: true });
+  await fs.promises.mkdir(repoPath, { recursive: true });
+  await git(repoPath, ['init', '-q', '-b', 'main']);
+  await fs.promises.writeFile(
+    path.join(repoPath, 'README.md'),
+    'initial\n',
+    'utf-8',
+  );
+  await git(repoPath, ['add', 'README.md']);
+  await git(repoPath, [
+    '-c',
+    'user.email=t@t',
+    '-c',
+    'user.name=T',
+    'commit',
+    '-m',
+    'initial commit',
+  ]);
+};
+
+/**
+ * @param {object} options
+ * @param {string} options.name
+ * @param {string} [options.typeFlag]
+ * @param {string | Uint8Array} [options.body]
+ * @param {string} [options.linkName]
+ */
+const makeTarEntry = ({ name, typeFlag = '0', body = '', linkName = '' }) => {
+  const content =
+    typeof body === 'string' ? Buffer.from(body, 'utf8') : Buffer.from(body);
+  const header = Buffer.alloc(512);
+  header.write(name, 0, 100, 'utf8');
+  header.write('0000644\0', 100, 8, 'ascii');
+  header.write('0000000\0', 108, 8, 'ascii');
+  header.write('0000000\0', 116, 8, 'ascii');
+  header.write(
+    `${content.byteLength.toString(8).padStart(11, '0')}\0`,
+    124,
+    12,
+    'ascii',
+  );
+  header.write('00000000000\0', 136, 12, 'ascii');
+  header.write(typeFlag, 156, 1, 'ascii');
+  header.write(linkName, 157, 100, 'utf8');
+  header.write('ustar\0', 257, 6, 'ascii');
+  const padding = Buffer.alloc(
+    (512 - (content.byteLength % 512)) % 512,
+  );
+  return Buffer.concat([header, content, padding]);
+};
+
+/**
+ * @param {Uint8Array} archiveBytes
+ */
+const makeArchiveTree = archiveBytes =>
+  Far('ArchiveTree', {
+    archiveTar: () => makeReaderRef([archiveBytes]),
+  });
+
+test('provideGit tree exposes immutable commit contents', async t => {
+  const { host, config } = await prepareHost(t);
+
+  const repoPath = path.join(config.statePath, '..', 'git-tree-repo');
+  await createGitFixture(repoPath);
+  await fs.promises.mkdir(path.join(repoPath, 'src'));
+  await fs.promises.writeFile(
+    path.join(repoPath, 'src', 'main.js'),
+    'export default 1;\n',
+    'utf-8',
+  );
+  await git(repoPath, ['add', 'src/main.js']);
+  await git(repoPath, [
+    '-c',
+    'user.email=t@t',
+    '-c',
+    'user.name=T',
+    'commit',
+    '-m',
+    'add source',
+  ]);
+
+  const mount = await E(host).provideMount(repoPath, 'git-tree-worktree');
+  const gitCap = await E(host).provideGit(mount, 'git-tree-cap');
+  const tree = await E(gitCap).tree('HEAD');
+  // eslint-disable-next-line no-underscore-dangle
+  const treeMethods = await E(tree).__getMethodNames__();
+  t.true(treeMethods.includes('archiveTar'));
+
+  const names = await E(tree).list();
+  t.deepEqual(names, ['README.md', 'src']);
+  const src = await E(tree).lookup('src');
+  t.deepEqual(await E(src).list(), ['main.js']);
+
+  const main = await E(tree).lookup(['src', 'main.js']);
+  t.is(await E(main).text(), 'export default 1;\n');
+  await fs.promises.writeFile(
+    path.join(repoPath, 'src', 'main.js'),
+    'export default 2;\n',
+    'utf-8',
+  );
+  t.is(await E(main).text(), 'export default 1;\n');
+
+  await E(host).storeTree(tree, 'git-tree-snapshot');
+  const storedTree = await E(host).lookup('git-tree-snapshot');
+  const storedMain = await E(storedTree).lookup(['src', 'main.js']);
+  t.is(await E(storedMain).text(), 'export default 1;\n');
+});
+
+test('storeTree rejects malformed archiveTar streams', async t => {
+  const { host } = await prepareHost(t);
+
+  const cases = [
+    {
+      name: 'traversal',
+      bytes: makeTarEntry({ name: '../escape.txt', body: 'bad' }),
+      message: /Invalid tar entry path segment/,
+    },
+    {
+      name: 'duplicate',
+      bytes: Buffer.concat([
+        makeTarEntry({ name: 'same.txt', body: 'one' }),
+        makeTarEntry({ name: 'same.txt', body: 'two' }),
+      ]),
+      message: /Duplicate tar entry path/,
+    },
+    {
+      name: 'truncated',
+      bytes: Buffer.alloc(64),
+      message: /Truncated tar header/,
+    },
+    {
+      name: 'unsupported',
+      bytes: makeTarEntry({ name: 'fifo', typeFlag: '6' }),
+      message: /Unsupported tar entry type/,
+    },
+  ];
+
+  for (const { name, bytes, message } of cases) {
+    const archiveTree = makeArchiveTree(bytes);
+    // eslint-disable-next-line no-await-in-loop
+    await t.throwsAsync(E(host).storeTree(archiveTree, `bad-${name}`), {
+      message,
+    });
+  }
+});
 
 // --- Retention sync tests ---
 

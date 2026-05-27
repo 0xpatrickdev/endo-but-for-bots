@@ -915,6 +915,65 @@ export interface ReadableTreeView {
   lookup(path: string | string[]): Promise<ReadableTreeView | ReadableBlobView>;
 }
 
+export interface EndoGitTree {
+  archiveTar(): FarRef<Reader<string>>;
+  has(...pathSegments: string[]): Promise<boolean>;
+  list(...pathSegments: string[]): Promise<string[]>;
+  lookup(path: string | string[]): Promise<EndoGitTree | EndoReadable>;
+}
+
+export type EndoGitRef = {
+  name: string;
+  kind: 'branch' | 'tag' | 'commit' | 'detached';
+  oid?: string;
+};
+
+export type EndoGitCommit = {
+  oid: string;
+  summary: string;
+  author?: string;
+  committedAt?: number;
+};
+
+export interface EndoGit {
+  worktree(): EndoMount;
+  status(): Promise<unknown[]>;
+  diff(options?: Record<string, unknown>): Promise<string>;
+  log(options?: Record<string, unknown>): Promise<EndoGitCommit[]>;
+  show(ref: string | EndoGitRef): Promise<string>;
+  revParse(ref: string | EndoGitRef): Promise<EndoGitRef>;
+  add(entries: unknown[]): Promise<void>;
+  restore(
+    entries: unknown[],
+    options?: Record<string, unknown>,
+  ): Promise<void>;
+  commit(message: string): Promise<EndoGitCommit>;
+  currentBranch(): Promise<EndoGitRef | undefined>;
+  branches(): Promise<EndoGitRef[]>;
+  createBranch(
+    name: string,
+    options?: Record<string, unknown>,
+  ): Promise<EndoGitRef>;
+  deleteBranch(name: string, options?: Record<string, unknown>): Promise<void>;
+  renameBranch(from: string, to: string): Promise<void>;
+  switchBranch(name: string): Promise<void>;
+  detach(ref: string | EndoGitRef): Promise<void>;
+  switch(ref: string | EndoGitRef): Promise<void>;
+  merge(
+    ref: string | EndoGitRef,
+    options?: Record<string, unknown>,
+  ): Promise<string>;
+  rebase(options: Record<string, unknown>): Promise<string>;
+  stashPush(options?: Record<string, unknown>): Promise<string>;
+  stashList(): Promise<string[]>;
+  stashShow(index?: number): Promise<string>;
+  stashApply(index?: number): Promise<void>;
+  stashPop(index?: number): Promise<void>;
+  stashDrop(index?: number): Promise<void>;
+  tree(ref: string | EndoGitRef): Promise<EndoGitTree>;
+  readOnly(): EndoGit;
+}
+
 /**
  * `EndoMountFile` is a daemon-local specialization of the platform
  * `File` contract.  Mount-specific surface (`stat`, `snapshot`,
@@ -1112,7 +1171,7 @@ export interface EndoHost extends EndoAgent {
     opts?: { readOnly?: boolean },
   ): Promise<EndoMount>;
   provideScratchMount(petName: string | string[]): Promise<EndoMount>;
-  provideGit(mountCap: unknown, petName: string | string[]): Promise<unknown>;
+  provideGit(mountCap: unknown, petName: string | string[]): Promise<EndoGit>;
   provideGitRemote(
     gitCap: unknown,
     petName: string | string[],

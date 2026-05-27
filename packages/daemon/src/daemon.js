@@ -99,6 +99,218 @@ import {
  * @typedef {{ kind: 'bearer', token: string } | { kind: 'basic', username: string, password: string }} GitCredentialMaterial
  */
 
+const TAR_BLOCK_SIZE = 512;
+
+/** @typedef {{ type: 'blob', sha256: string }} TarBlobNode */
+/** @typedef {{ type: 'tree', entries: Map<string, TarNode> }} TarTreeNode */
+/** @typedef {TarBlobNode | TarTreeNode} TarNode */
+/**
+ * @typedef {object} ArchiveTreeMethods
+ * @property {() => Promise<string[]>} __getMethodNames__
+ * @property {() => Promise<import('@endo/far').ERef<AsyncIterator<string>>>} archiveTar
+ */
+
+/**
+ * @param {Uint8Array} bytes
+ */
+const isZeroTarBlock = bytes => bytes.every(byte => byte === 0);
+
+/**
+ * @param {Uint8Array} field
+ */
+const tarString = field => {
+  const nul = field.indexOf(0);
+  const end = nul < 0 ? field.length : nul;
+  return bytesToText(field.slice(0, end));
+};
+
+/**
+ * @param {Uint8Array} field
+ */
+const tarOctal = field => {
+  const text = tarString(field).trim();
+  if (text === '') {
+    return 0;
+  }
+  if (!/^[0-7]+$/u.test(text)) {
+    throw new Error(`Invalid tar octal field ${q(text)}`);
+  }
+  return Number.parseInt(text, 8);
+};
+
+/**
+ * @param {string} archivePath
+ */
+const tarPathSegments = archivePath => {
+  if (
+    archivePath === '' ||
+    archivePath.startsWith('/') ||
+    archivePath.includes('\0')
+  ) {
+    throw new Error(`Invalid tar entry path ${q(archivePath)}`);
+  }
+  const segments = archivePath.split('/').filter(Boolean);
+  if (segments.length === 0) {
+    throw new Error(`Invalid tar entry path ${q(archivePath)}`);
+  }
+  for (const segment of segments) {
+    if (
+      segment === '.' ||
+      segment === '..' ||
+      segment.includes('/') ||
+      segment.includes('\0')
+    ) {
+      throw new Error(`Invalid tar entry path segment ${q(segment)}`);
+    }
+  }
+  return segments;
+};
+
+/**
+ * @param {import('@endo/far').ERef<AsyncIterator<string>>} readerRef
+ */
+const readAllBase64 = async readerRef => {
+  /** @type {Uint8Array[]} */
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of makeRefReader(readerRef)) {
+    chunks.push(chunk);
+    size += chunk.byteLength;
+  }
+  const bytes = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
+};
+
+/**
+ * Store a git archive tar stream into the daemon content store's tree JSON
+ * format. This accepts only the regular files, directories, and symlinks that
+ * native `git archive --format=tar` emits.
+ *
+ * @param {import('@endo/far').ERef<AsyncIterator<string>>} readerRef
+ * @param {import('@endo/platform/fs/lite/types').SnapshotStore} contentStore
+ */
+const checkinTarTree = async (readerRef, contentStore) => {
+  const archive = await readAllBase64(readerRef);
+
+  /** @type {TarTreeNode} */
+  const root = { type: 'tree', entries: new Map() };
+  const seenPaths = new Set();
+
+  /**
+   * @param {Uint8Array} bytes
+   */
+  const storeBytes = async bytes => {
+    async function* singleChunk() {
+      yield bytes;
+    }
+    return contentStore.store(singleChunk());
+  };
+
+  /**
+   * @param {string[]} segments
+   */
+  const ensureDirectory = segments => {
+    let dir = root;
+    for (const segment of segments) {
+      const existing = dir.entries.get(segment);
+      if (existing === undefined) {
+        /** @type {TarTreeNode} */
+        const child = { type: 'tree', entries: new Map() };
+        dir.entries.set(segment, child);
+        dir = child;
+      } else if (existing.type === 'tree') {
+        dir = existing;
+      } else {
+        throw new Error(`Tar entry path conflicts with blob ${q(segment)}`);
+      }
+    }
+    return dir;
+  };
+
+  /**
+   * @param {string[]} segments
+   * @param {Uint8Array} bytes
+   */
+  const putBlob = async (segments, bytes) => {
+    const name = segments[segments.length - 1];
+    const parent = ensureDirectory(segments.slice(0, -1));
+    if (parent.entries.has(name)) {
+      throw new Error(`Duplicate tar entry path ${q(segments.join('/'))}`);
+    }
+    parent.entries.set(name, {
+      type: 'blob',
+      sha256: await storeBytes(bytes),
+    });
+  };
+
+  for (let offset = 0; offset < archive.byteLength; ) {
+    const header = archive.slice(offset, offset + TAR_BLOCK_SIZE);
+    if (header.byteLength < TAR_BLOCK_SIZE) {
+      throw new Error('Truncated tar header');
+    }
+    if (isZeroTarBlock(header)) {
+      break;
+    }
+    const name = tarString(header.slice(0, 100));
+    const size = tarOctal(header.slice(124, 136));
+    const typeFlag = tarString(header.slice(156, 157)) || '0';
+    const linkName = tarString(header.slice(157, 257));
+    const prefix = tarString(header.slice(345, 500));
+    const archivePath = prefix ? `${prefix}/${name}` : name;
+    const segments = tarPathSegments(archivePath);
+    const normalizedPath = segments.join('/');
+    if (seenPaths.has(normalizedPath)) {
+      throw new Error(`Duplicate tar entry path ${q(normalizedPath)}`);
+    }
+    seenPaths.add(normalizedPath);
+
+    const contentStart = offset + TAR_BLOCK_SIZE;
+    const contentEnd = contentStart + size;
+    if (contentEnd > archive.byteLength) {
+      throw new Error(`Truncated tar content for ${q(archivePath)}`);
+    }
+
+    if (typeFlag === '5') {
+      ensureDirectory(segments);
+    } else if (typeFlag === '0' || typeFlag === '\0') {
+      await putBlob(segments, archive.slice(contentStart, contentEnd));
+    } else if (typeFlag === '2') {
+      await putBlob(segments, bytesFromText(linkName));
+    } else {
+      throw new Error(
+        `Unsupported tar entry type ${q(typeFlag)} for ${q(archivePath)}`,
+      );
+    }
+
+    offset = contentStart + Math.ceil(size / TAR_BLOCK_SIZE) * TAR_BLOCK_SIZE;
+  }
+
+  /**
+   * @param {TarTreeNode} tree
+   */
+  const storeTree = async tree => {
+    /** @type {Array<[string, string, string]>} */
+    const entries = [];
+    for (const [name, child] of tree.entries) {
+      if (child.type === 'tree') {
+        entries.push([name, 'tree', await storeTree(child)]);
+      } else {
+        entries.push([name, 'blob', child.sha256]);
+      }
+    }
+    entries.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+    return storeBytes(bytesFromText(JSON.stringify(entries)));
+  };
+
+  return storeTree(root);
+};
+harden(checkinTarTree);
+
 /**
  * Creates a delayed promise that can be cancelled.
  *
@@ -3742,11 +3954,17 @@ const makeDaemonCore = async (
       withFormulaGraphLock(async () => {
         await null;
 
-        // Walk the remote tree and store all content via the platform adapter.
-        const { sha256: treeSha256 } = await platformCheckinTree(
-          remoteTree,
-          contentStore,
+        const archiveTree = /** @type {import('@endo/far').ERef<ArchiveTreeMethods>} */ (
+          remoteTree
         );
+        const methods =
+          // eslint-disable-next-line no-underscore-dangle
+          await E(archiveTree)
+            .__getMethodNames__()
+            .catch(() => /** @type {string[]} */ ([]));
+        const treeSha256 = methods.includes('archiveTar')
+          ? await checkinTarTree(await E(archiveTree).archiveTar(), contentStore)
+          : (await platformCheckinTree(remoteTree, contentStore)).sha256;
 
         const formulaNumber = /** @type {FormulaNumber} */ (
           await randomHex256()
