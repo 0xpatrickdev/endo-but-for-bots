@@ -31,7 +31,8 @@ agent loop, which now goes through pi-ai's multi-provider registry.
 
 The agent is configured via environment variables. The legacy
 `LAL_HOST` + `LAL_MODEL` + `LAL_AUTH_TOKEN` triple is translated at
-worker spawn time into a pi-ai `provider/modelId` string:
+worker spawn time into a pi-ai model plus a worker-local API-key
+resolver:
 
 | `LAL_HOST` matches                              | pi-ai provider                               |
 | ----------------------------------------------- | -------------------------------------------- |
@@ -39,11 +40,12 @@ worker spawn time into a pi-ai `provider/modelId` string:
 | `generativelanguage.googleapis.com` or `gemini` | `google`                                     |
 | `openrouter`                                    | `openrouter`                                 |
 | `openai.com`                                    | `openai`                                     |
-| `:11434` (default Ollama port)                  | `ollama` (via @endo/genie's adaptor)         |
-| anything else with `/v1`                        | `openai` (OpenAI-compatible, e.g. llama.cpp) |
+| `:11434` (default Ollama port)                  | custom Ollama-compatible model               |
+| anything else with `/v1`                        | custom OpenAI-compatible model               |
+| anything else                                   | custom Ollama-compatible model               |
 
-`LAL_AUTH_TOKEN` is forwarded into `process.env.<PROVIDER>_API_KEY` so
-pi-ai's adaptor finds it.
+`LAL_AUTH_TOKEN` is passed to pi-agent-core for that worker only; it is
+not written into `process.env`.
 
 | Variable         | Description                          | Default                  |
 | ---------------- | ------------------------------------ | ------------------------ |
