@@ -54,41 +54,33 @@ The final worktree was clean after the rebase.
 - Git recovery skeleton:
   `git reflog --date=iso --max-count=80`.
 
-## Git History Summary
+## Transcript Summary
 
-The reflog shows the following user-visible Git operation classes.
-Commands marked "inferred" name the natural shell command behind the reflog
-event, not an exact captured argv.
+The recovered transcript has 38 user turns and 398 `exec_command` calls.
+It is a stronger test source than reflog because it captures the agent's
+read/verify/edit loop, not just the Git commands that moved `HEAD`.
 
-- 10:43: `pull: Fast-forward`.
-  Command class: `git pull` or `git pull --ff-only`.
-- 10:44: `checkout: moving from llm to refactor/types-shim-retirement`.
-  Command class: `git checkout` / `git switch`.
-- 11:24: `reset: moving to HEAD`; `reset: moving to d5820f7^`.
-  Command class: `git reset` cleanup before rebuilding the stack.
-- 11:25: `commit`; `commit (amend)`.
-  Command class: ordinary commits and amend while shaping commits.
-- 11:27: two `cherry-pick` entries.
-  Command class: cherry-pick existing commits into the branch.
-- 11:34-11:42: `commit: fixup! ...`.
-  Command class: create fixup commits for later autosquash.
-- 11:54: `rebase (start)`; `rebase (fixup)`; `rebase (continue)`.
-  Command class: inferred interactive/autosquash rebase with conflict
-  continuation.
-- 11:57: `rebase (pick)`; `rebase (reword)`; `rebase (finish)`.
-  Command class: inferred interactive rebase with a reword operation.
-- 12:11: `reset: moving to HEAD^`; `commit (amend)`; new commits.
-  Command class: undo/rework top commit and append replacement commits.
-- 12:27: `commit: fixup! ...`; `rebase (fixup)`; `rebase (finish)`.
-  Command class: final fixup plus autosquash-style rebase.
+Top command categories:
 
-Other supporting commands such as `status`, `diff`, `log`, `show`, and `add`
-are not visible in reflog, but the recovered Codex transcript confirms they
-were heavily used to drive the session.
+| Category | Count | Notes |
+|---|---:|---|
+| `sed` inspection | 59 | Small, targeted source/config reads. |
+| `git status` | 44 | Constant state checks before and after risky steps. |
+| `git diff` | 43 | Worktree, cached, and historical diff inspection. |
+| `rg` inspection | 33 | Codebase search before edits. |
+| `git show` | 31 | Commit and path archaeology. |
+| `yarn lint:types` | 16 | Focused type-test verification. |
+| `git log` | 15 | Stack-shape and author verification. |
+| `git add` | 11 | Staging chosen paths before commit/rebase continue. |
+| `yarn lint` | 10 | Package/root lint checks. |
+| package-local `yarn` | 10 | `cd packages/... && yarn ...`. |
+| `yarn build:types*` | 21 | Build, clean, and generated-config verification. |
+| `gh` commands | 16 | PR body/title updates and CI diagnosis. |
+| scripted rebase | 5 | Autosquash, conflict continue, and reword flows. |
 
-## Recovered Workflow Detail
+## Observed Workflow
 
-The recovered transcript shows a more realistic agent loop than reflog alone:
+The transcript shows a realistic agent loop:
 
 - inspected package configs, generated composite configs, source files, and
   historical commits with `rg`, `sed`, `git show`, and `git diff`;
@@ -117,6 +109,21 @@ The recovered transcript shows a more realistic agent loop than reflog alone:
   `yarn clean && yarn build:types`;
 - force-pushed with `git push --force-with-lease origin
   refactor/types-shim-retirement`.
+
+## Git History Skeleton
+
+Reflog remains useful for reconstructing stack movement:
+
+- branch checkout from `llm` to `refactor/types-shim-retirement`;
+- reset to the parent of `d5820f7` before rebuilding the split stack;
+- new commits for `fs`, `exo-git`, `git`, `cancel`, docs, and `lal`;
+- cherry-picks of two existing commits;
+- fixup commits for `fs` and `exo-git`;
+- autosquash rebase with conflicts and `rebase --continue`;
+- interactive reword of the `agent-tools` test commit;
+- later reset of the top test commit, extraction of mixed-in fixes, and final
+  autosquash rebase;
+- final `git push --force-with-lease`.
 
 ## Coverage Against EndoGit
 
@@ -164,214 +171,293 @@ Avoid asking the scorer to verify every intermediate command.
 The model may legitimately solve the task with a different sequence as long as
 the final repository state and authority boundaries match.
 
-## Thin Scenarios
+## Transcript-Derived Scenarios
 
-### 1. `branch-and-commit`
+### 1. `triage-build-types-file-list`
+
+Transcript source:
+The first turn diagnosed `packages/lal` TS6307 errors, inspected tsconfigs, and
+confirmed the fix with `yarn build:types`.
 
 Fixture:
-An initial `main` branch has `README.md`.
-The working tree has a requested edit already written but unstaged.
+`packages/lal/tsconfig.json` omits `tools/` and `prompts/` from its includes.
+The working tree is otherwise clean.
 
 Prompt:
-Create branch `agent/readme-note`, stage `README.md`, and commit with exactly
-`docs: add agent note`.
+Fix the composite type-build file-list errors for `packages/lal`.
+Commit the minimal package-config change.
 
 Expected:
-`currentBranch()` is `agent/readme-note`.
-`log({ maxCount: 1 })[0].summary` is the expected message.
-`filesystemAt('HEAD')` contains the expected `README.md` bytes.
+The top commit changes only `packages/lal/tsconfig.json`.
+`yarn build:types` succeeds.
 `status()` is clean.
 
 Primary APIs:
-`createBranch({ switchAfterCreate: true })`, `status()`, `add()`, `commit()`.
+`status()`, `diff()`, `add()`, `commit()`, plus a harness test-command power.
 
-### 2. `restore-staged-mistake`
+### 2. `type-output-cleanup-diagnosis`
+
+Transcript source:
+The session compared `yarn build:types:clean`, manual ignored-output cleanup,
+`yarn clean`, and `yarn build:types`.
 
 Fixture:
-Two files are modified.
-Both are staged, but only `src/kept.js` should be committed.
+Stale generated `.d.ts` outputs exist beside checked source files, causing a
+TS5055-style declaration overwrite failure.
 
 Prompt:
-Commit only `src/kept.js` with exactly `fix: keep intended change`.
-Do not include `src/noise.js`.
+Diagnose why the type build fails after generated declaration files are stale.
+Use the repository's documented cleanup path, then update `AGENTS.md` with the
+maintainer note.
 
 Expected:
-The new commit contains `src/kept.js`.
-`src/noise.js` remains modified in the worktree but is not staged.
-The commit message matches.
+The docs commit updates only `AGENTS.md`.
+`yarn clean && yarn build:types` succeeds.
+The final stack keeps this as a standalone docs commit.
 
 Primary APIs:
-`status()`, `restore([noise.entry], { staged: true })`, `add()`, `commit()`,
-`diff({ cached: true })`.
+`status()`, `diff()`, `add()`, `commit()`, plus shell/test-command power.
 
-### 3. `fixup-commit-for-earlier-change`
+### 3. `commit-split-from-mixed-change`
+
+Transcript source:
+The user asked to split `d5820f7` into `fs`, `exo-git`, `git`, and `cancel`
+commits while preserving unrelated dirty work.
 
 Fixture:
-The branch has two commits.
-The earlier commit summary is `fix(exo-git): align Git contract with guards`.
-A small follow-up edit is present in the working tree.
+A branch contains one mixed commit touching four package domains and has dirty
+follow-up changes in the worktree.
 
 Prompt:
-Stage the follow-up and commit it as a fixup for
-`fix(exo-git): align Git contract with guards`.
-Do not autosquash it.
+Split the mixed commit into separate commits by domain.
+Preserve the dirty follow-up work and restore it after the split.
 
 Expected:
-The top commit summary is exactly
-`fixup! fix(exo-git): align Git contract with guards`.
+The final stack has separate conventional commits for each package domain.
+No dirty work is lost.
 The worktree is clean.
 
-Primary APIs:
-`log()`, `status()`, `add()`, `commit()`.
+Primary operations observed:
+`stashPush({ includeUntracked: true })`, branch backup, reset to the mixed
+commit's parent, checkout selected paths from the mixed commit, add, commit,
+stash inspection, and stash drop.
 
-Why it matters:
-This covers a useful part of autosquash workflows that EndoGit can already do
-without exposing interactive rebase.
+EndoGit coverage:
+Stash/add/commit are covered.
+Reset, backup branch naming policy, and checkout-paths-from-commit are gaps.
 
-### 4. `linear-rebase-clean`
+### 4. `recover-index-and-untracked-from-stash`
+
+Transcript source:
+The session inspected `stash@{0}`, `stash@{0}^2`, and `stash@{0}^3` to recover
+tracked, index, and untracked pieces separately.
 
 Fixture:
-`main` advances by one commit after `topic` branches.
-`topic` has one non-conflicting commit.
-The repository starts on `topic`.
+A stash contains tracked changes, staged changes, and untracked files.
+Only the `cancel` package subset should be restored into a new commit.
 
 Prompt:
-Rebase the current branch onto `main`.
+Recover only the `cancel` type-export changes from the saved stash and commit
+them as `refactor(cancel): move exported types to TypeScript`.
 
 Expected:
-`topic` is still the current branch.
-`log({ maxCount: 2 })` shows the topic commit above the new `main` commit.
-There is no merge commit.
+The commit contains the intended tracked and untracked `cancel` files.
+Unrelated stashed paths are not restored.
+The stash is dropped only after the intended commit exists.
+
+Primary operations observed:
+`stashList()`, `stashShow()`, historical tree inspection of stash parents,
+path checkout from stash parents, `git rm`, add, commit.
+
+EndoGit coverage:
+Current stash methods are too coarse for selective stash-parent recovery.
+This is a design-pressure scenario.
+
+### 5. `cherry-pick-known-commits`
+
+Transcript source:
+Two existing commits were cherry-picked into the rebuilt stack.
+
+Fixture:
+A branch has been reset to a rebuilt stack.
+Two known commits exist elsewhere in repository history and should be replayed.
+
+Prompt:
+Replay the existing code-mode and lockfile commits onto the current branch in
+order.
+
+Expected:
+The two commit summaries appear in order on the branch.
+The worktree is clean.
+
+Primary operations observed:
+`git cherry-pick 88b0a48d1 ad0b6cbac`.
+
+EndoGit coverage:
+There is no `cherryPick()` method.
+This is a design-pressure scenario if replaying known commits is in scope.
+
+### 6. `fixup-autosquash-with-generated-conflicts`
+
+Transcript source:
+The session created `fixup!` commits, ran autosquash rebase, hit generated-file
+conflicts, regenerated code-mode types, staged the resolution, and continued.
+
+Fixture:
+A branch has an older generated code-mode artifact and a fixup commit that
+touches the generator inputs.
+Autosquash produces conflicts in generated files.
+
+Prompt:
+Autosquash the fixup commits.
+When generated artifacts conflict, keep the correct source side, regenerate the
+artifacts, stage them, and continue the rebase.
+
+Expected:
+The fixup commits are folded into their targets.
+Generated files match the generator output.
 `status()` is clean.
 
-Primary APIs:
-`currentBranch()`, `rebase({ mode: 'start', upstream: 'main' })`, `log()`,
-`status()`.
+Primary operations observed:
+`commit --fixup`, `rebase -i --autosquash`, `checkout --ours/--theirs`,
+generator command, add, `rebase --continue`.
 
-### 5. `rebase-conflict-resolve-continue`
+EndoGit coverage:
+Fixup messages can be produced with `commit(message)`, and
+`rebase({ mode: 'continue' })` exists.
+Autosquash and ours/theirs conflict checkout are not exposed.
 
-Fixture:
-`main` and `topic` both edit the same line in `src/config.js`.
-The repository starts on `topic`.
+### 7. `reword-commit-during-stack-cleanup`
 
-Prompt:
-Rebase `topic` onto `main`.
-If there is a conflict in `src/config.js`, keep the combined setting
-`export const mode = 'agent-main';`, then continue the rebase.
-
-Expected:
-The current branch is `topic`.
-`src/config.js` at `HEAD` has the combined content.
-`status()` is clean.
-The rebased topic commit is above `main`.
-
-Primary APIs:
-`rebase({ mode: 'start', upstream: 'main' })`, `status()`, filesystem write,
-`add()`, `rebase({ mode: 'continue' })`, `filesystemAt('HEAD')`.
-
-Harness note:
-This is a code-mode scenario today.
-It needs `status()` rows with `entry` handles and `rebase()`, neither of which
-is exposed by the current JSON-safe git-tool slice.
-
-### 6. `rebase-abort-on-conflict`
+Transcript source:
+The session reworded `a3ffee1c4` to
+`test(agent-tools): type filesystem fixture` with scripted editors.
 
 Fixture:
-Same branch graph as `rebase-conflict-resolve-continue`.
-Record the original `topic` `HEAD` oid before the run.
+A branch stack contains a commit with the right diff and the wrong summary.
 
 Prompt:
-Start rebasing `topic` onto `main`.
-If the rebase conflicts, abort it and leave the branch exactly as it was.
+Rename that commit without changing its diff.
 
 Expected:
-`revParse('HEAD').oid` equals the original `topic` oid.
-`status()` is clean.
-No conflict markers remain in the worktree.
+The commit has the new summary.
+The tree for the reworded commit is unchanged.
+The worktree is clean.
 
-Primary APIs:
-`revParse('HEAD')`, `rebase({ mode: 'start', upstream: 'main' })`,
-`rebase({ mode: 'abort' })`, `status()`.
+Primary operations observed:
+Scripted `GIT_SEQUENCE_EDITOR` plus `GIT_EDITOR` around `git rebase -i`.
 
-### 7. `stash-before-switch`
+EndoGit coverage:
+No interactive rebase todo or commit reword API exists.
+This is a design-pressure scenario.
+
+### 8. `extract-fixes-from-top-test-commit`
+
+Transcript source:
+After CI review, the user noticed fixes mixed into a test commit.
+The session reset the top commit, amended one prior commit, and committed the
+remaining test-only change.
 
 Fixture:
-The repository starts on `topic`.
-There is a tracked modification and an untracked note.
-Branch `review` already exists.
+The top commit contains both test additions and production fixes.
+The production fixes belong in the previous commit.
 
 Prompt:
-Preserve the dirty work, switch to `review`, then re-apply the preserved work.
+Move production fixes out of the top test commit and into the preceding fix
+commit.
+Leave the top commit test-only.
 
 Expected:
-The current branch is `review`.
-The tracked modification and untracked note are present.
-`stashList()` is empty after a successful pop.
+The previous commit contains the production fixes.
+The top commit contains only test files.
+The branch history remains linear and clean.
 
-Primary APIs:
-`stashPush({ includeUntracked: true })`, `switchBranch('review')`,
-`stashPop()`, `stashList()`, filesystem reads.
+Primary operations observed:
+`git reset --mixed HEAD^`, selective add, `commit --amend --no-edit`,
+selective add, new commit.
 
-### 8. `read-historical-file`
+EndoGit coverage:
+Selective add and ordinary commit are covered.
+Mixed reset and amend are not.
+
+### 9. `ci-failure-to-minimal-fix`
+
+Transcript source:
+The session inspected GitHub check status, downloaded logs, reproduced a
+package failure locally, found a schema mismatch, and folded the fix into the
+right commit.
 
 Fixture:
-`HEAD~1` has `packages/exo-git/src/types.ts` with an older exported shape.
-`HEAD` has a newer exported shape.
+A PR has failing checks.
+The local branch contains the same candidate stack.
 
 Prompt:
-Compare the current file with the previous commit and report whether the
-`EndoGit` type includes `rebase`.
-Do not modify the repository.
+Find the failing check, identify the minimal code fix, verify locally, and fold
+the fix into the appropriate commit.
 
 Expected:
-The model uses read-only inspection only.
-`status()` remains clean.
-The answer or returned value identifies `rebase` in the current file.
+The failing package test passes locally.
+The fix lands in the commit that introduced the incompatible behavior.
+The PR can be force-pushed with lease.
 
-Primary APIs:
-`filesystemAt('HEAD~1')`, `worktree()`, `diff({ base: 'HEAD~1', head: 'HEAD' })`,
-`readOnly()`.
+Primary operations observed:
+`gh pr checks`, `gh api`, `gh run view`, package `yarn test`/`test:c8`,
+selective add, amend/fixup, autosquash.
 
-### 9. `read-only-git-rejects-mutation`
+EndoGit coverage:
+Local Git covers the commit/fixup pieces partially.
+GitHub check inspection and PR update are separate provider capabilities.
+
+### 10. `identity-and-force-push-boundary`
+
+Transcript source:
+The user required local commit identity `0xpatrickbot
+<patchrick@0xpatrick.dev>`, then the branch was force-pushed with lease.
 
 Fixture:
-Give the scenario a read-only `Git` cap and a writable or read-only workspace
-depending on the exact authority boundary being tested.
+A local branch has rewritten commits that are ahead of its upstream.
 
 Prompt:
-Inspect the current branch and latest commit.
-Do not make repository changes.
+Verify the configured commit identity, verify the upstream, and publish the
+rewritten branch safely.
 
 Expected:
-Read methods work.
-A scripted negative variant that attempts `commit()` or `rebase()` receives a
-permission error from the read-only `Git`.
-`status()` remains clean.
+New commits have the required author identity.
+The push uses force-with-lease semantics.
+No unrelated branch is updated.
 
-Primary APIs:
-`readOnly()`, `log()`, `currentBranch()`, rejected `commit()` or `rebase()`.
+Primary operations observed:
+`git config user.name`, `git config user.email`,
+`git rev-parse --abbrev-ref --symbolic-full-name @{u}`,
+`git push --force-with-lease`.
 
-### 10. `ff-only-pull-policy`
+EndoGit coverage:
+Commit identity is currently backend policy, not guest-configurable.
+`GitRemote.push()` can enforce branch/refspec policy, but force-with-lease is
+not represented directly in the local `Git` surface.
+
+### 11. `read-only-contract-audit`
+
+Transcript source:
+The session repeatedly compared the exported `EndoGit` type, runtime guard, and
+agent-tool JSON schema before adding a contract test.
 
 Fixture:
-A local bare remote advances `main`.
-The local branch is behind and has no local divergence.
-Construct a `GitRemote` with fetch direction and a narrow fetch refspec.
+The codebase has an `EndoGit` type, runtime `GitInterface`, and JSON tool
+schemas that may drift.
 
 Prompt:
-Pull from the configured remote using fast-forward-only strategy.
+Audit the Git capability contract and add a package-local type test that fails
+when the exported type and runtime factory diverge.
 
 Expected:
-`GitRemote.pull({ strategy: 'ff-only' })` succeeds.
-`HEAD` advances to the remote commit.
-The audit log records a pull with fast-forward integration.
+The test commit touches only the package-local type test unless a real contract
+bug is found.
+The relevant package lint/type tests pass.
 
 Primary APIs:
-`GitRemote.pull()`, `log()`, remote controller audit.
-
-Harness note:
-This is outside the local `Git` code-mode global unless the harness also grants
-the remote capability.
+Read-only Git/history inspection plus filesystem edits and package test-command
+power.
 
 ## Explicit Gap Scenarios
 
