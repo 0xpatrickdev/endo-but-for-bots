@@ -2224,7 +2224,8 @@ export const makeNativeGitBackend = ({ repoRoot }) => {
       args.push('-m', message);
       await runGit(args);
       if (opts.amend) {
-        // Amending the root commit changes the identity anchor.  The rewrite
+        // Amending the root commit changes the identity anchor.
+        // The rewrite
         // above is ours, so adopt its new identity before the readback.
         const resolvedRepoRoot = await fs.promises.realpath(repoRoot);
         repositoryIdentity = await captureRepositoryIdentity(resolvedRepoRoot);
