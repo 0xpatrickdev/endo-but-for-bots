@@ -16,6 +16,7 @@ import { GitInterface } from './interfaces.js';
  * @import {
  *   EndoGit,
  *   GitCommit,
+ *   GitCommitOptions,
  *   GitCreateBranchOptions,
  *   GitDeleteBranchOptions,
  *   GitDiffOptions,
@@ -133,7 +134,8 @@ harden(getGitBackend);
  * @property {(ref: string) => Promise<GitRef>} revParse
  * @property {(paths: string[]) => Promise<void>} add
  * @property {(paths: string[], opts?: GitRestoreOptions) => Promise<void>} restore
- * @property {(message: string) => Promise<GitCommit>} commit
+ * @property {(message: string, opts?: GitCommitOptions) => Promise<GitCommit>} commit
+ * @property {(ref: string, message: string) => Promise<GitCommit>} reword
  * @property {() => Promise<GitRef | undefined>} currentBranch
  * @property {() => Promise<GitRef[]>} branches
  * @property {(name: string, opts?: GitCreateBranchOptions) => Promise<GitRef>} createBranch
@@ -201,22 +203,30 @@ harden(getGitBackend);
  * authority; the host-private backing grant the formula instantiator
  * used to derive this capability is not part of the public surface).
  *
- * @param {object} args
- * @param {object} args.mount  The `EndoMount` that carries the public
+ * @param {object} powers
+ * @param {object} powers.mount  The `EndoMount` that carries the public
  *   worktree authority.  Returned by `worktree()`.
- * @param {GitBackend} args.backend
- * @param {boolean} [args.readOnly]  True when this Git cap is attenuated
- *   or was derived from a read-only mount.  Mutation methods throw before
- *   the backend can touch the worktree.
- * @param {(value: unknown) => object | undefined} args.lineageOf
+ * @param {GitBackend} powers.backend
+ * @param {(value: unknown) => object | undefined} powers.lineageOf
  *   Returns the mount-lineage sentinel for daemon-minted `EndoMount` /
  *   `EndoMountEntry` values; `undefined` for foreign caps.  The daemon
  *   binds its `mount.js#lineageOf`; in-process unit tests can pass a
  *   stub.  Two entries with the same returned sentinel are guaranteed
  *   to belong to the same mount root.
+ * @param {object} [opts]
+ * @param {boolean} [opts.readOnly]  True when this Git cap is attenuated
+ *   or was derived from a read-only mount.
+ *   Mutation methods throw before
+ *   the backend can touch the worktree.
+ * @param {boolean} [opts.allowHistoryRewrite]  True when this Git cap may
+ *   amend or reword existing commits.
+ *   Defaults to false.
  * @returns {EndoGit}
  */
-export const makeGit = ({ mount, backend, readOnly = false, lineageOf }) => {
+export const makeGit = (
+  { mount, backend, lineageOf },
+  { readOnly = false, allowHistoryRewrite = false } = {},
+) => {
   // The mount's lineage sentinel — used to verify that every entry
   // passed to a path-bearing Git method was minted by this Git's bound
   // mount, not by some other mount this guest may also hold.
@@ -290,6 +300,14 @@ export const makeGit = ({ mount, backend, readOnly = false, lineageOf }) => {
     if (readOnly) {
       throw new Error(
         `Git.${methodName} is not permitted on a read-only Git capability`,
+      );
+    }
+  };
+
+  const assertHistoryRewrite = methodName => {
+    if (!allowHistoryRewrite) {
+      throw new Error(
+        `Git.${methodName} is not permitted on a Git capability without history-rewrite authority`,
       );
     }
   };
@@ -431,9 +449,18 @@ export const makeGit = ({ mount, backend, readOnly = false, lineageOf }) => {
       return backend.restore(paths, options);
     },
 
-    async commit(message) {
+    async commit(message, options = {}) {
       assertWritable('commit');
-      return backend.commit(message);
+      if (options.amend) {
+        assertHistoryRewrite('commit');
+      }
+      return backend.commit(message, options);
+    },
+
+    async reword(ref, message) {
+      assertWritable('reword');
+      assertHistoryRewrite('reword');
+      return backend.reword(refName(ref), message);
     },
 
     async currentBranch() {
@@ -555,7 +582,10 @@ export const makeGit = ({ mount, backend, readOnly = false, lineageOf }) => {
       if (readOnly) {
         return selfExo;
       }
-      return makeGit({ mount, backend, readOnly: true, lineageOf });
+      return makeGit(
+        { mount, backend, lineageOf },
+        { readOnly: true, allowHistoryRewrite },
+      );
     },
   };
 
@@ -593,6 +623,7 @@ export const makeNotYetImplementedBackend = () => {
     add: async () => fail('add'),
     restore: async () => fail('restore'),
     commit: async () => fail('commit'),
+    reword: async () => fail('reword'),
     currentBranch: async () => fail('currentBranch'),
     branches: async () => fail('branches'),
     createBranch: async () => fail('createBranch'),
