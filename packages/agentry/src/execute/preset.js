@@ -8,7 +8,7 @@
 /** @import { CodeModeExecute, CodeModeGlobal, CodeModePower, PowerHandle, LookupPowers } from './tool.js' */
 
 import { E } from '@endo/eventual-send';
-import { isGitReadOnly } from '@endo/exo-git';
+import { isGitHistoryRewrite, isGitReadOnly } from '@endo/exo-git';
 
 import { defineAgent } from '../define-agent.js';
 import { getAmbientEnv, makeEnvCredentials } from '../harness/credentials.js';
@@ -139,6 +139,14 @@ const resolveConfiguredPowers = (powers, lookupPowers) => {
       if (gitReadOnly === false) {
         throw new Error(
           'code-mode gitMode readOnly requires an already read-only Git capability',
+        );
+      }
+    }
+    if (powers.gitMode === 'historyRewrite') {
+      const gitHistoryRewrite = isGitHistoryRewrite(resolved[gitName]);
+      if (gitHistoryRewrite === false) {
+        throw new Error(
+          'code-mode gitMode historyRewrite requires a Git capability with history-rewrite authority',
         );
       }
     }

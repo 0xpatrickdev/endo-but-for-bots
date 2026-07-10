@@ -552,6 +552,24 @@ test('Git.commit can amend HEAD through the native backend', async t => {
   );
 });
 
+test('Git.commit amend refreshes identity after rewriting the root commit', async t => {
+  const repoRoot = await provisionGitWorktree(t);
+  const filePowers = makeFilePowers({ fs, path });
+  const mount = makeMount({ rootPath: repoRoot, readOnly: false, filePowers });
+  const backend = makeNativeGitBackend({ repoRoot });
+  const git = makeGit(
+    { mount, backend, lineageOf },
+    { allowHistoryRewrite: true },
+  );
+
+  await fs.promises.writeFile(path.join(repoRoot, 'root.txt'), 'one\n');
+  const entry = await E(mount).entry(['root.txt']);
+  await E(git).add([entry]);
+  await E(git).commit('amended root subject', { amend: true });
+  const current = await E(git).currentBranch();
+  t.is(current?.name, 'main', 'the next backend call remains authorized');
+});
+
 test('Git history rewrite authority defaults off and can be elevated', async t => {
   const repoRoot = await provisionGitWorktree(t);
   const filePowers = makeFilePowers({ fs, path });
@@ -645,6 +663,54 @@ test('Git.reword replaces one ancestor message without an editor', async t => {
   t.is(replacementAuthor, originalAuthor, 'reword preserves the author');
 });
 
+test('Git.reword preserves raw author identity despite mailmap entries', async t => {
+  const repoRoot = await provisionGitWorktree(t);
+  const filePowers = makeFilePowers({ fs, path });
+  const mount = makeMount({ rootPath: repoRoot, readOnly: false, filePowers });
+  const backend = makeNativeGitBackend({ repoRoot });
+  const git = makeGit(
+    { mount, backend, lineageOf },
+    { allowHistoryRewrite: true },
+  );
+  await execFileAsync(
+    'git',
+    ['commit', '--allow-empty', '-m', 'raw author subject'],
+    {
+      cwd: repoRoot,
+      env: {
+        ...process.env,
+        GIT_AUTHOR_NAME: 'Raw Author',
+        GIT_AUTHOR_EMAIL: 'raw@example.test',
+        GIT_COMMITTER_NAME: 'Raw Author',
+        GIT_COMMITTER_EMAIL: 'raw@example.test',
+      },
+    },
+  );
+  const { stdout: original } = await execFileAsync(
+    'git',
+    ['rev-parse', 'HEAD'],
+    {
+      cwd: repoRoot,
+    },
+  );
+  await fs.promises.writeFile(
+    path.join(repoRoot, '.mailmap'),
+    'Canonical Author <canonical@example.test> Raw Author <raw@example.test>\n',
+  );
+  await execFileAsync('git', ['add', '.mailmap'], { cwd: repoRoot });
+  await execFileAsync('git', ['commit', '-m', 'mailmap subject'], {
+    cwd: repoRoot,
+  });
+
+  const reworded = await E(git).reword(original.trim(), 'replacement subject');
+  const { stdout: rawAuthor } = await execFileAsync(
+    'git',
+    ['show', '-s', '--format=%an <%ae>', reworded.oid],
+    { cwd: repoRoot },
+  );
+  t.is(rawAuthor, 'Raw Author <raw@example.test>\n');
+});
+
 test('Git.reword HEAD preserves its committed tree with staged changes', async t => {
   const repoRoot = await provisionGitWorktree(t);
   const filePowers = makeFilePowers({ fs, path });
@@ -724,6 +790,26 @@ test('Git.reword rewrites the root commit', async t => {
     { cwd: repoRoot },
   );
   t.is(parents, '\n', 'the replacement root has no parents');
+});
+
+test('Git.reword refreshes identity after rewriting an ancestor root commit', async t => {
+  const repoRoot = await provisionGitWorktree(t);
+  const filePowers = makeFilePowers({ fs, path });
+  const mount = makeMount({ rootPath: repoRoot, readOnly: false, filePowers });
+  const backend = makeNativeGitBackend({ repoRoot });
+  const git = makeGit(
+    { mount, backend, lineageOf },
+    { allowHistoryRewrite: true },
+  );
+  const root = await E(git).revParse('HEAD');
+  await fs.promises.writeFile(path.join(repoRoot, 'descendant.txt'), 'one\n');
+  const entry = await E(mount).entry(['descendant.txt']);
+  await E(git).add([entry]);
+  await E(git).commit('descendant subject');
+
+  await E(git).reword(root, 'replacement root subject');
+  const current = await E(git).currentBranch();
+  t.is(current?.name, 'main', 'the next backend call remains authorized');
 });
 
 test('Git.reword keeps its branch attached and preserves merge descendants', async t => {
@@ -973,6 +1059,21 @@ test('NativeGitBackend.log returns structured commit records', async t => {
     t.is(commit.author, 'T');
     t.is(typeof commit.committedAt, 'number');
   }
+});
+
+test('NativeGitBackend.log preserves a tab in a commit subject', async t => {
+  const repoRoot = await provisionGitWorktree(t);
+  await execFileAsync(
+    'git',
+    ['commit', '--allow-empty', '-m', 'subject\twith tab'],
+    { cwd: repoRoot },
+  );
+
+  const backend = makeNativeGitBackend({ repoRoot });
+  const [commit] = await backend.log({ maxCount: 1 });
+  t.is(commit.summary, 'subject\twith tab');
+  t.regex(commit.oid, /^[0-9a-f]{40,64}$/);
+  t.is(commit.author, 'T');
 });
 
 test('NativeGitBackend.log honors since / until time-window options', async t => {

@@ -40,6 +40,8 @@ import { GitInterface } from './interfaces.js';
  * @type {WeakMap<object, boolean>}
  */
 const gitReadOnly = new WeakMap();
+/** @type {WeakMap<object, boolean>} */
+const gitHistoryRewrite = new WeakMap();
 /** @type {WeakMap<object, GitBackend>} */
 const gitBackends = new WeakMap();
 
@@ -53,6 +55,17 @@ const gitBackends = new WeakMap();
 export const isGitReadOnly = git =>
   gitReadOnly.get(/** @type {object} */ (git));
 harden(isGitReadOnly);
+
+/**
+ * Host-private accessor: returns whether a daemon-minted Git exo has
+ * history-rewrite authority, or undefined for fakes / remotes not minted here.
+ *
+ * @param {unknown} git
+ * @returns {boolean | undefined}
+ */
+export const isGitHistoryRewrite = git =>
+  gitHistoryRewrite.get(/** @type {object} */ (git));
+harden(isGitHistoryRewrite);
 
 /**
  * Host-private accessor for adjacent daemon providers such as GitRemote.
@@ -584,7 +597,7 @@ export const makeGit = (
       }
       return makeGit(
         { mount, backend, lineageOf },
-        { readOnly: true, allowHistoryRewrite },
+        { readOnly: true, allowHistoryRewrite: false },
       );
     },
   };
@@ -593,6 +606,7 @@ export const makeGit = (
 
   const typed = /** @type {EndoGit} */ (/** @type {unknown} */ (exo));
   gitReadOnly.set(typed, readOnly);
+  gitHistoryRewrite.set(typed, allowHistoryRewrite);
   gitBackends.set(typed, backend);
   selfExo = typed;
   return typed;

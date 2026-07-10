@@ -98,9 +98,10 @@ const GIT_MAX_BUFFER = 1024 * 1024;
 const TOOL_OUTPUT_LIMIT = 50_000;
 const MIN_GIT_VERSION = harden([2, 30, 0]);
 const GIT_ASKPASS_FD = 3;
-// Stable, tab-delimited fields parsed into the public GitCommit record:
+// Stable, NUL-delimited fields parsed into the public GitCommit record:
 // full OID, subject, author name, and committer time in Unix seconds.
-const GIT_COMMIT_LOG_FORMAT = '--pretty=format:%H%x09%s%x09%an%x09%ct';
+// Git subjects cannot contain NUL, unlike tabs and newlines.
+const GIT_COMMIT_LOG_FORMAT = '--pretty=tformat:%H%x00%s%x00%an%x00%ct%x00';
 const gitAskpassHelperPath = fileURLToPath(
   new URL('git-askpass-helper.cjs', import.meta.url),
 );
@@ -1748,8 +1749,7 @@ export const makeNativeGitBackend = ({ repoRoot }) => {
       '--end-of-options',
       ref,
     ]);
-    const out = raw.trim();
-    const [oid, summary, author, committedAtStr] = out.split('\t');
+    const [oid, summary, author, committedAtStr] = raw.split('\0');
     return harden({
       oid,
       summary,
@@ -2091,26 +2091,27 @@ export const makeNativeGitBackend = ({ repoRoot }) => {
         args.push('--end-of-options', requireRevision(options.ref, 'log.ref'));
       }
       const rawLog = await runGitRaw(args);
-      const stdout = rawLog.trim();
-      if (stdout === '') {
+      if (rawLog === '') {
         return harden([]);
       }
       /** @type {GitCommit[]} */
       const commits = [];
-      for (const line of stdout.split('\n')) {
-        if (line !== '') {
-          const [oid, summary, author, committedAtStr] = line.split('\t');
-          commits.push(
-            harden({
-              oid,
-              summary,
-              author,
-              committedAt: committedAtStr
-                ? Number.parseInt(committedAtStr, 10)
-                : undefined,
-            }),
-          );
-        }
+      const fields = rawLog.split('\0');
+      for (let index = 0; index + 3 < fields.length; index += 4) {
+        const [oid, summary, author, committedAtStr] = fields.slice(
+          index,
+          index + 4,
+        );
+        commits.push(
+          harden({
+            oid: oid.trim(),
+            summary,
+            author,
+            committedAt: committedAtStr
+              ? Number.parseInt(committedAtStr, 10)
+              : undefined,
+          }),
+        );
       }
       return harden(commits);
     },
@@ -2222,6 +2223,12 @@ export const makeNativeGitBackend = ({ repoRoot }) => {
       }
       args.push('-m', message);
       await runGit(args);
+      if (opts.amend) {
+        // Amending the root commit changes the identity anchor.  The rewrite
+        // above is ours, so adopt its new identity before the readback.
+        const resolvedRepoRoot = await fs.promises.realpath(repoRoot);
+        repositoryIdentity = await captureRepositoryIdentity(resolvedRepoRoot);
+      }
       // Read back the new HEAD's record so the caller learns the oid.
       return readCommitRecord('HEAD');
     },
@@ -2341,6 +2348,10 @@ export const makeNativeGitBackend = ({ repoRoot }) => {
         await runGit(['rebase', '--abort']).catch(() => undefined);
         throw error;
       }
+      // Rewording a root commit through rebase changes the identity anchor.
+      // Refresh it after the successful rewrite before performing the readback.
+      const resolvedRepoRoot = await fs.promises.realpath(repoRoot);
+      repositoryIdentity = await captureRepositoryIdentity(resolvedRepoRoot);
       return readCommitRecord(replacementOid);
     },
 

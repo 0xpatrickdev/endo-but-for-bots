@@ -259,6 +259,18 @@ test('makeCodeModeAgent configures one history-rewrite git capability', async t 
   t.true(systemPrompt.includes('reword:'));
 });
 
+test('makeCodeModeAgent rejects ordinary Git for history-rewrite mode', async t => {
+  const { workspace, git } = await makeRealGit(t);
+  t.throws(
+    () =>
+      makeCodeModeAgent({
+        model: fauxModel(t, []),
+        powers: { workspace, git, gitMode: 'historyRewrite' },
+      }),
+    { message: /requires a Git capability with history-rewrite authority/ },
+  );
+});
+
 test('makeCodeModeAgent injects typed git + workspace declarations from powers', async t => {
   const { workspace, git } = await makeRealGit(t);
   const { systemPrompt } = makeCodeModeAgent({
