@@ -7,7 +7,7 @@ import '@endo/init/debug.js';
 import test from 'ava';
 import { Far } from '@endo/pass-style';
 
-import { makeGitTool } from '../src/git-tool.js';
+import { makeGitHistoryTool, makeGitTool } from '../src/git-tool.js';
 
 /** @import { ERef } from '@endo/eventual-send' */
 /** @import { GitToolCapability } from '../src/types.js' */
@@ -17,12 +17,13 @@ const SLICE = [
   'diff',
   'show',
   'commit',
-  'reword',
   'branches',
   'createBranch',
   'switchBranch',
   'currentBranch',
 ];
+
+const HISTORY_SLICE = ['commit', 'reword'];
 
 /**
  * Stub Git capability that records the method name and positional args.
@@ -92,6 +93,12 @@ test('makeGitTool omits cap-heavy methods', t => {
   t.false(names.has('add'));
   t.false(names.has('restore'));
   t.false(names.has('filesystemAt'));
+  t.false(names.has('reword'));
+});
+
+test('makeGitHistoryTool advertises only history rewriting methods', t => {
+  const tools = makeGitHistoryTool(makeStubGit([]));
+  t.deepEqual(tools.map(tool => tool.name).sort(), [...HISTORY_SLICE].sort());
 });
 
 test('invoke marshals named args to positional and calls the capability', async t => {
@@ -106,19 +113,12 @@ test('invoke marshals named args to positional and calls the capability', async 
   await null;
 
   await byName('commit').invoke({ message: 'a message' });
-  await byName('commit').invoke({
-    message: 'amended message',
-    options: harden({ amend: true }),
-  });
-  await byName('reword').invoke({ ref: 'HEAD~1', message: 'new subject' });
   await byName('createBranch').invoke({ name: 'feature' });
   await byName('createBranch').invoke({ name: 'feature', options: harden({}) });
   await byName('log').invoke({});
 
   t.deepEqual(calls, [
     ['commit', 'a message'],
-    ['commit', 'amended message', { amend: true }],
-    ['reword', 'HEAD~1', 'new subject'],
     ['createBranch', 'feature'],
     ['createBranch', 'feature', {}],
     ['log'],
@@ -159,13 +159,34 @@ test('the schemas advertise real, declarative property names', t => {
     }
   }
 
-  t.deepEqual(propsOf('commit'), ['message', 'options']);
-  t.deepEqual(propsOf('reword'), ['ref', 'message']);
+  t.deepEqual(propsOf('commit'), ['message']);
   t.deepEqual(propsOf('show'), ['ref']);
   t.deepEqual(propsOf('createBranch'), ['name', 'options']);
   t.deepEqual(propsOf('switchBranch'), ['branch']);
   t.deepEqual(propsOf('log'), ['options']);
   t.deepEqual(propsOf('diff'), ['options']);
+});
+
+test('history tools marshal amend and reword arguments', async t => {
+  const calls = [];
+  const tools = makeGitHistoryTool(makeStubGit(calls));
+  const byName = name => {
+    const found = tools.find(tool => tool.name === name);
+    if (!found) throw new Error(`no tool named ${name}`);
+    return found;
+  };
+
+  await null;
+  await byName('commit').invoke({
+    message: 'amended message',
+    options: harden({ amend: true }),
+  });
+  await byName('reword').invoke({ ref: 'HEAD~1', message: 'new subject' });
+
+  t.deepEqual(calls, [
+    ['commit', 'amended message', { amend: true }],
+    ['reword', 'HEAD~1', 'new subject'],
+  ]);
 });
 
 test('invoke resolves named args by their real property names', async t => {

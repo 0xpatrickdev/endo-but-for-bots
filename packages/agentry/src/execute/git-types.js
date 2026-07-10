@@ -33,8 +33,7 @@ export const gitCodeModeTypeDeclarations = harden({
   revParse: (ref: GitRef | string) => Promise<GitRef>;
   add: (entries: EndoMountEntry[]) => Promise<void>;
   restore: (entries: EndoMountEntry[], options?: GitRestoreOptions) => Promise<void>;
-  commit: (message: string, options?: GitCommitOptions) => Promise<GitCommit>;
-  reword: (ref: GitRef | string, message: string) => Promise<GitCommit>;
+  commit: (message: string) => Promise<GitCommit>;
   currentBranch: () => Promise<GitRef | undefined>;
   branches: () => Promise<GitRef[]>;
   createBranch: (name: string, options?: GitCreateBranchOptions) => Promise<GitRef>;
@@ -62,9 +61,6 @@ type GitCommit = {
     summary: string;
     author?: string;
     committedAt?: number;
-};
-type GitCommitOptions = {
-    amend?: boolean;
 };
 type GitCreateBranchOptions = {
     startPoint?: string;
@@ -120,6 +116,27 @@ type GitStatusEntry = {
 type GitWorktreeStatus = 'clean' | 'modified' | 'deleted' | 'untracked' | 'ignored' | 'conflicted';
 type ReadableTreeView = unknown;`,
     body: `EndoGit`,
+  },
+  gitHistory: {
+    aux: `type EndoGitHistory = {
+  commit: (message: string, options?: GitCommitOptions) => Promise<GitCommit>;
+  reword: (ref: GitRef | string, message: string) => Promise<GitCommit>;
+};
+type GitCommit = {
+    oid: string;
+    summary: string;
+    author?: string;
+    committedAt?: number;
+};
+type GitCommitOptions = {
+    amend?: boolean;
+};
+type GitRef = {
+    name: string;
+    kind: 'branch' | 'tag' | 'commit' | 'detached';
+    oid?: string;
+};`,
+    body: `EndoGitHistory`,
   },
   gitReadOnly: {
     aux: `type EndoGit = {

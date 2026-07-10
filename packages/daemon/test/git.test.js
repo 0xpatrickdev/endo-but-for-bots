@@ -523,7 +523,7 @@ test('Git.commit can amend HEAD through the native backend', async t => {
   const filePowers = makeFilePowers({ fs, path });
   const mount = makeMount({ rootPath: repoRoot, readOnly: false, filePowers });
   const backend = makeNativeGitBackend({ repoRoot });
-  const git = makeGit({ mount, backend, lineageOf });
+  const git = makeGit({ mount, backend, allowHistoryRewrite: true, lineageOf });
 
   await fs.promises.writeFile(path.join(repoRoot, 'amend.txt'), 'one\n');
   const entry = await E(mount).entry(['amend.txt']);
@@ -543,6 +543,42 @@ test('Git.commit can amend HEAD through the native backend', async t => {
   );
 });
 
+test('Git history rewrite authority defaults off and can be elevated', async t => {
+  const repoRoot = await provisionGitWorktree(t);
+  const filePowers = makeFilePowers({ fs, path });
+  const mount = makeMount({ rootPath: repoRoot, readOnly: false, filePowers });
+  const backend = makeNativeGitBackend({ repoRoot });
+  const git = makeGit({ mount, backend, lineageOf });
+  const gitHistory = makeGit({
+    mount,
+    backend,
+    allowHistoryRewrite: true,
+    lineageOf,
+  });
+
+  await fs.promises.writeFile(path.join(repoRoot, 'history.txt'), 'one\n');
+  const entry = await E(mount).entry(['history.txt']);
+  await E(git).add([entry]);
+  const first = await E(git).commit('first subject');
+  await t.throwsAsync(E(git).commit('blocked amend', { amend: true }), {
+    message: /without history-rewrite authority/,
+  });
+  await t.throwsAsync(E(git).reword(first.oid, 'blocked reword'), {
+    message: /without history-rewrite authority/,
+  });
+
+  await fs.promises.writeFile(path.join(repoRoot, 'history.txt'), 'two\n');
+  await E(git).add([entry]);
+  const amended = await E(gitHistory).commit('amended subject', {
+    amend: true,
+  });
+  const reworded = await E(gitHistory).reword(
+    amended.oid,
+    'replacement subject',
+  );
+  t.is(reworded.summary, 'replacement subject');
+});
+
 test('Git.reword replaces one ancestor message without an editor', async t => {
   const repoRoot = await provisionGitWorktree(t);
   await execFileAsync('git', ['config', '--local', 'core.editor', 'false'], {
@@ -559,7 +595,7 @@ test('Git.reword replaces one ancestor message without an editor', async t => {
   const filePowers = makeFilePowers({ fs, path });
   const mount = makeMount({ rootPath: repoRoot, readOnly: false, filePowers });
   const backend = makeNativeGitBackend({ repoRoot });
-  const git = makeGit({ mount, backend, lineageOf });
+  const git = makeGit({ mount, backend, allowHistoryRewrite: true, lineageOf });
 
   await fs.promises.writeFile(path.join(repoRoot, 'first.txt'), 'first\n');
   const firstEntry = await E(mount).entry(['first.txt']);
@@ -591,7 +627,7 @@ test('Git.reword replaces one ancestor message without an editor', async t => {
 test('Git scaffold methods all surface a clear "not yet implemented"', async t => {
   const mount = await provisionMount(t);
   const backend = makeNotYetImplementedBackend();
-  const git = makeGit({ mount, backend, lineageOf });
+  const git = makeGit({ mount, backend, allowHistoryRewrite: true, lineageOf });
 
   // A representative sample across category boundaries; the stub backend
   // throws for every op except the formula-instantiation-time

@@ -12,7 +12,7 @@ import type { Pattern } from '@endo/patterns';
  * — `merge`, `rebase`, `restore`, `deleteBranch`, `renameBranch`, the `stash*`
  * family, and the working-tree/detach mutators (`switch`, `detach`). Those carry
  * authority a tool surface handed to a model should not advertise: they can
- * discard uncommitted work or rewrite shared history. `commit`, `reword`,
+ * discard uncommitted work or rewrite shared history. `commit`,
  * `createBranch`, and `switchBranch` are included as the narrow write surface
  * the local git tool intentionally grants. Widening this `Pick` is a deliberate
  * authority decision, not a convenience — add a method only when the tool
@@ -32,12 +32,14 @@ export type GitToolCapability = Pick<
   | 'diff'
   | 'show'
   | 'commit'
-  | 'reword'
   | 'branches'
   | 'createBranch'
   | 'switchBranch'
   | 'currentBranch'
 >;
+
+/** The separately-granted history-rewrite slice of `EndoGit`. */
+export type GitHistoryToolCapability = Pick<EndoGit, 'commit' | 'reword'>;
 
 /**
  * The mount-bridged slice of `EndoGit` behind `makeGitMountTools`: `status` and
@@ -96,6 +98,10 @@ export declare function makeTool(spec: ToolSpec): ToolRecord;
 
 export declare function makeGitTool(
   gitCap: ERef<GitToolCapability>,
+): ToolRecord[];
+
+export declare function makeGitHistoryTool(
+  gitCap: ERef<GitHistoryToolCapability>,
 ): ToolRecord[];
 
 export declare function makeGitMountTools(

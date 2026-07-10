@@ -230,15 +230,32 @@ test('a typed global injects its generated declaration into the prompt', t => {
   t.true(systemPrompt.includes('declare const git: EndoGit;'));
   t.true(systemPrompt.includes('type EndoGit = {'));
   t.true(
-    systemPrompt.includes(
-      'commit: (message: string, options?: GitCommitOptions) => Promise<GitCommit>;',
-    ),
+    systemPrompt.includes('commit: (message: string) => Promise<GitCommit>;'),
   );
   // workspace: guard-derived, reaching the Directory surface transitively.
   t.true(systemPrompt.includes('declare const workspace: Filesystem;'));
   t.true(systemPrompt.includes('type Directory = {'));
   // The runtime introspection fallback is still advertised.
   t.true(systemPrompt.includes('__getMethodNames__'));
+});
+
+test('makeCodeModeAgent injects gitHistory only when the elevated cap is wired', async t => {
+  const { workspace, git } = await makeRealGit(t);
+  const { globals, systemPrompt } = makeCodeModeAgent({
+    model: fauxModel(t, []),
+    powers: { workspace, git, gitHistory: git },
+  });
+  t.deepEqual(
+    globals.map(global => global.name),
+    ['workspace', 'git', 'gitHistory'],
+  );
+  t.true(systemPrompt.includes('declare const gitHistory: EndoGitHistory;'));
+  t.true(
+    systemPrompt.includes(
+      'commit: (message: string, options?: GitCommitOptions) => Promise<GitCommit>;',
+    ),
+  );
+  t.true(systemPrompt.includes('reword:'));
 });
 
 test('makeCodeModeAgent injects typed git + workspace declarations from powers', async t => {

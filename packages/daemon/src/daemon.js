@@ -3035,6 +3035,9 @@ const makeDaemonCore = async (
         mount: /** @type {object} */ (mount),
         backend,
         readOnly: backing.readOnly,
+        // The ordinary daemon Git formula deliberately has no history-rewrite
+        // authority.  Callers that need a separately granted history cap must
+        // construct it with allowHistoryRewrite: true over this same mount.
         lineageOf,
       });
     },

@@ -109,21 +109,8 @@ const gitToolSchemas = harden({
       type: 'object',
       properties: {
         message: { type: 'string', description: 'The commit message.' },
-        options: COMMIT_OPTIONS_PROP,
       },
       required: ['message'],
-      additionalProperties: false,
-    },
-  },
-  reword: {
-    description: 'Replace a commit message while keeping its patch unchanged.',
-    parameters: {
-      type: 'object',
-      properties: {
-        ref: REF_PROP,
-        message: { type: 'string', description: 'The replacement message.' },
-      },
-      required: ['ref', 'message'],
       additionalProperties: false,
     },
   },
@@ -161,11 +148,44 @@ const gitToolSchemas = harden({
   },
 });
 
+const gitHistoryToolSchemas = harden({
+  commit: {
+    description: 'Amend the staged changes into HEAD.',
+    parameters: {
+      type: 'object',
+      properties: {
+        message: { type: 'string', description: 'The commit message.' },
+        options: COMMIT_OPTIONS_PROP,
+      },
+      required: ['message'],
+      additionalProperties: false,
+    },
+  },
+  reword: {
+    description: 'Replace a commit message while keeping its patch unchanged.',
+    parameters: {
+      type: 'object',
+      properties: {
+        ref: REF_PROP,
+        message: { type: 'string', description: 'The replacement message.' },
+      },
+      required: ['ref', 'message'],
+      additionalProperties: false,
+    },
+  },
+});
+
 /**
  * @type {(keyof GitToolCapability)[]}
  */
 const gitToolMethods = harden(
   /** @type {(keyof GitToolCapability)[]} */ (Object.keys(gitToolSchemas)),
+);
+
+const gitHistoryToolMethods = harden(
+  /** @type {(keyof GitToolCapability)[]} */ (
+    Object.keys(gitHistoryToolSchemas)
+  ),
 );
 
 /**
@@ -186,17 +206,19 @@ const positionalArgGuards = method => {
 };
 
 /**
- * Build agent-tool records for a live `Git` capability.
+ * Build agent-tool records for a live `Git` capability from a schema slice.
  *
  * @param {ERef<GitToolCapability>} gitCap
  *   A live `Git` capability. The exo `Git` cap is reached by dynamic method
  *   name through `E`, so this records only the invocation shape this maker
  *   needs.
+ * @param {Record<string, { description: string, parameters: object }>} schemas
+ * @param {readonly string[]} methods
  * @returns {ToolRecord[]}
  */
-export const makeGitTool = gitCap => {
-  const records = gitToolMethods.map(method => {
-    const schema = gitToolSchemas[method];
+const makeGitTools = (gitCap, schemas, methods) => {
+  const records = methods.map(method => {
+    const schema = schemas[method];
     const argGuards = positionalArgGuards(method);
     // The schema's declared property order is the positional argument order,
     // matching the convention `makeTool` applies to the named-args record.
@@ -227,4 +249,17 @@ export const makeGitTool = gitCap => {
   });
   return harden(records);
 };
+
+export const makeGitTool = gitCap =>
+  makeGitTools(gitCap, gitToolSchemas, gitToolMethods);
 harden(makeGitTool);
+
+/**
+ * Build agent-tool records for a separately-granted history-rewrite Git cap.
+ *
+ * @param {ERef<GitToolCapability>} gitCap
+ * @returns {ToolRecord[]}
+ */
+export const makeGitHistoryTool = gitCap =>
+  makeGitTools(gitCap, gitHistoryToolSchemas, gitHistoryToolMethods);
+harden(makeGitHistoryTool);

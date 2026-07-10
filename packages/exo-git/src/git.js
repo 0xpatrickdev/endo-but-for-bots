@@ -210,6 +210,8 @@ harden(getGitBackend);
  * @param {boolean} [args.readOnly]  True when this Git cap is attenuated
  *   or was derived from a read-only mount.  Mutation methods throw before
  *   the backend can touch the worktree.
+ * @param {boolean} [args.allowHistoryRewrite]  True when this Git cap may
+ *   amend or reword existing commits.  Defaults to false.
  * @param {(value: unknown) => object | undefined} args.lineageOf
  *   Returns the mount-lineage sentinel for daemon-minted `EndoMount` /
  *   `EndoMountEntry` values; `undefined` for foreign caps.  The daemon
@@ -218,7 +220,13 @@ harden(getGitBackend);
  *   to belong to the same mount root.
  * @returns {EndoGit}
  */
-export const makeGit = ({ mount, backend, readOnly = false, lineageOf }) => {
+export const makeGit = ({
+  mount,
+  backend,
+  readOnly = false,
+  allowHistoryRewrite = false,
+  lineageOf,
+}) => {
   // The mount's lineage sentinel — used to verify that every entry
   // passed to a path-bearing Git method was minted by this Git's bound
   // mount, not by some other mount this guest may also hold.
@@ -292,6 +300,14 @@ export const makeGit = ({ mount, backend, readOnly = false, lineageOf }) => {
     if (readOnly) {
       throw new Error(
         `Git.${methodName} is not permitted on a read-only Git capability`,
+      );
+    }
+  };
+
+  const assertHistoryRewrite = methodName => {
+    if (!allowHistoryRewrite) {
+      throw new Error(
+        `Git.${methodName} is not permitted on a Git capability without history-rewrite authority`,
       );
     }
   };
@@ -435,11 +451,15 @@ export const makeGit = ({ mount, backend, readOnly = false, lineageOf }) => {
 
     async commit(message, options = {}) {
       assertWritable('commit');
+      if (options.amend) {
+        assertHistoryRewrite('commit');
+      }
       return backend.commit(message, options);
     },
 
     async reword(ref, message) {
       assertWritable('reword');
+      assertHistoryRewrite('reword');
       return backend.reword(refName(ref), message);
     },
 
@@ -562,7 +582,13 @@ export const makeGit = ({ mount, backend, readOnly = false, lineageOf }) => {
       if (readOnly) {
         return selfExo;
       }
-      return makeGit({ mount, backend, readOnly: true, lineageOf });
+      return makeGit({
+        mount,
+        backend,
+        readOnly: true,
+        allowHistoryRewrite,
+        lineageOf,
+      });
     },
   };
 

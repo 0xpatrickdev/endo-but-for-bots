@@ -54,6 +54,8 @@ const lookupRequiredPower = (powers, petName, label) => {
  * @property {CodeModePower} [git]
  * @property {string} [gitPetName]
  * @property {'readOnly' | 'readWrite'} [gitMode]
+ * @property {CodeModePower} [gitHistory]
+ * @property {string} [gitHistoryPetName]
  * @property {CodeModeGlobal[]} [namedPowers]
  *
  * @typedef {object} MakeCodeModeAgentOptions
@@ -109,6 +111,19 @@ const makeCodeModeGlobals = (powers = {}) => {
       }),
     );
   }
+  if (
+    powers.gitHistory !== undefined ||
+    powers.gitHistoryPetName !== undefined
+  ) {
+    const gitHistoryPetName = powers.gitHistoryPetName ?? 'gitHistory';
+    globals.push(
+      makeGitGlobal({
+        name: petNameToBindingName(gitHistoryPetName, 'gitHistory'),
+        petName: gitHistoryPetName,
+        historyRewrite: true,
+      }),
+    );
+  }
   globals.push(...(powers.namedPowers || []));
   return normalizeGlobals(globals);
 };
@@ -142,6 +157,19 @@ const resolveConfiguredPowers = (powers, lookupPowers) => {
         );
       }
     }
+  }
+  if (
+    powers.gitHistory !== undefined ||
+    powers.gitHistoryPetName !== undefined
+  ) {
+    const gitHistoryPetName = powers.gitHistoryPetName ?? 'gitHistory';
+    const gitHistoryName = petNameToBindingName(
+      gitHistoryPetName,
+      'gitHistory',
+    );
+    resolved[gitHistoryName] =
+      powers.gitHistory ??
+      lookupRequiredPower(lookupPowers, gitHistoryPetName, 'gitHistory');
   }
   return harden(resolved);
 };

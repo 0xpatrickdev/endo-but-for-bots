@@ -54,16 +54,17 @@ test('generated fs-types.js is up to date with its source', t => {
   }
 });
 
-// Guard divergence gate: the TypeScript-canonical git declaration must
-// enumerate exactly the methods the runtime `GitInterface` guard enforces, so
-// the printed types cannot silently drift from the enforcement layer.
-test('git declarations cover exactly the GitInterface guard methods', t => {
+// The base declaration stays guard-canonical except for the deliberately
+// attenuated history-rewrite method. `gitHistory` carries that separately.
+test('git declarations split the GitInterface history-rewrite method', t => {
   const { git } = buildGitIRs();
   const tsMembers = git.members.map(member => member.name).sort();
   const guardMethods = Object.keys(
     getInterfaceGuardPayload(/** @type {InterfaceGuard} */ (GitInterface))
       .methodGuards,
-  ).sort();
+  )
+    .filter(name => name !== 'reword')
+    .sort();
   t.deepEqual(tsMembers, guardMethods);
 });
 
@@ -85,6 +86,23 @@ test('read-only git is a subset of read-write git and omits mutators', t => {
   t.false(gitCodeModeTypeDeclarations.gitReadOnly.aux.includes('commit:'));
   t.true(readOnly.includes('log'));
   t.true(readOnly.includes('diff'));
+});
+
+test('base and history git declarations split history rewrite authority', t => {
+  const { git, gitHistory } = buildGitIRs();
+  const baseCommit = git.members.find(member => member.name === 'commit');
+  t.truthy(baseCommit);
+  t.is(baseCommit.signature, '(message: string) => Promise<GitCommit>');
+  t.false(git.members.some(member => member.name === 'reword'));
+  t.deepEqual(gitHistory.members.map(member => member.name).sort(), [
+    'commit',
+    'reword',
+  ]);
+  t.true(
+    gitHistory.members.some(member =>
+      member.signature.includes('GitCommitOptions'),
+    ),
+  );
 });
 
 // The FS `.d.ts` is a stub, so `workspace` is derived from the interface
