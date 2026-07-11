@@ -9,9 +9,10 @@ import { promisify as nodePromisify } from 'node:util';
 import { E } from '@endo/eventual-send';
 import { Far } from '@endo/pass-style';
 import {
-  registerFauxProvider,
+  createAssistantMessageEventStream,
   fauxAssistantMessage,
   fauxToolCall,
+  registerFauxProvider,
 } from '@earendil-works/pi-ai';
 import { makeNodeFilesystem } from '@endo/platform/fs/extended';
 import { iterateBytesReader } from '@endo/exo-stream/iterate-bytes-reader.js';
@@ -33,7 +34,9 @@ import {
 } from '../src/execute/index.js';
 
 /** @import { CodeModeGlobal, CodeModeExecute } from '../src/execute/tool.js' */
-/** @import { Model } from '@earendil-works/pi-ai' */
+/** @import { AgentToolResult } from '@earendil-works/pi-agent-core' */
+/** @import { AssistantMessage, Message, Model } from '@earendil-works/pi-ai' */
+/** @import { ExecutionContext } from 'ava' */
 /** @import { PassableBytesReader, PassableBytesWriter } from '@endo/exo-stream' */
 
 const execFileAsync = nodePromisify(execFile);
@@ -43,8 +46,8 @@ const execFileAsync = nodePromisify(execFile);
  * test. Returns the faux `Model` to drive an agent with, plus the registration
  * handle (so the test can teardown the registration).
  *
- * @param {import('ava').ExecutionContext} t
- * @param {import('@earendil-works/pi-ai').AssistantMessage[]} responses
+ * @param {ExecutionContext} t
+ * @param {AssistantMessage[]} responses
  * @returns {Model<string>}
  */
 const fauxModel = (t, responses) => {
@@ -55,6 +58,30 @@ const fauxModel = (t, responses) => {
   registration.setResponses(responses);
   t.teardown(() => registration.unregister());
   return registration.getModel();
+};
+
+/**
+ * @param {AssistantMessage[]} responses
+ * @param {Message[][]} contexts
+ */
+const makeCapturingStreamFn = (responses, contexts) => {
+  let responseIndex = 0;
+  return (_model, context) => {
+    contexts.push(context.messages);
+    const finalMessage =
+      responses[responseIndex] || fauxAssistantMessage('done');
+    responseIndex += 1;
+    const stream = createAssistantMessageEventStream();
+    const partial = harden({ ...finalMessage, content: [] });
+    stream.push({ type: 'start', partial });
+    stream.push({
+      type: 'done',
+      reason: finalMessage.stopReason === 'toolUse' ? 'toolUse' : 'stop',
+      message: finalMessage,
+    });
+    stream.end(finalMessage);
+    return stream;
+  };
 };
 
 /**
@@ -80,7 +107,7 @@ const makeStubGit = calls =>
   });
 
 /**
- * @param {import('ava').ExecutionContext} t
+ * @param {ExecutionContext} t
  */
 const provisionGitWorktree = async t => {
   const root = await fs.promises.mkdtemp(
@@ -113,7 +140,7 @@ const provisionGitWorktree = async t => {
  * This exercises the real, inert `EndoMountEntry` exo and its private
  * `mountEntryRecords` WeakMap.
  *
- * @param {import('ava').ExecutionContext} t
+ * @param {ExecutionContext} t
  * @param {boolean} [allowHistoryRewrite]
  */
 const makeRealGit = async (t, allowHistoryRewrite = false) => {
@@ -280,6 +307,7 @@ test('makeCodeModeAgent injects typed git + workspace declarations from powers',
   t.true(systemPrompt.includes('declare const git: EndoGit;'));
   t.true(systemPrompt.includes('declare const workspace: Filesystem;'));
   t.true(systemPrompt.includes('type EndoGit = {'));
+  t.false(systemPrompt.includes('declare const emit:'));
 });
 
 test('makeEnvCredentials is the single env reader and reads through .get', t => {
@@ -384,6 +412,72 @@ test('faux provider drives a scripted execute-only code-mode agent', async t => 
 
   t.deepEqual(gitCalls, ['branches']);
   t.deepEqual(executions, [['main']]);
+});
+
+test('opt-in execute emit reaches UI updates but not transcript or next model turn', async t => {
+  /** @type {Message[][]} */
+  const contexts = [];
+  const model = fauxModel(t, []);
+  const source = `
+(async () => {
+  emit({ stage: 'started' });
+  emit('halfway');
+  return 'complete';
+})()`;
+  const responses = [
+    fauxAssistantMessage(fauxToolCall('execute', { source }), {
+      stopReason: 'toolUse',
+    }),
+    fauxAssistantMessage('done'),
+  ];
+  const { agent, systemPrompt } = makeCodeModeAgent({
+    model,
+    emit: true,
+    streamFn: makeCapturingStreamFn(responses, contexts),
+  });
+  /** @type {AgentToolResult<unknown>[]} */
+  const updates = [];
+  const unsubscribe = agent.subscribe(event => {
+    if (event.type === 'tool_execution_update') {
+      updates.push(event.partialResult);
+    }
+  });
+
+  await agent.prompt('Run the operation.');
+  await agent.waitForIdle();
+  unsubscribe();
+
+  t.true(
+    systemPrompt.includes('declare const emit: (value: unknown) => void;'),
+  );
+  t.deepEqual(
+    updates.map(update => update.content),
+    [
+      [{ type: 'text', text: '{"stage":"started"}' }],
+      [{ type: 'text', text: 'halfway' }],
+    ],
+  );
+  t.deepEqual(
+    agent.state.messages
+      .filter(message => message.role === 'toolResult')
+      .map(message => message.content),
+    [[{ type: 'text', text: 'complete' }]],
+  );
+
+  const nextTurn = contexts[1];
+  t.truthy(nextTurn);
+  const nextTurnToolResult = nextTurn?.find(
+    message => message.role === 'toolResult',
+  );
+  t.truthy(nextTurnToolResult);
+  t.deepEqual(nextTurnToolResult?.content, [
+    { type: 'text', text: 'complete' },
+  ]);
+  t.false(
+    nextTurnToolResult?.content.some(
+      content => content.type === 'text' && content.text.includes('halfway'),
+    ),
+  );
 });
 
 test('git-loop preset edits the workspace, commits, and reads HEAD~1 over a real mount', async t => {

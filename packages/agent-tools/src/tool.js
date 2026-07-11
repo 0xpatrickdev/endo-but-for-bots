@@ -121,8 +121,9 @@ export const makeTool = spec => {
     inputSchema: hardenedParameters,
     /**
      * @param {Record<string, unknown>} argsRecord
+     * @param {(value: unknown) => void} [onUpdate]
      */
-    invoke: async argsRecord => {
+    invoke: async (argsRecord, onUpdate) => {
       const hardenedArgsRecord = copyHardenArgsRecord(argsRecord);
       if (argGuards !== undefined) {
         // Reject keys outside the declared property list.
@@ -150,7 +151,7 @@ export const makeTool = spec => {
           mustMatch(positional[i], argGuards[i], `${name} ${paramNames[i]}`);
         }
       }
-      return execute(hardenedArgsRecord);
+      return execute(hardenedArgsRecord, onUpdate);
     },
   });
 };

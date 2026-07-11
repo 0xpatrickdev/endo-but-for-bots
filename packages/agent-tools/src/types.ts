@@ -82,8 +82,13 @@ export interface ToolSpec {
    * Dispatch target. Receives the named-args record keyed by the schema's
    * declared `parameters.properties` names (e.g. `{ message }`, `{ name,
    * options }`).
+   * The optional update callback reports transient values to an adapter such as
+   * pi-agent-core; updates are not part of the completion value.
    */
-  execute: (args: Record<string, unknown>) => Promise<unknown>;
+  execute: (
+    args: Record<string, unknown>,
+    onUpdate?: (value: unknown) => void,
+  ) => Promise<unknown>;
 }
 
 export interface ToolRecord {
@@ -95,9 +100,12 @@ export interface ToolRecord {
   inputSchema: object;
   /**
    * Validates the supplied args against `argGuards` when present, then calls
-   * `execute(args)`.
+   * `execute(args, onUpdate)`.
    */
-  invoke: (args: Record<string, unknown>) => Promise<unknown>;
+  invoke: (
+    args: Record<string, unknown>,
+    onUpdate?: (value: unknown) => void,
+  ) => Promise<unknown>;
 }
 
 export declare function makeTool(spec: ToolSpec): ToolRecord;

@@ -2,7 +2,7 @@
 /// <reference types="ses"/>
 
 /** @import { Tool } from '@earendil-works/pi-ai' */
-/** @import { AgentTool, AgentToolResult } from '@earendil-works/pi-agent-core' */
+/** @import { AgentTool, AgentToolResult, AgentToolUpdateCallback } from '@earendil-works/pi-agent-core' */
 /** @import { ToolRecord } from './types.js' */
 
 /**
@@ -23,7 +23,8 @@ const defaultRenderToolResult = result =>
  * {@link AgentTool}. The model-facing surface (`name`, `description`,
  * `parameters`) is copied verbatim; the bridge `invoke`s the record and renders
  * its completion value to the text the model reads, retaining the raw value as
- * the tool result's structured `details`.
+ * the tool result's structured `details`. When pi supplies its optional update
+ * callback, transient record updates are rendered and forwarded to it.
  *
  * The text rendering is injected, not built in: pass `renderToolResult` to
  * encode results in whatever wire format the caller's transcript expects (the
@@ -42,9 +43,20 @@ export const toPiAgentTool = (tool, options = {}) => {
     label: tool.name,
     description: tool.description,
     parameters: /** @type {Tool['parameters']} */ (tool.parameters),
-    execute: async (_toolCallId, params, _signal, _onUpdate) => {
+    execute: async (_toolCallId, params, _signal, onUpdate) => {
+      /** @type {AgentToolUpdateCallback<unknown> | undefined} */
+      const reportUpdate = onUpdate;
       const result = await tool.invoke(
         /** @type {Record<string, unknown>} */ (params ?? {}),
+        partialResult => {
+          if (reportUpdate === undefined) {
+            return;
+          }
+          reportUpdate({
+            content: [{ type: 'text', text: renderToolResult(partialResult) }],
+            details: partialResult,
+          });
+        },
       );
       /** @type {AgentToolResult<unknown>} */
       const toolResult = {

@@ -9,9 +9,11 @@ import test from 'ava';
 import { makeTool } from '../src/tool.js';
 import { toPiAgentTool } from '../src/pi.js';
 
+/** @import { ToolRecord } from '../src/types.js' */
+
 /**
  * @param {unknown} result
- * @returns {import('../src/types.js').ToolRecord}
+ * @returns {ToolRecord}
  */
 const toolReturning = result =>
   makeTool({
@@ -59,4 +61,42 @@ test('the renderToolResult hook controls the rendered text', async t => {
   // The raw value is retained as structured details for non-text consumers.
   t.deepEqual(result.details, { value: 42 });
   t.deepEqual(seen, [{ value: 42 }]);
+});
+
+test('toPiAgentTool forwards partial updates through the onUpdate callback', async t => {
+  const emitted = [];
+  const tool = toPiAgentTool(
+    makeTool({
+      name: 'progress',
+      description: 'Emit progress.',
+      parameters: harden({
+        type: 'object',
+        properties: {},
+        required: [],
+        additionalProperties: false,
+      }),
+      execute: async (_args, onUpdate) => {
+        onUpdate?.('halfway');
+        onUpdate?.(harden({ step: 2 }));
+        return 'done';
+      },
+    }),
+  );
+
+  const result = await tool.execute('id-4', {}, undefined, update => {
+    emitted.push(update);
+  });
+
+  t.deepEqual(
+    emitted.map(update => update.content),
+    [
+      [{ type: 'text', text: 'halfway' }],
+      [{ type: 'text', text: '{"step":2}' }],
+    ],
+  );
+  t.deepEqual(
+    emitted.map(update => update.details),
+    ['halfway', { step: 2 }],
+  );
+  t.deepEqual(result.content, [{ type: 'text', text: 'done' }]);
 });

@@ -78,7 +78,9 @@ const EXECUTE_PARAMETERS = harden({
  * @property {string | string[]} [resultName]
  * @property {CodeModeGlobal[]} globals
  *
- * @typedef {(input: CodeModeExecuteInput) => Promise<unknown>} CodeModeExecute
+ * @typedef {(value: unknown) => void} CodeModeEmit
+ *
+ * @typedef {(input: CodeModeExecuteInput, onUpdate?: CodeModeEmit) => Promise<unknown>} CodeModeExecute
  */
 
 /**
@@ -105,7 +107,7 @@ export const makeExecuteTool = (execute, globals) => {
     description:
       'Evaluate JavaScript source with the code-mode powers in lexical scope.',
     parameters: EXECUTE_PARAMETERS,
-    execute: async args => {
+    execute: async (args, onUpdate) => {
       const { source, resultName } = args;
       if (typeof source !== 'string') {
         throw new Error('execute.source must be a string');
@@ -113,11 +115,14 @@ export const makeExecuteTool = (execute, globals) => {
       if (resultName !== undefined && !isResultName(resultName)) {
         throw new Error('execute.resultName must be a string or string[]');
       }
-      return execute({
-        source,
-        resultName,
-        globals: normalized,
-      });
+      return execute(
+        {
+          source,
+          resultName,
+          globals: normalized,
+        },
+        onUpdate,
+      );
     },
   });
 };

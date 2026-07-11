@@ -63,6 +63,7 @@ const lookupRequiredPower = (powers, petName, label) => {
  *   `lookup(petName)` for resolving capabilities not passed inline.
  * @property {Credentials} [credentials]
  * @property {Record<string, unknown>} [endowments]
+ * @property {boolean} [emit] Expose an `emit(value)` progress callback to code.
  * @property {CodeModeExecute} [execute]
  * @property {(value: unknown, resultName: string | string[]) => Promise<void> | void} [storeResult]
  * @property {CodeModeGlobal[]} [globals]
@@ -84,9 +85,10 @@ const lookupRequiredPower = (powers, petName, label) => {
  * unless the caller attached its own `declaration`.
  *
  * @param {CodeModePowers} powers
+ * @param {{ emit?: boolean }} [options]
  * @returns {CodeModeGlobal[]}
  */
-const makeCodeModeGlobals = (powers = {}) => {
+const makeCodeModeGlobals = (powers = {}, options = {}) => {
   /** @type {CodeModeGlobal[]} */
   const globals = [];
   if (powers.workspace !== undefined || powers.workspacePetName !== undefined) {
@@ -110,6 +112,13 @@ const makeCodeModeGlobals = (powers = {}) => {
     );
   }
   globals.push(...(powers.namedPowers || []));
+  if (options.emit) {
+    globals.push({
+      name: 'emit',
+      description: 'Emit an intermediate progress value to the host UI.',
+      declaration: { body: '(value: unknown) => void' },
+    });
+  }
   return normalizeGlobals(globals);
 };
 harden(makeCodeModeGlobals);
@@ -212,7 +221,7 @@ export const makeCodeModeAgent = options => {
 
   const globals = options.globals
     ? normalizeGlobals(options.globals)
-    : makeCodeModeGlobals(powers);
+    : makeCodeModeGlobals(powers, { emit: options.emit });
   const systemPrompt =
     options.systemPrompt || makeCodeModeSystemPrompt(globals, { preamble });
 
@@ -227,6 +236,7 @@ export const makeCodeModeAgent = options => {
         lookupPowers,
       ),
       storeResult,
+      exposeEmit: options.emit,
     });
   const tool = makeExecuteTool(execute, globals);
 
