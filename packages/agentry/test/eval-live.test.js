@@ -79,17 +79,43 @@ const liveTest = live ? test : test.skip;
 const artifactDir = env.ENDO_EVAL_ARTIFACT_DIR;
 
 /**
+ * Redact credential-shaped substrings and cap length. Every captured
+ * transcript string flows through this, regardless of source, so a
+ * credential never reaches a durable artifact.
+ *
  * @param {unknown} value
+ * @param {number} [maxLength]
  * @returns {string}
  */
-const safeText = value =>
+const safeText = (value, maxLength = 4000) =>
   String(value)
     .replace(/bearer\s+[^\s]+/gi, 'Bearer [redacted]')
     .replace(
       /(api[_-]?key|auth[_-]?token|access[_-]?token)\s*[:=]\s*[^\s]+/gi,
       '$1=[redacted]',
     )
-    .slice(0, 4000);
+    .slice(0, maxLength);
+
+/**
+ * Join the `text`-typed parts of a message or tool-result content array (or
+ * pass through a plain string content) into one string. Non-text parts
+ * (thinking, tool calls, images) are dropped.
+ *
+ * @param {unknown} content
+ * @returns {string}
+ */
+const joinTextParts = content => {
+  if (typeof content === 'string') {
+    return content;
+  }
+  if (!Array.isArray(content)) {
+    return '';
+  }
+  return content
+    .map(part => (part && part.type === 'text' ? part.text : undefined))
+    .filter(part => typeof part === 'string')
+    .join('\n');
+};
 
 /**
  * @param {string} fileName
@@ -106,8 +132,15 @@ const appendArtifact = (fileName, record) => {
 };
 
 /**
- * Keep event artifacts useful without copying prompts, generated code, or
- * capability-bearing result details into durable host state.
+ * Render one agent event into a transcript-grade artifact record.
+ *
+ * Maintainer decision (2026-07-14): event artifacts deliberately capture
+ * bounded, redacted transcript content, superseding the earlier "no prompts,
+ * no generated code" stance, so a downstream reporter can render one
+ * attributable transcript per scenario run: assistant message text, the
+ * source submitted to the `execute` tool, and tool results. Every captured
+ * string flows through `safeText`, which redacts credential-shaped
+ * substrings and caps length; credentials must never reach a captured field.
  *
  * @param {unknown} event
  * @returns {Record<string, unknown>}
@@ -122,6 +155,7 @@ const summarizeEvent = event => {
         ...record,
         role: message.role,
         stopReason: message.stopReason,
+        text: safeText(joinTextParts(message.content), 2000),
         errorMessage:
           message.errorMessage === undefined
             ? undefined
@@ -145,25 +179,21 @@ const summarizeEvent = event => {
         ...record,
         toolCallId: value.toolCallId,
         toolName: value.toolName,
+        ...(value.toolName === 'execute'
+          ? { source: safeText(value.args?.source, 4000) }
+          : { input: safeText(JSON.stringify(value.args), 500) }),
       };
-    case 'tool_execution_end':
+    case 'tool_execution_end': {
+      const resultText = joinTextParts(value.result?.content);
       return {
         ...record,
         toolCallId: value.toolCallId,
         toolName: value.toolName,
         isError: value.isError,
-        errorText: value.isError
-          ? safeText(
-              value.result?.content
-                ?.map(part => {
-                  const { text } = /** @type {{ text?: unknown }} */ (part);
-                  return text;
-                })
-                .filter(Boolean)
-                .join('\n'),
-            )
-          : undefined,
+        errorText: value.isError ? safeText(resultText) : undefined,
+        resultText: value.isError ? undefined : safeText(resultText, 1000),
       };
+    }
     case 'turn_end':
       return {
         ...record,
@@ -180,11 +210,6 @@ const summarizeEvent = event => {
   }
 };
 
-const onEvent =
-  artifactDir === undefined
-    ? undefined
-    : event => appendArtifact('events.jsonl', summarizeEvent(event));
-
 /**
  * @param {object} args
  * @param {any} args.model
@@ -197,6 +222,8 @@ const appendScenarioResult = ({ model, scenario, result, error }) => {
   appendArtifact('results.jsonl', {
     scenario: scenario.name,
     model: model.id,
+    referenceSourcePath: scenario.referenceSourcePath,
+    referenceSourceExport: scenario.referenceSourceExport,
     status:
       error === undefined
         ? result.outcome.pass
@@ -215,6 +242,17 @@ for (const row of evalRows) {
     const { model, getApiKey } = /** @type {NonNullable<typeof live>} */ (live);
     const repo = await row.provisionRepo(t);
     const scenario = row.makeScenario(repo);
+    // ava runs eval rows concurrently within one artifact dir, so every event
+    // must be self-attributing rather than relying on file-level isolation.
+    const onEvent =
+      artifactDir === undefined
+        ? undefined
+        : event =>
+            appendArtifact('events.jsonl', {
+              scenario: scenario.name,
+              model: model.id,
+              ...summarizeEvent(event),
+            });
 
     let result;
     try {

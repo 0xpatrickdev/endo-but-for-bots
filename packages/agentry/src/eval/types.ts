@@ -40,6 +40,15 @@ export interface GitScenario<Expected = unknown> {
   /** The user turn handed to the code-mode agent. */
   prompt: string;
   expected: Expected;
+  /**
+   * Repo-relative path to the module holding this scenario's reference
+   * solution (the `execute` source a competent agent should converge on).
+   * Lets a downstream reporter link a scenario's transcript to the solution
+   * it is scored against.
+   */
+  referenceSourcePath: string;
+  /** Named export in `referenceSourcePath` holding the reference solution. */
+  referenceSourceExport: string;
   assertOutcome: (args: {
     git: unknown;
     workspace: unknown;
